@@ -6,6 +6,28 @@ use hudhook::windows::Win32::System::LibraryLoader::GetModuleFileNameW;
 use once_cell::sync::Lazy;
 use serde::Deserialize;
 
+/// Which graphics API to hook into.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum GraphicsApi {
+    Dx12,
+    Dx11,
+    Dx9,
+    #[serde(alias = "opengl")]
+    Opengl,
+}
+
+impl std::fmt::Display for GraphicsApi {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Dx12 => write!(f, "DX12"),
+            Self::Dx11 => write!(f, "DX11"),
+            Self::Dx9 => write!(f, "DX9"),
+            Self::Opengl => write!(f, "OpenGL"),
+        }
+    }
+}
+
 /// Saved in DllMain before spawning the hook thread.
 pub static DLL_HINSTANCE: OnceLock<HINSTANCE> = OnceLock::new();
 
@@ -21,7 +43,7 @@ pub(crate) fn dll_directory() -> Option<PathBuf> {
     path.parent().map(|p| p.to_path_buf())
 }
 
-#[derive(Deserialize, Clone)]
+#[derive(Deserialize, Clone, Default)]
 pub struct Config {
     #[serde(default)]
     pub api: ApiConfig,
@@ -44,7 +66,10 @@ pub struct ApiConfig {
 }
 
 #[derive(Deserialize, Clone)]
+#[allow(dead_code)]
 pub struct OverlayConfig {
+    /// Force a specific graphics API. If omitted, auto-detects from loaded modules.
+    pub graphics_api: Option<GraphicsApi>,
     #[serde(default = "default_hotkey")]
     pub hotkey: String,
     #[serde(default = "default_width")]
@@ -58,6 +83,7 @@ pub struct OverlayConfig {
 }
 
 #[derive(Deserialize, Clone)]
+#[allow(dead_code)]
 pub struct CaptureConfig {
     #[serde(default = "default_capture_enabled")]
     pub enabled: bool,
@@ -83,16 +109,6 @@ fn default_capture_enabled() -> bool { true }
 fn default_max_width() -> u32 { 1920 }
 fn default_quality() -> u8 { 85 }
 
-impl Default for Config {
-    fn default() -> Self {
-        Self {
-            api: ApiConfig::default(),
-            overlay: OverlayConfig::default(),
-            capture: CaptureConfig::default(),
-        }
-    }
-}
-
 impl Default for ApiConfig {
     fn default() -> Self {
         Self {
@@ -107,6 +123,7 @@ impl Default for ApiConfig {
 impl Default for OverlayConfig {
     fn default() -> Self {
         Self {
+            graphics_api: None,
             hotkey: default_hotkey(),
             width: default_width(),
             height: default_height(),
