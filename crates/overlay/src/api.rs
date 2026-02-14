@@ -26,7 +26,16 @@ struct GeminiRequest {
     system_instruction: Option<SystemInstruction>,
     contents: Vec<Content>,
     generation_config: GenerationConfig,
+    tools: Vec<Tool>,
 }
+
+#[derive(Serialize)]
+struct Tool {
+    google_search: GoogleSearch,
+}
+
+#[derive(Serialize)]
+struct GoogleSearch {}
 
 #[derive(Serialize)]
 struct SystemInstruction {
@@ -163,6 +172,9 @@ pub async fn send_message(
         generation_config: GenerationConfig {
             max_output_tokens: config.max_tokens,
         },
+        tools: vec![Tool {
+            google_search: GoogleSearch {},
+        }],
     };
 
     let url = format!(
