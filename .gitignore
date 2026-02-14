@@ -1,0 +1,25 @@
+# Build artifacts
+/target/
+/release/
+
+# Configuration (contains API key)
+config.toml
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+Thumbs.db
+.DS_Store
+
+# Environment
+.env
+*.pem
+*.key
+.claude
+PROJECT_PLAN.md
+CLAUDE.md
+GEMINI_PIVOT.md

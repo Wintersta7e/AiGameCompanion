@@ -1,0 +1,10 @@
+[package]
+name = "injector"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+hudhook = "0.8"
+clap = { version = "4", features = ["derive"] }
+anyhow = "1"
+windows = { version = "0.54", features = ["Win32_System_Diagnostics_ToolHelp", "Win32_Foundation"] }
