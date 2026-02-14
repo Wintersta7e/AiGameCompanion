@@ -7,7 +7,7 @@ Powered by **Google Gemini** (free tier — no credit card needed). Responses ap
 ## Features
 
 - **In-game overlay** via Dear ImGui, rendered directly in the game's rendering pipeline
-- **DX12 support** with vendored hudhook (patched for broad game compatibility)
+- **DX12 + DX11 support** with auto-detection (vendored hudhook, patched for broad compatibility)
 - **Screenshot capture** — attach the current game frame to your message (screen DC capture)
 - **Multi-turn conversation** — full chat history within each session
 - **DPI-aware scaling** — UI scales proportionally on 1440p, 4K, and ultrawide displays
@@ -73,6 +73,7 @@ max_tokens = 1024           # Max response length
 system_prompt = "You are a helpful game companion. Be concise and direct."
 
 [overlay]
+# graphics_api = "dx11"     # Force a specific API (auto-detects if omitted). Options: dx12, dx11, dx9, opengl
 hotkey = "F9"               # Toggle key
 width = 500                 # Initial panel width (scales with display resolution)
 height = 400                # Initial panel height (scales with display resolution)
@@ -102,7 +103,8 @@ Options:
 
 **Overlay doesn't appear**
 - Verify the process name matches exactly (use `--list` to check)
-- The game must use DX12 (DX11, DX9, and OpenGL are not yet supported)
+- The game must use DX12 or DX11 (DX9 and OpenGL are not yet supported)
+- If auto-detection picks the wrong API, add `graphics_api = "dx11"` (or `"dx12"`) to `[overlay]` in config.toml
 - Some games with anti-cheat (EAC, BattlEye) may block DLL injection
 - Check `companion.log` next to the DLL for diagnostic info
 
@@ -126,7 +128,7 @@ Options:
 - Screenshot includes the overlay panel (hide-capture-show planned for v0.2)
 - Screen DC capture instead of swapchain backbuffer (some exclusive fullscreen games may show black)
 - No streaming responses (full response appears at once)
-- DX12 only — DX11, DX9, and OpenGL planned for v0.2 via `graphics_api` config option
+- DX9 and OpenGL not yet supported (detected but stubbed)
 - Vulkan out of scope (hudhook doesn't support it; most Vulkan games offer a DX11/DX12 option)
 - Conversation history is per-session only (not saved to disk)
 - Free tier rate limit: ~250 requests/day, 10-15 RPM
@@ -134,14 +136,15 @@ Options:
 ## Roadmap
 
 **v0.2 — Polish & Compatibility**
-- `graphics_api` config option: `"dx12"` (default), `"dx11"`, `"dx9"`, `"opengl"`
-- DX11 support (largest back-catalog), DX9 (legacy/JRPG engines), OpenGL (niche)
+- ~~Graphics API auto-detection + DX11 support~~ (done)
+- ~~Optional `graphics_api` config override~~ (done)
+- DX9 support (legacy/JRPG engines), OpenGL support (niche)
+- Injector auto-inject (background watcher for configured games)
 - Streaming responses
 - Hide-capture-show for clean screenshots
 - Conversation log saving
 
 **v0.3 — Nice to Have**
-- Auto-detection of graphics API
 - Game profile system (per-game system prompts)
 - Quick screenshot + predefined question hotkey
 

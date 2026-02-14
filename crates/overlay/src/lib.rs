@@ -7,6 +7,7 @@ mod ui;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
+use hudhook::hooks::dx11::ImguiDx11Hooks;
 use hudhook::hooks::dx12::ImguiDx12Hooks;
 use hudhook::windows::Win32::Foundation::HINSTANCE;
 use hudhook::windows::Win32::System::LibraryLoader::GetModuleHandleA;
@@ -17,7 +18,7 @@ use once_cell::sync::Lazy;
 use tokio::runtime::Runtime;
 use tracing::info;
 
-use crate::config::DLL_HINSTANCE;
+use crate::config::{GraphicsApi, DLL_HINSTANCE, CONFIG};
 use crate::state::STATE;
 
 /// Set to true once render() is called, confirming hooks are active.
@@ -54,6 +55,28 @@ fn is_module_loaded(name: &str) -> bool {
         GetModuleHandleA(hudhook::windows::core::PCSTR(cname.as_ptr() as *const u8))
             .is_ok()
     }
+}
+
+/// Auto-detect the graphics API by probing loaded DLLs.
+/// Priority: DX12 > DX11 > DX9 > OpenGL (some games load multiple).
+fn detect_graphics_api() -> Option<GraphicsApi> {
+    if is_module_loaded("d3d12.dll") {
+        info!("Detected d3d12.dll");
+        return Some(GraphicsApi::Dx12);
+    }
+    if is_module_loaded("d3d11.dll") {
+        info!("Detected d3d11.dll");
+        return Some(GraphicsApi::Dx11);
+    }
+    if is_module_loaded("d3d9.dll") {
+        info!("Detected d3d9.dll");
+        return Some(GraphicsApi::Dx9);
+    }
+    if is_module_loaded("opengl32.dll") {
+        info!("Detected opengl32.dll");
+        return Some(GraphicsApi::Opengl);
+    }
+    None
 }
 
 struct CompanionRenderLoop {
@@ -128,6 +151,8 @@ impl ImguiRenderLoop for CompanionRenderLoop {
     }
 }
 
+/// # Safety
+/// Called by the OS loader. `hmodule` must be a valid HINSTANCE for this DLL.
 #[no_mangle]
 #[allow(non_snake_case)]
 pub unsafe extern "system" fn DllMain(
@@ -144,43 +169,85 @@ pub unsafe extern "system" fn DllMain(
             init_tracing();
             info!("DllMain: thread started");
 
-            // Wait for the game to load its graphics DLLs before hooking.
-            // hudhook creates a dummy D3D12 device in get_target_addrs() to find
-            // vtable pointers. If the game hasn't loaded dxgi/d3d12 yet, the hook
-            // targets may not match the game's actual Present function.
+            // Wait for DXGI — required by both DX12 and DX11.
             info!("Waiting for graphics DLLs...");
             while !is_module_loaded("dxgi.dll") {
                 std::thread::sleep(Duration::from_millis(100));
             }
             info!("dxgi.dll loaded");
 
-            while !is_module_loaded("d3d12.dll") {
-                std::thread::sleep(Duration::from_millis(100));
-            }
-            info!("d3d12.dll loaded, waiting for swapchain creation...");
+            // Determine which graphics API to hook.
+            let api = if let Some(forced) = CONFIG.overlay.graphics_api {
+                info!("Config override: graphics_api = {forced}");
+                forced
+            } else {
+                // Wait for a graphics DLL to appear (up to 15s).
+                info!("Auto-detecting graphics API...");
+                let mut detected = None;
+                for _ in 0..150 {
+                    detected = detect_graphics_api();
+                    if detected.is_some() {
+                        break;
+                    }
+                    std::thread::sleep(Duration::from_millis(100));
+                }
+                match detected {
+                    Some(api) => {
+                        info!("Auto-detected: {api}");
+                        api
+                    }
+                    None => {
+                        info!("ERROR: No supported graphics API detected — ejecting");
+                        eject();
+                        return;
+                    }
+                }
+            };
 
-            // Give the game time to create its D3D12 device and swapchain.
-            // Hooking too early means Present may not have been called yet,
-            // and the INITIALIZATION_CONTEXT inside hudhook won't transition
-            // to Complete (needs both Present and ExecuteCommandLists to fire).
+            // Give the game time to create its device and swapchain.
+            info!("Waiting for swapchain creation...");
             std::thread::sleep(Duration::from_secs(2));
 
-            // Build hooks — this creates a dummy D3D12 device to discover vtable
-            // addresses, then creates MinHook inline hooks on Present,
-            // ResizeBuffers, and ExecuteCommandLists.
-            info!("Building DX12 hooks...");
-            let hudhook = Hudhook::builder()
-                .with::<ImguiDx12Hooks>(CompanionRenderLoop::new())
-                .with_hmodule(hmodule)
-                .build();
-            info!("Hooks built, calling apply()...");
-            if let Err(e) = hudhook.apply() {
-                info!("apply() failed: {e:?}");
-                eject();
+            // Build and apply hooks for the detected API.
+            info!("Building {api} hooks...");
+            let result = match api {
+                GraphicsApi::Dx12 => {
+                    let hh = Hudhook::builder()
+                        .with::<ImguiDx12Hooks>(CompanionRenderLoop::new())
+                        .with_hmodule(hmodule)
+                        .build();
+                    hh.apply()
+                }
+                GraphicsApi::Dx11 => {
+                    let hh = Hudhook::builder()
+                        .with::<ImguiDx11Hooks>(CompanionRenderLoop::new())
+                        .with_hmodule(hmodule)
+                        .build();
+                    hh.apply()
+                }
+                GraphicsApi::Dx9 => {
+                    info!("DX9 detected but not yet supported — ejecting");
+                    eject();
+                    return;
+                }
+                GraphicsApi::Opengl => {
+                    info!("OpenGL detected but not yet supported — ejecting");
+                    eject();
+                    return;
+                }
+            };
+
+            match result {
+                Ok(()) => info!("apply() succeeded for {api}"),
+                Err(e) => {
+                    info!("apply() failed for {api}: {e:?}");
+                    eject();
+                    return;
+                }
             }
-            info!("apply() succeeded, monitoring hook activity...");
 
             // Monitor: check if render() is being called within 10 seconds.
+            info!("Monitoring hook activity...");
             for i in 1..=10 {
                 std::thread::sleep(Duration::from_secs(1));
                 if RENDER_ACTIVE.load(Ordering::SeqCst) {
