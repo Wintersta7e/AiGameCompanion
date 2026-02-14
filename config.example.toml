@@ -1,0 +1,23 @@
+# Copy this file to config.toml and fill in your API key.
+# config.toml is gitignored — never commit your real key.
+#
+# Get a FREE Gemini API key (no credit card needed):
+#   https://aistudio.google.com → Get API Key
+
+[api]
+key = "your-gemini-api-key-here"
+model = "gemini-2.5-flash"
+max_tokens = 1024
+system_prompt = "You are a helpful game companion. Be concise and direct. When you see a screenshot, describe what you observe and provide actionable advice."
+
+[overlay]
+hotkey = "F9"
+width = 500
+height = 400
+opacity = 0.85
+font_size = 16
+
+[capture]
+enabled = true
+max_width = 1920
+quality = 85

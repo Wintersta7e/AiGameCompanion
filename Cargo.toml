@@ -1,0 +1,7 @@
+[workspace]
+members = ["crates/overlay", "crates/injector"]
+exclude = ["vendor/hudhook"]
+resolver = "2"
+
+[patch.crates-io]
+hudhook = { path = "vendor/hudhook" }
