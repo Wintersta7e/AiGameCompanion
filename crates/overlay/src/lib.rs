@@ -2,6 +2,7 @@ mod api;
 mod capture;
 mod config;
 mod game_detect;
+mod logging;
 mod state;
 mod ui;
 
@@ -214,7 +215,10 @@ pub unsafe extern "system" fn DllMain(
             if let Some(ref name) = game_name {
                 info!("Game: {name}");
             }
-            STATE.lock().game_name = game_name;
+            STATE.lock().game_name = game_name.clone();
+
+            // Initialize session log
+            logging::init_session_log(game_name.as_deref());
 
             // Build and apply hooks for the detected API.
             info!("Building {api} hooks...");

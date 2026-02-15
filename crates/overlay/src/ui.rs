@@ -2,6 +2,7 @@ use imgui::{Condition, StyleColor, Ui};
 
 use crate::api;
 use crate::capture;
+use crate::logging;
 use crate::state::{ChatMessage, MessageRole, STATE};
 use crate::RUNTIME;
 
@@ -170,12 +171,18 @@ pub fn draw_panel(ui: &Ui) {
                             if state.request_generation == gen {
                                 match result {
                                     Ok(response) => {
+                                        let last_user = state.messages.iter()
+                                            .rev()
+                                            .find(|m| m.role == MessageRole::User)
+                                            .map(|m| m.content.clone())
+                                            .unwrap_or_default();
                                         state.messages.push(ChatMessage {
                                             role: MessageRole::Assistant,
-                                            content: response,
+                                            content: response.clone(),
                                         });
                                         state.streaming_response.clear();
                                         state.is_loading = false;
+                                        logging::log_exchange(&last_user, &response);
                                     }
                                     Err(err) => {
                                         // If we got partial content before error, keep it
