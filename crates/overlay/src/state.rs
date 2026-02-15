@@ -24,6 +24,8 @@ pub struct AppState {
     /// Incremented on each send; async tasks compare against this before writing results.
     /// If the generation has changed (e.g. user cancelled), the task discards its result.
     pub request_generation: u64,
+    /// Detected game name, resolved once at init.
+    pub game_name: Option<String>,
 }
 
 pub static STATE: Lazy<Mutex<AppState>> = Lazy::new(|| Mutex::new(AppState::default()));

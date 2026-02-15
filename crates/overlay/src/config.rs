@@ -51,6 +51,15 @@ pub struct Config {
     pub overlay: OverlayConfig,
     #[serde(default)]
     pub capture: CaptureConfig,
+    #[serde(default)]
+    pub games: Vec<GameEntry>,
+}
+
+#[derive(Deserialize, Clone)]
+pub struct GameEntry {
+    #[serde(default)]
+    pub name: Option<String>,
+    pub process: String,
 }
 
 #[derive(Deserialize, Clone)]

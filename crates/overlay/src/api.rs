@@ -4,7 +4,7 @@ use once_cell::sync::Lazy;
 use serde::{Deserialize, Serialize};
 
 use crate::config::CONFIG;
-use crate::state::{ChatMessage, MessageRole};
+use crate::state::{ChatMessage, MessageRole, STATE};
 
 /// Max number of messages to send to the API. Older messages are trimmed to avoid
 /// huge payloads (especially with screenshots) and runaway token costs.
@@ -156,13 +156,18 @@ pub async fn send_message(
         contents.push(Content { role, parts });
     }
 
-    let system_instruction = if config.system_prompt.is_empty() {
+    // Prepend game name to system prompt if detected.
+    let game_name = STATE.lock().game_name.clone();
+    let system_text = match game_name {
+        Some(name) => format!("The user is currently playing {name}. {}", config.system_prompt),
+        None => config.system_prompt.clone(),
+    };
+
+    let system_instruction = if system_text.is_empty() {
         None
     } else {
         Some(SystemInstruction {
-            parts: vec![Part::Text {
-                text: config.system_prompt.clone(),
-            }],
+            parts: vec![Part::Text { text: system_text }],
         })
     };
 
