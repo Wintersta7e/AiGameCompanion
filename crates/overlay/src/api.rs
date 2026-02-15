@@ -216,20 +216,22 @@ pub async fn send_message(
         });
     }
 
-    // Stream SSE chunks
+    // Stream SSE chunks. Use a byte buffer to avoid corrupting multi-byte
+    // UTF-8 characters that may be split across TCP chunks.
     let mut stream = response.bytes_stream();
-    let mut buffer = String::new();
+    let mut byte_buf: Vec<u8> = Vec::new();
     let mut full_text = String::new();
 
     while let Some(chunk_result) = stream.next().await {
         let chunk = chunk_result.map_err(|e| format!("Stream error: {e}"))?;
-        buffer.push_str(&String::from_utf8_lossy(chunk.as_ref()));
+        byte_buf.extend_from_slice(chunk.as_ref());
 
-        // Process complete lines
-        while let Some(newline_pos) = buffer.find('\n') {
-            let line = buffer[..newline_pos].trim().to_string();
-            buffer = buffer[newline_pos + 1..].to_string();
+        // Process complete lines from the byte buffer
+        while let Some(newline_pos) = byte_buf.iter().position(|&b| b == b'\n') {
+            let line_bytes = byte_buf[..newline_pos].to_vec();
+            byte_buf.drain(..=newline_pos);
 
+            let line = String::from_utf8_lossy(&line_bytes).trim().to_string();
             if line.is_empty() {
                 continue;
             }

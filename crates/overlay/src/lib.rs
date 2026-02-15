@@ -61,6 +61,8 @@ pub(crate) fn spawn_api_request(
                     });
                     state.streaming_response.clear();
                     state.is_loading = false;
+                    // Drop the lock BEFORE file I/O
+                    drop(state);
                     logging::log_exchange(&last_user, &response);
                 }
                 Err(err) => {
@@ -169,7 +171,7 @@ impl ImguiRenderLoop for CompanionRenderLoop {
     fn render(&mut self, ui: &mut imgui::Ui) {
         if !self.logged_first_render {
             RENDER_ACTIVE.store(true, Ordering::SeqCst);
-            info!("render() called — hooks are active!");
+            info!("render() called -- hooks are active!");
             self.logged_first_render = true;
         }
 
@@ -206,7 +208,7 @@ impl ImguiRenderLoop for CompanionRenderLoop {
                 let gen = state.request_generation;
 
                 if screenshot.is_none() {
-                    state.error = Some("Screenshot capture failed — sending text only.".into());
+                    state.error = Some("Screenshot capture failed -- sending text only.".into());
                 }
                 drop(state);
 
@@ -241,7 +243,7 @@ pub unsafe extern "system" fn DllMain(
     _: *mut std::ffi::c_void,
 ) {
     if reason == DLL_PROCESS_ATTACH {
-        // Save HINSTANCE before spawning — needed by config.rs to find config.toml
+        // Save HINSTANCE before spawning -- needed by config.rs to find config.toml
         let _ = DLL_HINSTANCE.set(hmodule);
 
         std::thread::spawn(move || {
@@ -249,7 +251,7 @@ pub unsafe extern "system" fn DllMain(
             init_tracing();
             info!("DllMain: thread started");
 
-            // Wait for DXGI — required by both DX12 and DX11.
+            // Wait for DXGI -- required by both DX12 and DX11.
             info!("Waiting for graphics DLLs...");
             while !is_module_loaded("dxgi.dll") {
                 std::thread::sleep(Duration::from_millis(100));
@@ -277,7 +279,7 @@ pub unsafe extern "system" fn DllMain(
                         api
                     }
                     None => {
-                        info!("ERROR: No supported graphics API detected — ejecting");
+                        info!("ERROR: No supported graphics API detected -- ejecting");
                         eject();
                         return;
                     }
@@ -316,12 +318,12 @@ pub unsafe extern "system" fn DllMain(
                     hh.apply()
                 }
                 GraphicsApi::Dx9 => {
-                    info!("DX9 detected but not yet supported — ejecting");
+                    info!("DX9 detected but not yet supported -- ejecting");
                     eject();
                     return;
                 }
                 GraphicsApi::Opengl => {
-                    info!("OpenGL detected but not yet supported — ejecting");
+                    info!("OpenGL detected but not yet supported -- ejecting");
                     eject();
                     return;
                 }
@@ -347,7 +349,7 @@ pub unsafe extern "system" fn DllMain(
                 info!("Waiting for first render call... {i}s");
             }
             if !RENDER_ACTIVE.load(Ordering::SeqCst) {
-                info!("WARNING: render() not called after 10s — hooks may not be intercepting Present()");
+                info!("WARNING: render() not called after 10s -- hooks may not be intercepting Present()");
             }
 
             // Park thread indefinitely so nothing gets dropped
