@@ -23,6 +23,10 @@ enabled = true
 max_width = 1920
 quality = 85
 
+[logging]
+enabled = true
+# directory = "C:\\custom\\log\\path"  # Defaults to logs/ next to the DLL
+
 # Game list for auto-inject watch mode.
 # Run injector.exe with no flags to watch for these games and auto-inject.
 # Run injector.exe --process "Game.exe" to skip watch mode and inject directly.
