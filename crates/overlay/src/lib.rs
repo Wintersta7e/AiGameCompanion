@@ -21,7 +21,7 @@ use tokio::runtime::Runtime;
 use tracing::info;
 
 use crate::config::{GraphicsApi, DLL_HINSTANCE, CONFIG};
-use crate::state::STATE;
+use crate::state::{ChatMessage, MessageRole, STATE};
 
 /// Set to true once render() is called, confirming hooks are active.
 static RENDER_ACTIVE: AtomicBool = AtomicBool::new(false);
@@ -34,6 +34,51 @@ static RUNTIME: Lazy<Runtime> = Lazy::new(|| {
         .build()
         .expect("Failed to create tokio runtime")
 });
+
+/// Spawn an async API request on the tokio runtime.
+/// Used by both ui.rs (no-screenshot path) and lib.rs (post-capture path).
+pub(crate) fn spawn_api_request(
+    gen: u64,
+    messages: Vec<ChatMessage>,
+    screenshot: Option<String>,
+) {
+    RUNTIME.spawn(async move {
+        let result = api::send_message(messages, screenshot, gen).await;
+        let mut state = STATE.lock();
+        if state.request_generation == gen {
+            match result {
+                Ok(response) => {
+                    let last_user = state
+                        .messages
+                        .iter()
+                        .rev()
+                        .find(|m| m.role == MessageRole::User)
+                        .map(|m| m.content.clone())
+                        .unwrap_or_default();
+                    state.messages.push(ChatMessage {
+                        role: MessageRole::Assistant,
+                        content: response.clone(),
+                    });
+                    state.streaming_response.clear();
+                    state.is_loading = false;
+                    logging::log_exchange(&last_user, &response);
+                }
+                Err(err) => {
+                    if !state.streaming_response.is_empty() {
+                        let partial = state.streaming_response.clone();
+                        state.streaming_response.clear();
+                        state.messages.push(ChatMessage {
+                            role: MessageRole::Assistant,
+                            content: partial,
+                        });
+                    }
+                    state.error = Some(err);
+                    state.is_loading = false;
+                }
+            }
+        }
+    });
+}
 
 /// Set up tracing-subscriber to write to companion.log next to the DLL.
 /// Captures both our logs and hudhook's internal tracing (Present hook,
@@ -135,6 +180,39 @@ impl ImguiRenderLoop for CompanionRenderLoop {
             state.visible = !state.visible;
         }
         self.f9_was_pressed = f9_pressed;
+
+        // --- Hide-capture-show ---
+        {
+            let mut state = STATE.lock();
+            if state.capture_pending {
+                if state.capture_wait_frames > 0 {
+                    state.capture_wait_frames -= 1;
+                    return; // skip drawing, let clean frame render
+                }
+                // Waited enough frames. Capture now.
+                drop(state);
+                let screenshot = capture::capture_screenshot();
+                let mut state = STATE.lock();
+                state.captured_screenshot = screenshot;
+                state.capture_pending = false;
+                return; // don't draw this frame either
+            }
+
+            // Check if we need to spawn an API call after capture completed
+            if state.send_pending_capture && !state.capture_pending {
+                state.send_pending_capture = false;
+                let messages = state.messages.clone();
+                let screenshot = state.captured_screenshot.take();
+                let gen = state.request_generation;
+
+                if screenshot.is_none() {
+                    state.error = Some("Screenshot capture failed — sending text only.".into());
+                }
+                drop(state);
+
+                spawn_api_request(gen, messages, screenshot);
+            }
+        }
 
         // --- Draw UI if visible ---
         let visible = STATE.lock().visible;
