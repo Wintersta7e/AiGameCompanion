@@ -1,6 +1,7 @@
 mod api;
 mod capture;
 mod config;
+mod game_detect;
 mod state;
 mod ui;
 
@@ -207,6 +208,13 @@ pub unsafe extern "system" fn DllMain(
             // Give the game time to create its device and swapchain.
             info!("Waiting for swapchain creation...");
             std::thread::sleep(Duration::from_secs(2));
+
+            // Detect game name (window title should be set by now).
+            let game_name = game_detect::detect_game_name();
+            if let Some(ref name) = game_name {
+                info!("Game: {name}");
+            }
+            STATE.lock().game_name = game_name;
 
             // Build and apply hooks for the detected API.
             info!("Building {api} hooks...");
