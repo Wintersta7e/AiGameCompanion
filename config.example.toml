@@ -22,3 +22,19 @@ font_size = 16
 enabled = true
 max_width = 1920
 quality = 85
+
+# Game list for auto-inject watch mode.
+# Run injector.exe with no flags to watch for these games and auto-inject.
+# Run injector.exe --process "Game.exe" to skip watch mode and inject directly.
+
+# [[games]]
+# name = "Horizon Zero Dawn"
+# process = "HorizonZeroDawnRemastered.exe"
+#
+# [[games]]
+# name = "Elden Ring"
+# process = "eldenring.exe"
+#
+# [[games]]
+# name = "Dark Souls III"
+# process = "DarkSoulsIII.exe"
