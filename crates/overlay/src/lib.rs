@@ -1,6 +1,8 @@
 mod api;
 mod capture;
 mod config;
+mod game_detect;
+mod logging;
 mod state;
 mod ui;
 
@@ -19,7 +21,7 @@ use tokio::runtime::Runtime;
 use tracing::info;
 
 use crate::config::{GraphicsApi, DLL_HINSTANCE, CONFIG};
-use crate::state::STATE;
+use crate::state::{ChatMessage, MessageRole, STATE};
 
 /// Set to true once render() is called, confirming hooks are active.
 static RENDER_ACTIVE: AtomicBool = AtomicBool::new(false);
@@ -32,6 +34,53 @@ static RUNTIME: Lazy<Runtime> = Lazy::new(|| {
         .build()
         .expect("Failed to create tokio runtime")
 });
+
+/// Spawn an async API request on the tokio runtime.
+/// Used by both ui.rs (no-screenshot path) and lib.rs (post-capture path).
+pub(crate) fn spawn_api_request(
+    gen: u64,
+    messages: Vec<ChatMessage>,
+    screenshot: Option<String>,
+) {
+    RUNTIME.spawn(async move {
+        let result = api::send_message(messages, screenshot, gen).await;
+        let mut state = STATE.lock();
+        if state.request_generation == gen {
+            match result {
+                Ok(response) => {
+                    let last_user = state
+                        .messages
+                        .iter()
+                        .rev()
+                        .find(|m| m.role == MessageRole::User)
+                        .map(|m| m.content.clone())
+                        .unwrap_or_default();
+                    state.messages.push(ChatMessage {
+                        role: MessageRole::Assistant,
+                        content: response.clone(),
+                    });
+                    state.streaming_response.clear();
+                    state.is_loading = false;
+                    // Drop the lock BEFORE file I/O
+                    drop(state);
+                    logging::log_exchange(&last_user, &response);
+                }
+                Err(err) => {
+                    if !state.streaming_response.is_empty() {
+                        let partial = state.streaming_response.clone();
+                        state.streaming_response.clear();
+                        state.messages.push(ChatMessage {
+                            role: MessageRole::Assistant,
+                            content: partial,
+                        });
+                    }
+                    state.error = Some(err);
+                    state.is_loading = false;
+                }
+            }
+        }
+    });
+}
 
 /// Set up tracing-subscriber to write to companion.log next to the DLL.
 /// Captures both our logs and hudhook's internal tracing (Present hook,
@@ -122,7 +171,7 @@ impl ImguiRenderLoop for CompanionRenderLoop {
     fn render(&mut self, ui: &mut imgui::Ui) {
         if !self.logged_first_render {
             RENDER_ACTIVE.store(true, Ordering::SeqCst);
-            info!("render() called — hooks are active!");
+            info!("render() called -- hooks are active!");
             self.logged_first_render = true;
         }
 
@@ -133,6 +182,39 @@ impl ImguiRenderLoop for CompanionRenderLoop {
             state.visible = !state.visible;
         }
         self.f9_was_pressed = f9_pressed;
+
+        // --- Hide-capture-show ---
+        {
+            let mut state = STATE.lock();
+            if state.capture_pending {
+                if state.capture_wait_frames > 0 {
+                    state.capture_wait_frames -= 1;
+                    return; // skip drawing, let clean frame render
+                }
+                // Waited enough frames. Capture now.
+                drop(state);
+                let screenshot = capture::capture_screenshot();
+                let mut state = STATE.lock();
+                state.captured_screenshot = screenshot;
+                state.capture_pending = false;
+                return; // don't draw this frame either
+            }
+
+            // Check if we need to spawn an API call after capture completed
+            if state.send_pending_capture && !state.capture_pending {
+                state.send_pending_capture = false;
+                let messages = state.messages.clone();
+                let screenshot = state.captured_screenshot.take();
+                let gen = state.request_generation;
+
+                if screenshot.is_none() {
+                    state.error = Some("Screenshot capture failed -- sending text only.".into());
+                }
+                drop(state);
+
+                spawn_api_request(gen, messages, screenshot);
+            }
+        }
 
         // --- Draw UI if visible ---
         let visible = STATE.lock().visible;
@@ -161,7 +243,7 @@ pub unsafe extern "system" fn DllMain(
     _: *mut std::ffi::c_void,
 ) {
     if reason == DLL_PROCESS_ATTACH {
-        // Save HINSTANCE before spawning — needed by config.rs to find config.toml
+        // Save HINSTANCE before spawning -- needed by config.rs to find config.toml
         let _ = DLL_HINSTANCE.set(hmodule);
 
         std::thread::spawn(move || {
@@ -169,7 +251,7 @@ pub unsafe extern "system" fn DllMain(
             init_tracing();
             info!("DllMain: thread started");
 
-            // Wait for DXGI — required by both DX12 and DX11.
+            // Wait for DXGI -- required by both DX12 and DX11.
             info!("Waiting for graphics DLLs...");
             while !is_module_loaded("dxgi.dll") {
                 std::thread::sleep(Duration::from_millis(100));
@@ -197,7 +279,7 @@ pub unsafe extern "system" fn DllMain(
                         api
                     }
                     None => {
-                        info!("ERROR: No supported graphics API detected — ejecting");
+                        info!("ERROR: No supported graphics API detected -- ejecting");
                         eject();
                         return;
                     }
@@ -207,6 +289,16 @@ pub unsafe extern "system" fn DllMain(
             // Give the game time to create its device and swapchain.
             info!("Waiting for swapchain creation...");
             std::thread::sleep(Duration::from_secs(2));
+
+            // Detect game name (window title should be set by now).
+            let game_name = game_detect::detect_game_name();
+            if let Some(ref name) = game_name {
+                info!("Game: {name}");
+            }
+            STATE.lock().game_name = game_name.clone();
+
+            // Initialize session log
+            logging::init_session_log(game_name.as_deref());
 
             // Build and apply hooks for the detected API.
             info!("Building {api} hooks...");
@@ -226,12 +318,12 @@ pub unsafe extern "system" fn DllMain(
                     hh.apply()
                 }
                 GraphicsApi::Dx9 => {
-                    info!("DX9 detected but not yet supported — ejecting");
+                    info!("DX9 detected but not yet supported -- ejecting");
                     eject();
                     return;
                 }
                 GraphicsApi::Opengl => {
-                    info!("OpenGL detected but not yet supported — ejecting");
+                    info!("OpenGL detected but not yet supported -- ejecting");
                     eject();
                     return;
                 }
@@ -257,7 +349,7 @@ pub unsafe extern "system" fn DllMain(
                 info!("Waiting for first render call... {i}s");
             }
             if !RENDER_ACTIVE.load(Ordering::SeqCst) {
-                info!("WARNING: render() not called after 10s — hooks may not be intercepting Present()");
+                info!("WARNING: render() not called after 10s -- hooks may not be intercepting Present()");
             }
 
             // Park thread indefinitely so nothing gets dropped

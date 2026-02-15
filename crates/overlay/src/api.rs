@@ -1,10 +1,11 @@
 use std::time::Duration;
 
+use futures_util::StreamExt;
 use once_cell::sync::Lazy;
 use serde::{Deserialize, Serialize};
 
 use crate::config::CONFIG;
-use crate::state::{ChatMessage, MessageRole};
+use crate::state::{ChatMessage, MessageRole, STATE};
 
 /// Max number of messages to send to the API. Older messages are trimmed to avoid
 /// huge payloads (especially with screenshots) and runaway token costs.
@@ -12,7 +13,7 @@ const MAX_HISTORY_MESSAGES: usize = 50;
 
 static CLIENT: Lazy<reqwest::Client> = Lazy::new(|| {
     reqwest::Client::builder()
-        .timeout(Duration::from_secs(30))
+        .timeout(Duration::from_secs(120))
         .build()
         .unwrap_or_else(|_| reqwest::Client::new())
 });
@@ -94,11 +95,13 @@ struct ResponsePart {
 
 // --- Public API ---
 
-/// Send the full conversation history to the Gemini API.
-/// `screenshot` is an optional base64-encoded PNG to attach to the last user message.
+/// Send the full conversation history to the Gemini streaming API.
+/// Text chunks are written to `STATE.streaming_response` as they arrive.
+/// `generation` is checked each chunk to support cancellation.
 pub async fn send_message(
     messages: Vec<ChatMessage>,
     screenshot: Option<String>,
+    generation: u64,
 ) -> Result<String, String> {
     let config = &CONFIG.api;
 
@@ -156,13 +159,18 @@ pub async fn send_message(
         contents.push(Content { role, parts });
     }
 
-    let system_instruction = if config.system_prompt.is_empty() {
+    // Prepend game name to system prompt if detected.
+    let game_name = STATE.lock().game_name.clone();
+    let system_text = match game_name {
+        Some(name) => format!("The user is currently playing {name}. {}", config.system_prompt),
+        None => config.system_prompt.clone(),
+    };
+
+    let system_instruction = if system_text.is_empty() {
         None
     } else {
         Some(SystemInstruction {
-            parts: vec![Part::Text {
-                text: config.system_prompt.clone(),
-            }],
+            parts: vec![Part::Text { text: system_text }],
         })
     };
 
@@ -178,7 +186,7 @@ pub async fn send_message(
     };
 
     let url = format!(
-        "https://generativelanguage.googleapis.com/v1beta/models/{}:generateContent",
+        "https://generativelanguage.googleapis.com/v1beta/models/{}:streamGenerateContent?alt=sse",
         config.model
     );
 
@@ -208,22 +216,53 @@ pub async fn send_message(
         });
     }
 
-    let body: GeminiResponse = response.json().await.map_err(|_| {
-        "Unexpected API response.".to_string()
-    })?;
+    // Stream SSE chunks. Use a byte buffer to avoid corrupting multi-byte
+    // UTF-8 characters that may be split across TCP chunks.
+    let mut stream = response.bytes_stream();
+    let mut byte_buf: Vec<u8> = Vec::new();
+    let mut full_text = String::new();
 
-    // Extract text from response candidates
-    let text = body
-        .candidates
-        .into_iter()
-        .flat_map(|c| c.content.parts)
-        .filter_map(|p| p.text)
-        .collect::<Vec<_>>()
-        .join("\n");
+    while let Some(chunk_result) = stream.next().await {
+        let chunk = chunk_result.map_err(|e| format!("Stream error: {e}"))?;
+        byte_buf.extend_from_slice(chunk.as_ref());
 
-    if text.is_empty() {
+        // Process complete lines from the byte buffer
+        while let Some(newline_pos) = byte_buf.iter().position(|&b| b == b'\n') {
+            let line_bytes = byte_buf[..newline_pos].to_vec();
+            byte_buf.drain(..=newline_pos);
+
+            let line = String::from_utf8_lossy(&line_bytes).trim().to_string();
+            if line.is_empty() {
+                continue;
+            }
+
+            if let Some(json_str) = line.strip_prefix("data: ") {
+                if let Ok(resp) = serde_json::from_str::<GeminiResponse>(json_str) {
+                    let chunk_text: String = resp
+                        .candidates
+                        .into_iter()
+                        .flat_map(|c| c.content.parts)
+                        .filter_map(|p| p.text)
+                        .collect::<Vec<_>>()
+                        .join("");
+
+                    if !chunk_text.is_empty() {
+                        full_text.push_str(&chunk_text);
+
+                        let mut state = STATE.lock();
+                        if state.request_generation != generation {
+                            return Err("Cancelled".into());
+                        }
+                        state.streaming_response.push_str(&chunk_text);
+                    }
+                }
+            }
+        }
+    }
+
+    if full_text.is_empty() {
         Err("Empty response from API.".into())
     } else {
-        Ok(text)
+        Ok(full_text)
     }
 }

@@ -51,6 +51,17 @@ pub struct Config {
     pub overlay: OverlayConfig,
     #[serde(default)]
     pub capture: CaptureConfig,
+    #[serde(default)]
+    pub logging: LoggingConfig,
+    #[serde(default)]
+    pub games: Vec<GameEntry>,
+}
+
+#[derive(Deserialize, Clone)]
+pub struct GameEntry {
+    #[serde(default)]
+    pub name: Option<String>,
+    pub process: String,
 }
 
 #[derive(Deserialize, Clone)]
@@ -92,6 +103,16 @@ pub struct CaptureConfig {
     #[serde(default = "default_quality")]
     pub quality: u8,
 }
+
+#[derive(Deserialize, Clone)]
+pub struct LoggingConfig {
+    #[serde(default = "default_logging_enabled")]
+    pub enabled: bool,
+    /// Override log directory. Default: "logs/" next to the DLL.
+    pub directory: Option<String>,
+}
+
+fn default_logging_enabled() -> bool { true }
 
 fn default_model() -> String { "gemini-2.5-flash".into() }
 fn default_max_tokens() -> u32 { 1024 }
@@ -139,6 +160,15 @@ impl Default for CaptureConfig {
             enabled: default_capture_enabled(),
             max_width: default_max_width(),
             quality: default_quality(),
+        }
+    }
+}
+
+impl Default for LoggingConfig {
+    fn default() -> Self {
+        Self {
+            enabled: default_logging_enabled(),
+            directory: None,
         }
     }
 }

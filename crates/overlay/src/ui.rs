@@ -1,9 +1,6 @@
 use imgui::{Condition, StyleColor, Ui};
 
-use crate::api;
-use crate::capture;
 use crate::state::{ChatMessage, MessageRole, STATE};
-use crate::RUNTIME;
 
 const USER_COLOR: [f32; 4] = [0.4, 0.7, 1.0, 1.0]; // light blue
 const ASSISTANT_COLOR: [f32; 4] = [0.6, 1.0, 0.6, 1.0]; // light green
@@ -15,18 +12,24 @@ const REF_WIDTH: f32 = 1920.0;
 
 pub fn draw_panel(ui: &Ui) {
     // Snapshot state we need for drawing, then drop the lock.
-    let (messages_snapshot, is_loading, error_snapshot, attach_screenshot, input_snapshot) = {
+    let (messages_snapshot, is_loading, error_snapshot, attach_screenshot, input_snapshot, streaming_snapshot) = {
         let state = STATE.lock();
+        let is_loading = state.is_loading;
         (
             state
                 .messages
                 .iter()
                 .map(|m| (m.role, m.content.clone()))
                 .collect::<Vec<_>>(),
-            state.is_loading,
+            is_loading,
             state.error.clone(),
             state.attach_screenshot,
             state.input_buffer.clone(),
+            if is_loading {
+                state.streaming_response.clone()
+            } else {
+                String::new()
+            },
         )
     };
 
@@ -44,7 +47,7 @@ pub fn draw_panel(ui: &Ui) {
 
     let window_bg = ui.push_style_color(StyleColor::WindowBg, [0.08, 0.08, 0.10, 0.92]);
 
-    ui.window("Claude Game Companion")
+    ui.window("AI Game Companion")
         .position([margin, margin], Condition::FirstUseEver)
         .size([win_w, win_h], Condition::FirstUseEver)
         .build(|| {
@@ -69,6 +72,15 @@ pub fn draw_panel(ui: &Ui) {
                     ui.spacing();
                 }
 
+                // Show streaming response in progress
+                if is_loading && !streaming_snapshot.is_empty() {
+                    let _color = ui.push_style_color(StyleColor::Text, ASSISTANT_COLOR);
+                    ui.text_wrapped(format!("Sage: {streaming_snapshot}"));
+                    _color.pop();
+                    ui.spacing();
+                    ui.set_scroll_here_y_with_ratio(1.0);
+                }
+
                 // Auto-scroll to bottom when new content arrives
                 if ui.scroll_y() >= ui.scroll_max_y() - 20.0 {
                     ui.set_scroll_here_y_with_ratio(1.0);
@@ -91,8 +103,20 @@ pub fn draw_panel(ui: &Ui) {
                 // Show Cancel button instead of Send when loading
                 if ui.button_with_size("Cancel", [btn_w, input_h]) {
                     let mut state = STATE.lock();
+                    // Save partial response if any
+                    if !state.streaming_response.is_empty() {
+                        let partial = format!("{} [cancelled]", state.streaming_response);
+                        state.streaming_response.clear();
+                        state.messages.push(ChatMessage {
+                            role: MessageRole::Assistant,
+                            content: partial,
+                        });
+                    }
                     state.is_loading = false;
                     state.request_generation += 1; // invalidate in-flight request
+                    state.capture_pending = false;
+                    state.send_pending_capture = false;
+                    state.captured_screenshot = None;
                     state.error = Some("Cancelled.".into());
                 }
             } else {
@@ -116,6 +140,7 @@ pub fn draw_panel(ui: &Ui) {
                             state.is_loading = true;
                             state.error = None;
                             state.request_generation += 1;
+                            state.streaming_response.clear();
                             Some(state.request_generation)
                         } else {
                             None
@@ -126,44 +151,19 @@ pub fn draw_panel(ui: &Ui) {
                         // Clear local buffer so write-back doesn't overwrite the cleared state
                         input_buf.clear();
 
-                        // Clone conversation history for the async task
-                        let messages = STATE.lock().messages.clone();
-
-                        // Capture screenshot if requested
-                        let screenshot = if attach_screenshot {
-                            match capture::capture_screenshot() {
-                                Some(data) => Some(data),
-                                None => {
-                                    STATE.lock().error =
-                                        Some("Screenshot capture failed — sending text only.".into());
-                                    None
-                                }
-                            }
-                        } else {
-                            None
-                        };
-
-                        RUNTIME.spawn(async move {
-                            let result = api::send_message(messages, screenshot).await;
+                        if attach_screenshot {
+                            // Initiate hide-capture-show. The actual API call will be
+                            // triggered from lib.rs once capture completes.
                             let mut state = STATE.lock();
-                            // Only apply result if this request hasn't been cancelled
-                            if state.request_generation == gen {
-                                match result {
-                                    Ok(response) => {
-                                        state.messages.push(ChatMessage {
-                                            role: MessageRole::Assistant,
-                                            content: response,
-                                        });
-                                        state.is_loading = false;
-                                    }
-                                    Err(err) => {
-                                        state.error = Some(err);
-                                        state.is_loading = false;
-                                    }
-                                }
-                            }
-                            // If generation doesn't match, discard silently (was cancelled)
-                        });
+                            state.capture_pending = true;
+                            state.capture_wait_frames = 2;
+                            state.captured_screenshot = None;
+                            state.send_pending_capture = true;
+                        } else {
+                            // No screenshot -- spawn API call immediately
+                            let messages = STATE.lock().messages.clone();
+                            crate::spawn_api_request(gen, messages, None);
+                        }
                     }
                 }
             }
@@ -171,12 +171,13 @@ pub fn draw_panel(ui: &Ui) {
             let mut attach = attach_screenshot;
             ui.checkbox("Attach Screenshot", &mut attach);
             ui.same_line();
-            // Clear button — reset conversation
+            // Clear button -- reset conversation
             if ui.small_button("Clear Chat") {
                 let mut state = STATE.lock();
                 state.messages.clear();
                 state.error = None;
                 state.is_loading = false;
+                state.streaming_response.clear();
                 state.request_generation += 1; // cancel any in-flight request
             }
 
@@ -194,7 +195,7 @@ pub fn draw_panel(ui: &Ui) {
                 ui.text(format!("Error: {err}"));
                 _color.pop();
             } else if is_loading {
-                ui.text("Thinking...");
+                ui.text("Streaming...");
             } else {
                 ui.text("Ready");
             }
