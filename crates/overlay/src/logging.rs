@@ -63,7 +63,7 @@ pub fn log_exchange(user_msg: &str, assistant_msg: &str) {
 
     let mut file = match OpenOptions::new().append(true).open(path) {
         Ok(f) => f,
-        Err(_) => return, // Silently fail — logging should never crash the game
+        Err(_) => return, // Silently fail -- logging should never crash the game
     };
 
     let now = Local::now().format("%H:%M:%S");

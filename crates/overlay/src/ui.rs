@@ -14,17 +14,22 @@ pub fn draw_panel(ui: &Ui) {
     // Snapshot state we need for drawing, then drop the lock.
     let (messages_snapshot, is_loading, error_snapshot, attach_screenshot, input_snapshot, streaming_snapshot) = {
         let state = STATE.lock();
+        let is_loading = state.is_loading;
         (
             state
                 .messages
                 .iter()
                 .map(|m| (m.role, m.content.clone()))
                 .collect::<Vec<_>>(),
-            state.is_loading,
+            is_loading,
             state.error.clone(),
             state.attach_screenshot,
             state.input_buffer.clone(),
-            state.streaming_response.clone(),
+            if is_loading {
+                state.streaming_response.clone()
+            } else {
+                String::new()
+            },
         )
     };
 
@@ -42,7 +47,7 @@ pub fn draw_panel(ui: &Ui) {
 
     let window_bg = ui.push_style_color(StyleColor::WindowBg, [0.08, 0.08, 0.10, 0.92]);
 
-    ui.window("Claude Game Companion")
+    ui.window("AI Game Companion")
         .position([margin, margin], Condition::FirstUseEver)
         .size([win_w, win_h], Condition::FirstUseEver)
         .build(|| {
@@ -155,7 +160,7 @@ pub fn draw_panel(ui: &Ui) {
                             state.captured_screenshot = None;
                             state.send_pending_capture = true;
                         } else {
-                            // No screenshot — spawn API call immediately
+                            // No screenshot -- spawn API call immediately
                             let messages = STATE.lock().messages.clone();
                             crate::spawn_api_request(gen, messages, None);
                         }
@@ -166,7 +171,7 @@ pub fn draw_panel(ui: &Ui) {
             let mut attach = attach_screenshot;
             ui.checkbox("Attach Screenshot", &mut attach);
             ui.same_line();
-            // Clear button — reset conversation
+            // Clear button -- reset conversation
             if ui.small_button("Clear Chat") {
                 let mut state = STATE.lock();
                 state.messages.clear();

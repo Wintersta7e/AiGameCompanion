@@ -14,7 +14,7 @@ use crate::config::CONFIG;
 
 /// Capture the foreground window via GDI BitBlt from the screen DC.
 /// Uses screen DC so DWM-composited DX12 content is captured correctly.
-/// Returns None on failure (non-fatal — caller sends text-only).
+/// Returns None on failure (non-fatal -- caller sends text-only).
 pub fn capture_screenshot() -> Option<String> {
     unsafe { capture_gdi() }
 }
@@ -41,7 +41,7 @@ unsafe fn capture_gdi() -> Option<String> {
     }
     let (width, height) = (width as u32, height as u32);
 
-    // Get the SCREEN DC (null HWND) — captures DWM-composited content including DX12
+    // Get the SCREEN DC (null HWND) -- captures DWM-composited content including DX12
     let hdc_screen = GetDC(HWND(0));
     if hdc_screen.is_invalid() {
         eprintln!("[companion] Screenshot failed: GetDC(screen) returned invalid handle");

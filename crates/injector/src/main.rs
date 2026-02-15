@@ -13,9 +13,9 @@ use windows::Win32::System::Diagnostics::ToolHelp::{
 };
 
 #[derive(Parser)]
-#[command(name = "injector", about = "AI Game Companion — DLL injector")]
+#[command(name = "injector", about = "AI Game Companion -- DLL injector")]
 struct Cli {
-    /// Target process name (e.g. "Game.exe") — one-shot inject
+    /// Target process name (e.g. "Game.exe") -- one-shot inject
     #[arg(short, long)]
     process: Option<String>,
 
@@ -46,8 +46,14 @@ struct Config {
 
 #[derive(Deserialize, Clone)]
 struct GameEntry {
-    name: String,
+    name: Option<String>,
     process: String,
+}
+
+impl GameEntry {
+    fn display_name(&self) -> &str {
+        self.name.as_deref().unwrap_or(&self.process)
+    }
 }
 
 fn load_config(cli_path: Option<&PathBuf>) -> Config {
@@ -204,10 +210,10 @@ fn inject_one_shot(process_name: &str, dll_path: PathBuf, timeout_secs: u64) -> 
 // --- Watch mode ---
 
 fn watch_mode(games: Vec<GameEntry>, dll_path: PathBuf) -> Result<()> {
-    println!("AI Game Companion — Injector");
+    println!("AI Game Companion -- Injector");
     println!("Watching for:");
     for game in &games {
-        println!("  - {} ({})", game.name, game.process);
+        println!("  - {} ({})", game.display_name(), game.process);
     }
     println!("Press Ctrl+C to stop.");
     println!();
@@ -246,7 +252,7 @@ fn watch_mode(games: Vec<GameEntry>, dll_path: PathBuf) -> Result<()> {
             let pid = active_injections.remove(&proc_lower).unwrap();
             injected_pids.remove(&pid);
             if let Some(game) = game_map.get(&proc_lower) {
-                println!("{} {} exited — will re-inject on next launch", timestamp(), game.name);
+                println!("{} {} exited -- will re-inject on next launch", timestamp(), game.display_name());
             }
         }
 
@@ -262,21 +268,21 @@ fn watch_mode(games: Vec<GameEntry>, dll_path: PathBuf) -> Result<()> {
             }
 
             let game = game_map[&proc_lower];
-            println!("{} Found {} (PID {}) — injecting...", timestamp(), game.name, proc_info.pid);
+            println!("{} Found {} (PID {}) -- injecting...", timestamp(), game.display_name(), proc_info.pid);
 
             match Process::by_name(&game.process) {
                 Ok(process) => match process.inject(dll_path.clone()) {
                     Ok(()) => {
-                        println!("{} Injected into {} (PID {})", timestamp(), game.name, proc_info.pid);
+                        println!("{} Injected into {} (PID {})", timestamp(), game.display_name(), proc_info.pid);
                         injected_pids.insert(proc_info.pid);
                         active_injections.insert(proc_lower, proc_info.pid);
                     }
                     Err(e) => {
-                        eprintln!("{} Failed to inject into {}: {e}", timestamp(), game.name);
+                        eprintln!("{} Failed to inject into {}: {e}", timestamp(), game.display_name());
                     }
                 },
                 Err(e) => {
-                    eprintln!("{} Failed to open {}: {e}", timestamp(), game.name);
+                    eprintln!("{} Failed to open {}: {e}", timestamp(), game.display_name());
                 }
             }
         }
