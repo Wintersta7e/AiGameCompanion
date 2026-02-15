@@ -24,6 +24,8 @@ pub struct AppState {
     /// Incremented on each send; async tasks compare against this before writing results.
     /// If the generation has changed (e.g. user cancelled), the task discards its result.
     pub request_generation: u64,
+    /// Accumulates text chunks during streaming. Rendered by UI while is_loading is true.
+    pub streaming_response: String,
     /// Detected game name, resolved once at init.
     pub game_name: Option<String>,
 }
