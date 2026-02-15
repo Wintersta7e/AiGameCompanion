@@ -1,10 +1,6 @@
 use imgui::{Condition, StyleColor, Ui};
 
-use crate::api;
-use crate::capture;
-use crate::logging;
 use crate::state::{ChatMessage, MessageRole, STATE};
-use crate::RUNTIME;
 
 const USER_COLOR: [f32; 4] = [0.4, 0.7, 1.0, 1.0]; // light blue
 const ASSISTANT_COLOR: [f32; 4] = [0.6, 1.0, 0.6, 1.0]; // light green
@@ -113,6 +109,9 @@ pub fn draw_panel(ui: &Ui) {
                     }
                     state.is_loading = false;
                     state.request_generation += 1; // invalidate in-flight request
+                    state.capture_pending = false;
+                    state.send_pending_capture = false;
+                    state.captured_screenshot = None;
                     state.error = Some("Cancelled.".into());
                 }
             } else {
@@ -147,59 +146,19 @@ pub fn draw_panel(ui: &Ui) {
                         // Clear local buffer so write-back doesn't overwrite the cleared state
                         input_buf.clear();
 
-                        // Clone conversation history for the async task
-                        let messages = STATE.lock().messages.clone();
-
-                        // Capture screenshot if requested
-                        let screenshot = if attach_screenshot {
-                            match capture::capture_screenshot() {
-                                Some(data) => Some(data),
-                                None => {
-                                    STATE.lock().error =
-                                        Some("Screenshot capture failed — sending text only.".into());
-                                    None
-                                }
-                            }
-                        } else {
-                            None
-                        };
-
-                        RUNTIME.spawn(async move {
-                            let result = api::send_message(messages, screenshot, gen).await;
+                        if attach_screenshot {
+                            // Initiate hide-capture-show. The actual API call will be
+                            // triggered from lib.rs once capture completes.
                             let mut state = STATE.lock();
-                            // Only apply result if this request hasn't been cancelled
-                            if state.request_generation == gen {
-                                match result {
-                                    Ok(response) => {
-                                        let last_user = state.messages.iter()
-                                            .rev()
-                                            .find(|m| m.role == MessageRole::User)
-                                            .map(|m| m.content.clone())
-                                            .unwrap_or_default();
-                                        state.messages.push(ChatMessage {
-                                            role: MessageRole::Assistant,
-                                            content: response.clone(),
-                                        });
-                                        state.streaming_response.clear();
-                                        state.is_loading = false;
-                                        logging::log_exchange(&last_user, &response);
-                                    }
-                                    Err(err) => {
-                                        // If we got partial content before error, keep it
-                                        if !state.streaming_response.is_empty() {
-                                            let partial = state.streaming_response.clone();
-                                            state.streaming_response.clear();
-                                            state.messages.push(ChatMessage {
-                                                role: MessageRole::Assistant,
-                                                content: partial,
-                                            });
-                                        }
-                                        state.error = Some(err);
-                                        state.is_loading = false;
-                                    }
-                                }
-                            }
-                        });
+                            state.capture_pending = true;
+                            state.capture_wait_frames = 2;
+                            state.captured_screenshot = None;
+                            state.send_pending_capture = true;
+                        } else {
+                            // No screenshot — spawn API call immediately
+                            let messages = STATE.lock().messages.clone();
+                            crate::spawn_api_request(gen, messages, None);
+                        }
                     }
                 }
             }
