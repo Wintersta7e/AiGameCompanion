@@ -14,6 +14,7 @@ AI Game Companion is a lightweight DX12/DX11 overlay that hooks into a game's re
 - **Zero alt-tab** -- the overlay renders inside the game
 - **Screenshot vision** -- attach the current game frame and Sage will analyze it
 - **Streaming responses** -- answers appear word-by-word as they're generated
+- **Screen translation** -- press F10 to translate foreign text in JRPGs, untranslated games, etc.
 - **Completely free** -- Gemini free tier (~250 requests/day)
 
 ## Features
@@ -31,6 +32,7 @@ AI Game Companion is a lightweight DX12/DX11 overlay that hooks into a game's re
 - **Streaming responses** -- SSE streaming with live word-by-word display
 - **Cancel & clear** -- cancel in-flight requests or clear the conversation
 - **Conversation logging** -- session transcripts saved to timestamped files in `logs/`
+- **Real-time translation** -- press F10 to capture the screen and translate all foreign text (configurable hotkey and target language)
 
 ### Screenshot Capture
 - **Attach screenshots** with one click -- current game frame sent as context to Gemini
@@ -62,7 +64,7 @@ AI Game Companion is a lightweight DX12/DX11 overlay that hooks into a game's re
    .\injector.exe
    ```
 
-4. **Use** -- Press **F9** in-game to toggle the companion panel. Type your question, optionally check "Attach Screenshot", and press Send (or Enter).
+4. **Use** -- Press **F9** in-game to toggle the companion panel. Type your question, optionally check "Attach Screenshot", and press Send (or Enter). Press **F10** to instantly translate foreign text on screen.
 
 ## Configuration Reference
 
@@ -82,6 +84,7 @@ width = 500                 # Initial panel width (scales with display)
 height = 400                # Initial panel height (scales with display)
 opacity = 0.85              # Panel background opacity
 font_size = 16              # Base font size in pixels (scales with display)
+translate_hotkey = "F10"    # Hotkey for screen translation
 
 [capture]
 enabled = true              # Allow screenshot capture
@@ -91,6 +94,10 @@ quality = 85                # PNG compression quality
 [logging]
 enabled = true              # Save conversation transcripts
 # directory = "C:\\custom\\log\\path"  # Defaults to logs/ next to the DLL
+
+[translation]
+enabled = true              # Enable screen translation hotkey
+target_language = "English" # Translate foreign text to this language
 
 # Watch mode: injector auto-injects when these games are running
 # [[games]]
@@ -127,7 +134,7 @@ With no flags: enters watch mode using [[games]] from config.toml
 │   │   ├── ui.rs                  # ImGui panel, DPI scaling, streaming display
 │   │   ├── api.rs                 # Gemini SSE streaming client, Google Search grounding
 │   │   ├── capture.rs             # Screen DC screenshot -> PNG -> base64
-│   │   ├── config.rs              # TOML config, GraphicsApi, GameEntry, LoggingConfig
+│   │   ├── config.rs              # TOML config, GraphicsApi, GameEntry, TranslationConfig
 │   │   ├── game_detect.rs         # 3-tier game name detection
 │   │   ├── logging.rs             # Session transcript logging
 │   │   └── state.rs               # AppState (parking_lot::Mutex), streaming/capture flags
@@ -211,12 +218,11 @@ cargo xwin build --target x86_64-pc-windows-msvc
 
 ## Roadmap
 
-**v0.4 -- Quality of Life**
-- Game profile system (per-game system prompts)
-- Quick screenshot + predefined question hotkey
-- Adjustable panel position/size (drag to reposition)
-- Opacity/transparency slider
-- Font size configuration
+**v0.4 -- In Progress**
+- Quick-ask hotkey (one-button screenshot + predefined question)
+- Per-game profiles + personality modes
+- Voice I/O (speech-to-text input, text-to-speech output)
+- Region-select translation (draw a box to translate specific text)
 
 ## Contributing
 
