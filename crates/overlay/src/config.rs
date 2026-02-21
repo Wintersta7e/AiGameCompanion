@@ -145,12 +145,46 @@ pub struct LoggingConfig {
     pub directory: Option<String>,
 }
 
+/// Which backend to use for translation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum TranslationProvider {
+    Gemini,
+    Local,
+}
+
+fn default_translation_provider() -> TranslationProvider { TranslationProvider::Gemini }
+
+#[derive(Deserialize, Clone)]
+pub struct LocalModelConfig {
+    #[serde(default = "default_local_endpoint")]
+    pub endpoint: String,
+    #[serde(default = "default_local_model")]
+    pub model: String,
+}
+
+fn default_local_endpoint() -> String { "http://localhost:11434/v1/chat/completions".into() }
+fn default_local_model() -> String { "minicpm-v".into() }
+
+impl Default for LocalModelConfig {
+    fn default() -> Self {
+        Self {
+            endpoint: default_local_endpoint(),
+            model: default_local_model(),
+        }
+    }
+}
+
 #[derive(Deserialize, Clone)]
 pub struct TranslationConfig {
     #[serde(default = "default_translation_enabled")]
     pub enabled: bool,
     #[serde(default = "default_target_language")]
     pub target_language: String,
+    #[serde(default = "default_translation_provider")]
+    pub provider: TranslationProvider,
+    #[serde(default)]
+    pub local: LocalModelConfig,
 }
 
 fn default_translation_enabled() -> bool { true }
@@ -161,6 +195,8 @@ impl Default for TranslationConfig {
         Self {
             enabled: default_translation_enabled(),
             target_language: default_target_language(),
+            provider: default_translation_provider(),
+            local: LocalModelConfig::default(),
         }
     }
 }
