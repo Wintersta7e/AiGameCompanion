@@ -9,6 +9,7 @@ key = "your-gemini-api-key-here"
 model = "gemini-2.5-flash"
 max_tokens = 1024
 system_prompt = "You are a helpful game companion. Be concise and direct. When you see a screenshot, describe what you observe and provide actionable advice."
+safety_filter = "off"       # Safety filter level: off, block_high, block_medium, block_low
 
 [overlay]
 # graphics_api = "dx11"  # Force a specific API (auto-detects if omitted). Options: dx12, dx11, dx9, opengl
@@ -17,6 +18,7 @@ width = 500
 height = 400
 opacity = 0.85
 font_size = 16
+translate_hotkey = "F10"
 
 [capture]
 enabled = true
@@ -26,6 +28,17 @@ quality = 85
 [logging]
 enabled = true
 # directory = "C:\\custom\\log\\path"  # Defaults to logs/ next to the DLL
+
+[translation]
+enabled = true
+target_language = "English"
+provider = "gemini"          # "gemini" or "local"
+
+# Local model settings (used when provider = "local")
+# Works with Ollama, LM Studio, vLLM, or any OpenAI-compatible API
+[translation.local]
+endpoint = "http://localhost:11434/v1/chat/completions"
+model = "minicpm-v"
 
 # Game list for auto-inject watch mode.
 # Run injector.exe with no flags to watch for these games and auto-inject.
