@@ -20,7 +20,7 @@ use once_cell::sync::Lazy;
 use tokio::runtime::Runtime;
 use tracing::info;
 
-use crate::config::{GraphicsApi, DLL_HINSTANCE, CONFIG};
+use crate::config::{GraphicsApi, DLL_HINSTANCE, CONFIG, parse_vk_code};
 use crate::state::{ChatMessage, MessageRole, STATE};
 
 /// Set to true once render() is called, confirming hooks are active.
@@ -130,6 +130,7 @@ fn detect_graphics_api() -> Option<GraphicsApi> {
 
 struct CompanionRenderLoop {
     f9_was_pressed: bool,
+    translate_was_pressed: bool,
     logged_first_render: bool,
 }
 
@@ -137,6 +138,7 @@ impl CompanionRenderLoop {
     fn new() -> Self {
         Self {
             f9_was_pressed: false,
+            translate_was_pressed: false,
             logged_first_render: false,
         }
     }
@@ -183,6 +185,37 @@ impl ImguiRenderLoop for CompanionRenderLoop {
         }
         self.f9_was_pressed = f9_pressed;
 
+        // --- Translate hotkey (F10 default) with rising-edge debounce ---
+        if CONFIG.translation.enabled {
+            if let Some(vk) = parse_vk_code(&CONFIG.overlay.translate_hotkey) {
+                let translate_pressed = unsafe { GetAsyncKeyState(vk) } & (1 << 15) != 0;
+                if translate_pressed && !self.translate_was_pressed {
+                    let mut state = STATE.lock();
+                    // Only trigger if not already loading
+                    if !state.is_loading {
+                        // Auto-insert user message
+                        state.messages.push(ChatMessage {
+                            role: MessageRole::User,
+                            content: "[Translate screen]".into(),
+                        });
+                        state.is_loading = true;
+                        state.error = None;
+                        state.request_generation += 1;
+                        state.streaming_response.clear();
+                        // Trigger hide-capture-show
+                        state.capture_pending = true;
+                        state.capture_wait_frames = 2;
+                        state.captured_screenshot = None;
+                        state.send_pending_capture = true;
+                        state.translate_pending = true;
+                        // Make overlay visible so user sees the response
+                        state.visible = true;
+                    }
+                }
+                self.translate_was_pressed = translate_pressed;
+            }
+        }
+
         // --- Hide-capture-show ---
         {
             let mut state = STATE.lock();
@@ -203,15 +236,32 @@ impl ImguiRenderLoop for CompanionRenderLoop {
             // Check if we need to spawn an API call after capture completed
             if state.send_pending_capture && !state.capture_pending {
                 state.send_pending_capture = false;
-                let messages = state.messages.clone();
+                let is_translate = state.translate_pending;
+                state.translate_pending = false;
+                let mut messages = state.messages.clone();
                 let screenshot = state.captured_screenshot.take();
                 let gen = state.request_generation;
 
                 if screenshot.is_none() {
                     state.error = Some("Screenshot capture failed -- sending text only.".into());
                 }
-                drop(state);
 
+                // For translation, replace the "[Translate screen]" placeholder
+                // with the actual translation prompt that Gemini will receive.
+                if is_translate {
+                    if let Some(last) = messages.last_mut() {
+                        if last.role == MessageRole::User {
+                            last.content = format!(
+                                "Translate all foreign/non-English text visible on screen to {}. \
+                                 If no foreign text is visible, say so briefly. \
+                                 Be concise -- just provide the translations, grouped logically.",
+                                CONFIG.translation.target_language
+                            );
+                        }
+                    }
+                }
+
+                drop(state);
                 spawn_api_request(gen, messages, screenshot);
             }
         }

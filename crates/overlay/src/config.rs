@@ -54,7 +54,6 @@ pub struct Config {
     #[serde(default)]
     pub logging: LoggingConfig,
     #[serde(default)]
-    #[allow(dead_code)]
     pub translation: TranslationConfig,
     #[serde(default)]
     pub games: Vec<GameEntry>,
@@ -118,7 +117,6 @@ pub struct LoggingConfig {
 }
 
 #[derive(Deserialize, Clone)]
-#[allow(dead_code)]
 pub struct TranslationConfig {
     #[serde(default = "default_translation_enabled")]
     pub enabled: bool,
@@ -202,7 +200,6 @@ impl Default for LoggingConfig {
 }
 
 /// Parse a hotkey string (e.g. "F9", "F10") into a Windows virtual key code.
-#[allow(dead_code)]
 pub fn parse_vk_code(hotkey: &str) -> Option<i32> {
     match hotkey.to_uppercase().as_str() {
         "F1" => Some(0x70),
