@@ -17,6 +17,7 @@ width = 500
 height = 400
 opacity = 0.85
 font_size = 16
+translate_hotkey = "F10"
 
 [capture]
 enabled = true
@@ -26,6 +27,10 @@ quality = 85
 [logging]
 enabled = true
 # directory = "C:\\custom\\log\\path"  # Defaults to logs/ next to the DLL
+
+[translation]
+enabled = true
+target_language = "English"
 
 # Game list for auto-inject watch mode.
 # Run injector.exe with no flags to watch for these games and auto-inject.
