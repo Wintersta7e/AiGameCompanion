@@ -9,6 +9,7 @@ key = "your-gemini-api-key-here"
 model = "gemini-2.5-flash"
 max_tokens = 1024
 system_prompt = "You are a helpful game companion. Be concise and direct. When you see a screenshot, describe what you observe and provide actionable advice."
+safety_filter = "off"       # Safety filter level: off, block_high, block_medium, block_low
 
 [overlay]
 # graphics_api = "dx11"  # Force a specific API (auto-detects if omitted). Options: dx12, dx11, dx9, opengl

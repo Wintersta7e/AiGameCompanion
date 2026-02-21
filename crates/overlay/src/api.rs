@@ -28,6 +28,14 @@ struct GeminiRequest {
     contents: Vec<Content>,
     generation_config: GenerationConfig,
     tools: Vec<Tool>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    safety_settings: Vec<SafetySetting>,
+}
+
+#[derive(Serialize)]
+struct SafetySetting {
+    category: &'static str,
+    threshold: &'static str,
 }
 
 #[derive(Serialize)]
@@ -174,6 +182,21 @@ pub async fn send_message(
         })
     };
 
+    // Build safety settings from config.
+    use crate::config::SafetyFilter;
+    let safety_settings = if config.safety_filter != SafetyFilter::BlockMedium {
+        let threshold = config.safety_filter.as_api_str();
+        vec![
+            SafetySetting { category: "HARM_CATEGORY_HARASSMENT", threshold },
+            SafetySetting { category: "HARM_CATEGORY_HATE_SPEECH", threshold },
+            SafetySetting { category: "HARM_CATEGORY_SEXUALLY_EXPLICIT", threshold },
+            SafetySetting { category: "HARM_CATEGORY_DANGEROUS_CONTENT", threshold },
+        ]
+    } else {
+        // BlockMedium is the API default -- omit to reduce payload
+        vec![]
+    };
+
     let request = GeminiRequest {
         system_instruction,
         contents,
@@ -183,6 +206,7 @@ pub async fn send_message(
         tools: vec![Tool {
             google_search: GoogleSearch {},
         }],
+        safety_settings,
     };
 
     let url = format!(

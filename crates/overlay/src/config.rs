@@ -66,6 +66,33 @@ pub struct GameEntry {
     pub process: String,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SafetyFilter {
+    /// Block nothing (BLOCK_NONE) -- least restrictive
+    Off,
+    /// Block only high-probability harmful content
+    BlockHigh,
+    /// Block medium and above (Gemini default for older models)
+    BlockMedium,
+    /// Block low and above -- most restrictive
+    BlockLow,
+}
+
+impl SafetyFilter {
+    /// Returns the Gemini API threshold string.
+    pub fn as_api_str(self) -> &'static str {
+        match self {
+            Self::Off => "BLOCK_NONE",
+            Self::BlockHigh => "BLOCK_ONLY_HIGH",
+            Self::BlockMedium => "BLOCK_MEDIUM_AND_ABOVE",
+            Self::BlockLow => "BLOCK_LOW_AND_ABOVE",
+        }
+    }
+}
+
+fn default_safety_filter() -> SafetyFilter { SafetyFilter::Off }
+
 #[derive(Deserialize, Clone)]
 pub struct ApiConfig {
     #[serde(default)]
@@ -76,6 +103,8 @@ pub struct ApiConfig {
     pub max_tokens: u32,
     #[serde(default = "default_system_prompt")]
     pub system_prompt: String,
+    #[serde(default = "default_safety_filter")]
+    pub safety_filter: SafetyFilter,
 }
 
 #[derive(Deserialize, Clone)]
@@ -162,6 +191,7 @@ impl Default for ApiConfig {
             model: default_model(),
             max_tokens: default_max_tokens(),
             system_prompt: default_system_prompt(),
+            safety_filter: default_safety_filter(),
         }
     }
 }
