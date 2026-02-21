@@ -4,6 +4,7 @@ mod config;
 mod game_detect;
 mod logging;
 mod state;
+mod translation;
 mod ui;
 
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -238,7 +239,7 @@ impl ImguiRenderLoop for CompanionRenderLoop {
                 state.send_pending_capture = false;
                 let is_translate = state.translate_pending;
                 state.translate_pending = false;
-                let mut messages = state.messages.clone();
+                let messages = state.messages.clone();
                 let screenshot = state.captured_screenshot.take();
                 let gen = state.request_generation;
 
@@ -246,23 +247,13 @@ impl ImguiRenderLoop for CompanionRenderLoop {
                     state.error = Some("Screenshot capture failed -- sending text only.".into());
                 }
 
-                // For translation, replace the "[Translate screen]" placeholder
-                // with the actual translation prompt that Gemini will receive.
-                if is_translate {
-                    if let Some(last) = messages.last_mut() {
-                        if last.role == MessageRole::User {
-                            last.content = format!(
-                                "Translate all foreign/non-English text visible on screen to {}. \
-                                 If no foreign text is visible, say so briefly. \
-                                 Be concise -- just provide the translations, grouped logically.",
-                                CONFIG.translation.target_language
-                            );
-                        }
-                    }
-                }
-
                 drop(state);
-                spawn_api_request(gen, messages, screenshot);
+
+                if is_translate {
+                    translation::spawn_translate_request(gen, messages, screenshot);
+                } else {
+                    spawn_api_request(gen, messages, screenshot);
+                }
             }
         }
 
