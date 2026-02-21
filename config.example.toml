@@ -32,6 +32,13 @@ enabled = true
 [translation]
 enabled = true
 target_language = "English"
+provider = "gemini"          # "gemini" or "local"
+
+# Local model settings (used when provider = "local")
+# Works with Ollama, LM Studio, vLLM, or any OpenAI-compatible API
+[translation.local]
+endpoint = "http://localhost:11434/v1/chat/completions"
+model = "minicpm-v"
 
 # Game list for auto-inject watch mode.
 # Run injector.exe with no flags to watch for these games and auto-inject.
