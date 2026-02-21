@@ -37,6 +37,8 @@ pub struct AppState {
     pub captured_screenshot: Option<String>,
     /// If true, a send was initiated with screenshot; spawn API call after capture completes.
     pub send_pending_capture: bool,
+    /// If true, the pending capture is for translation (not a normal screenshot send).
+    pub translate_pending: bool,
 }
 
 pub static STATE: Lazy<Mutex<AppState>> = Lazy::new(|| Mutex::new(AppState::default()));
