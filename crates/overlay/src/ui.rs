@@ -116,6 +116,7 @@ pub fn draw_panel(ui: &Ui) {
                     state.request_generation += 1; // invalidate in-flight request
                     state.capture_pending = false;
                     state.send_pending_capture = false;
+                    state.translate_pending = false;
                     state.captured_screenshot = None;
                     state.error = Some("Cancelled.".into());
                 }
