@@ -33,6 +33,8 @@ AI Game Companion is a lightweight DX12/DX11 overlay that hooks into a game's re
 - **Cancel & clear** -- cancel in-flight requests or clear the conversation
 - **Conversation logging** -- session transcripts saved to timestamped files in `logs/`
 - **Real-time translation** -- press F10 to capture the screen and translate all foreign text (configurable hotkey and target language)
+- **Local/offline translation** -- use a local vision model (Ollama, LM Studio) instead of Gemini for fully private, unrestricted translation
+- **Configurable safety filter** -- adjust Gemini's content filtering level to suit your needs
 
 ### Screenshot Capture
 - **Attach screenshots** with one click -- current game frame sent as context to Gemini
@@ -76,6 +78,7 @@ key = ""                    # Gemini API key (required, free from aistudio.googl
 model = "gemini-2.5-flash"  # Model to use
 max_tokens = 1024           # Max response length
 system_prompt = "You are a helpful game companion. Be concise and direct."
+safety_filter = "off"       # off, block_high, block_medium, block_low
 
 [overlay]
 # graphics_api = "dx11"     # Force a specific API (auto-detects if omitted)
@@ -98,6 +101,12 @@ enabled = true              # Save conversation transcripts
 [translation]
 enabled = true              # Enable screen translation hotkey
 target_language = "English" # Translate foreign text to this language
+provider = "gemini"         # "gemini" (cloud) or "local" (Ollama/LM Studio)
+
+# Local model settings (used when provider = "local")
+[translation.local]
+endpoint = "http://localhost:11434/v1/chat/completions"
+model = "minicpm-v"         # Any vision model supported by your backend
 
 # Watch mode: injector auto-injects when these games are running
 # [[games]]
@@ -135,6 +144,7 @@ With no flags: enters watch mode using [[games]] from config.toml
 │   │   ├── api.rs                 # Gemini SSE streaming client, Google Search grounding
 │   │   ├── capture.rs             # Screen DC screenshot -> PNG -> base64
 │   │   ├── config.rs              # TOML config, GraphicsApi, GameEntry, TranslationConfig
+│   │   ├── translation.rs         # Translation dispatch (Gemini or local vision model)
 │   │   ├── game_detect.rs         # 3-tier game name detection
 │   │   ├── logging.rs             # Session transcript logging
 │   │   └── state.rs               # AppState (parking_lot::Mutex), streaming/capture flags
@@ -208,6 +218,60 @@ cargo xwin build --target x86_64-pc-windows-msvc
 **Game crashes on injection**
 - Anti-cheat software may cause crashes -- try a single-player game first
 - Borderless windowed mode is more stable than exclusive fullscreen
+
+## Local Translation Setup
+
+By default, the F10 translation hotkey uses Google Gemini. If you prefer fully offline, private, or unrestricted translation, you can use a local vision model instead.
+
+### 1. Install Ollama
+
+Download and install [Ollama for Windows](https://ollama.com/download/windows). After installation, Ollama runs automatically in the background.
+
+Alternatively, you can use [LM Studio](https://lmstudio.ai) or any backend that exposes an OpenAI-compatible `/v1/chat/completions` endpoint with vision support.
+
+### 2. Pull a Vision Model
+
+Open a terminal and pull a vision-capable model:
+
+```
+ollama pull minicpm-v
+```
+
+**Recommended models:**
+
+| Model | Size | Notes |
+|-------|------|-------|
+| `minicpm-v` | ~5 GB | Best balance of speed and quality for OCR/translation |
+| `llama3.2-vision` | ~7 GB | Strong general vision model |
+| `llava` | ~5 GB | Lightweight, fast |
+
+### 3. Configure
+
+In your `config.toml`, set the translation provider to `local`:
+
+```toml
+[translation]
+provider = "local"
+
+[translation.local]
+endpoint = "http://localhost:11434/v1/chat/completions"
+model = "minicpm-v"
+```
+
+If you're using LM Studio instead of Ollama, change the endpoint:
+```toml
+endpoint = "http://localhost:1234/v1/chat/completions"
+model = "your-loaded-model-name"
+```
+
+### 4. Use
+
+Press **F10** in-game -- the overlay captures the screen and sends it to your local model for translation. No internet required, no content filtering, no rate limits.
+
+**Troubleshooting local translation:**
+- "Cannot connect to local model" -- make sure Ollama is running (`ollama serve` in a terminal)
+- "Local model timed out" -- vision models can be slow on CPU; a GPU with 6+ GB VRAM is recommended
+- Translation seems wrong -- try a different model (`llama3.2-vision` is more accurate but slower)
 
 ## Known Limitations
 
