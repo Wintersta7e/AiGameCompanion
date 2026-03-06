@@ -45,7 +45,7 @@ pub fn discover_steam_games() -> Vec<Game> {
     let steam_dir = match SteamDir::locate() {
         Ok(dir) => dir,
         Err(e) => {
-            eprintln!("Failed to locate Steam: {e}");
+            tracing::warn!("Failed to locate Steam: {e}");
             return Vec::new();
         }
     };
@@ -55,7 +55,7 @@ pub fn discover_steam_games() -> Vec<Game> {
     let libraries = match steam_dir.libraries() {
         Ok(iter) => iter,
         Err(e) => {
-            eprintln!("Failed to read Steam libraries: {e}");
+            tracing::warn!("Failed to read Steam libraries: {e}");
             return Vec::new();
         }
     };
@@ -66,16 +66,13 @@ pub fn discover_steam_games() -> Vec<Game> {
         let library = match library_result {
             Ok(lib) => lib,
             Err(e) => {
-                eprintln!("Failed to read Steam library: {e}");
+                tracing::warn!("Failed to read Steam library: {e}");
                 continue;
             }
         };
 
         for app_result in library.apps() {
-            let app = match app_result {
-                Ok(a) => a,
-                Err(_) => continue,
-            };
+            let Ok(app) = app_result else { continue };
 
             let name = match &app.name {
                 Some(n) if !n.is_empty() => n.clone(),
@@ -153,10 +150,7 @@ fn collect_exes(dir: &Path, out: &mut Vec<(PathBuf, u64)>, depth: u32) {
         return;
     }
 
-    let entries = match std::fs::read_dir(dir) {
-        Ok(e) => e,
-        Err(_) => return,
-    };
+    let Ok(entries) = std::fs::read_dir(dir) else { return };
 
     for entry in entries.flatten() {
         let path = entry.path();

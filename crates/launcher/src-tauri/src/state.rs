@@ -1,11 +1,15 @@
+use std::collections::HashMap;
 use std::path::PathBuf;
-use std::sync::Mutex;
+
+use parking_lot::Mutex;
+use tauri_plugin_shell::process::CommandChild;
 
 use crate::models::LauncherState;
 
 pub struct AppState {
     pub launcher: Mutex<LauncherState>,
     pub state_path: PathBuf,
+    pub active_injectors: Mutex<HashMap<String, CommandChild>>,
 }
 
 impl AppState {
@@ -21,12 +25,17 @@ impl AppState {
         Self {
             launcher: Mutex::new(launcher),
             state_path,
+            active_injectors: Mutex::new(HashMap::new()),
         }
     }
 
     pub fn save(&self) -> Result<(), String> {
-        let state = self.launcher.lock().map_err(|e| e.to_string())?;
-        let json = serde_json::to_string_pretty(&*state).map_err(|e| e.to_string())?;
-        std::fs::write(&self.state_path, json).map_err(|e| e.to_string())
+        // Clone state and drop lock before file I/O
+        let state = self.launcher.lock().clone();
+        let json = serde_json::to_string_pretty(&state).map_err(|e| e.to_string())?;
+        // Atomic write: write to temp file, then rename
+        let tmp_path = self.state_path.with_extension("json.tmp");
+        std::fs::write(&tmp_path, json).map_err(|e| e.to_string())?;
+        std::fs::rename(&tmp_path, &self.state_path).map_err(|e| e.to_string())
     }
 }

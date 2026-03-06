@@ -11,6 +11,7 @@ pub enum GameSource {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
+#[allow(dead_code)]
 pub enum GameStatus {
     Ready,
     Launching,
@@ -50,17 +51,8 @@ impl Default for LauncherSettings {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct LauncherState {
     pub games: Vec<Game>,
     pub settings: LauncherSettings,
-}
-
-impl Default for LauncherState {
-    fn default() -> Self {
-        Self {
-            games: Vec::new(),
-            settings: LauncherSettings::default(),
-        }
-    }
 }
