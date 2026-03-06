@@ -9,16 +9,6 @@ pub enum GameSource {
     Manual,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-#[allow(dead_code)]
-pub enum GameStatus {
-    Ready,
-    Launching,
-    Running,
-    Injected,
-}
-
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Game {
     pub id: String,

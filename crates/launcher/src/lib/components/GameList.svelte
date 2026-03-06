@@ -93,12 +93,4 @@
     {/if}
   </div>
 
-  <!-- Add game button -->
-  <button
-    disabled
-    title="Coming soon"
-    class="m-2 py-2.5 px-3 border border-dashed border-border-subtle rounded-[10px] bg-transparent text-text-muted font-display text-[0.8rem] font-semibold tracking-wide uppercase transition-all duration-150 text-center opacity-50 cursor-not-allowed"
-  >
-    + Add Game
-  </button>
 </aside>

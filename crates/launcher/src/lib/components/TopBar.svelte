@@ -1,6 +1,7 @@
 <script lang="ts">
   import { getCurrentWindow } from "@tauri-apps/api/window";
   import { getSearchQuery, setSearchQuery } from "../stores/games.svelte";
+  import appIcon from "../assets/icon-32.png";
 
   let { onOpenSettings }: { onOpenSettings: () => void } = $props();
 
@@ -39,12 +40,12 @@
 >
   <!-- Left: Logo + Title -->
   <div class="flex items-center gap-3.5">
-    <div
-      class="w-8 h-8 rounded-lg flex items-center justify-center font-display font-bold text-base text-white"
-      style="background: linear-gradient(135deg, #638cff 0%, #a855f7 100%); box-shadow: 0 0 16px rgba(99, 140, 255, 0.3);"
-    >
-      S
-    </div>
+    <img
+      src={appIcon}
+      alt="AI Game Companion"
+      class="w-8 h-8 rounded-lg"
+      style="box-shadow: 0 0 16px rgba(99, 140, 255, 0.3);"
+    />
     <span
       class="font-display text-xl font-semibold tracking-wider uppercase"
       style="background: linear-gradient(135deg, #638cff 0%, #a855f7 100%); -webkit-background-clip: text; -webkit-text-fill-color: transparent; background-clip: text;"

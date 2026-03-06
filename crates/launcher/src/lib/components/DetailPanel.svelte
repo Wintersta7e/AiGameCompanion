@@ -86,9 +86,11 @@
         />
       {:else}
         <div
-          class="w-full h-full"
+          class="w-full h-full flex items-center justify-center"
           style="background: linear-gradient(135deg, rgba(99, 140, 255, 0.15) 0%, rgba(168, 85, 247, 0.15) 50%, rgba(10, 12, 20, 1) 100%);"
-        ></div>
+        >
+          <span class="font-display text-[6rem] font-bold text-white/10">{game.name.charAt(0).toUpperCase()}</span>
+        </div>
       {/if}
       <!-- Gradient overlay -->
       <div
@@ -195,70 +197,52 @@
           style="backdrop-filter: blur(10px);"
         >
           <div class="text-[0.68rem] font-semibold text-text-muted uppercase tracking-[1.2px] mb-1.5">
-            Graphics API
+            Source ID
           </div>
           <div class="font-display text-base font-semibold text-text-primary">
-            Auto
+            {game.source_id ?? "N/A"}
           </div>
         </div>
       </div>
 
-      <!-- Companion Settings -->
+      <!-- Game Details -->
       <div class="animate-fade-up" style="animation-delay: 0.3s;">
         <div
           class="font-display text-[0.8rem] font-bold text-text-muted uppercase tracking-[1.5px] mb-3 pb-2 border-b border-border-subtle"
         >
-          Companion Settings
+          Game Details
         </div>
         <div class="flex flex-col gap-2.5">
-          <div
-            class="flex items-center justify-between py-2.5 px-3.5 border border-border-subtle rounded-md"
-            style="background: rgba(255, 255, 255, 0.02);"
-          >
-            <span class="text-[0.85rem] text-text-secondary">Overlay Hotkey</span>
-            <span
-              class="font-mono text-[0.78rem] text-accent py-[3px] px-2.5 rounded"
-              style="background: rgba(99, 140, 255, 0.08);"
+          {#if game.exe_name}
+            <div
+              class="flex items-center justify-between py-2.5 px-3.5 border border-border-subtle rounded-md"
+              style="background: rgba(255, 255, 255, 0.02);"
             >
-              F9
-            </span>
-          </div>
-          <div
-            class="flex items-center justify-between py-2.5 px-3.5 border border-border-subtle rounded-md"
-            style="background: rgba(255, 255, 255, 0.02);"
-          >
-            <span class="text-[0.85rem] text-text-secondary">Translate Hotkey</span>
-            <span
-              class="font-mono text-[0.78rem] text-accent py-[3px] px-2.5 rounded"
-              style="background: rgba(99, 140, 255, 0.08);"
+              <span class="text-[0.85rem] text-text-secondary">Executable</span>
+              <span
+                class="font-mono text-[0.78rem] text-accent py-[3px] px-2.5 rounded truncate max-w-[250px]"
+                style="background: rgba(99, 140, 255, 0.08);"
+                title={game.exe_name}
+              >
+                {game.exe_name}
+              </span>
+            </div>
+          {/if}
+          {#if game.install_dir}
+            <div
+              class="flex items-center justify-between py-2.5 px-3.5 border border-border-subtle rounded-md"
+              style="background: rgba(255, 255, 255, 0.02);"
             >
-              F10
-            </span>
-          </div>
-          <div
-            class="flex items-center justify-between py-2.5 px-3.5 border border-border-subtle rounded-md"
-            style="background: rgba(255, 255, 255, 0.02);"
-          >
-            <span class="text-[0.85rem] text-text-secondary">AI Model</span>
-            <span
-              class="font-mono text-[0.78rem] text-accent py-[3px] px-2.5 rounded"
-              style="background: rgba(99, 140, 255, 0.08);"
-            >
-              gemini-2.5-flash
-            </span>
-          </div>
-          <div
-            class="flex items-center justify-between py-2.5 px-3.5 border border-border-subtle rounded-md"
-            style="background: rgba(255, 255, 255, 0.02);"
-          >
-            <span class="text-[0.85rem] text-text-secondary">Translation</span>
-            <span
-              class="font-mono text-[0.78rem] text-accent py-[3px] px-2.5 rounded"
-              style="background: rgba(99, 140, 255, 0.08);"
-            >
-              Gemini -- English
-            </span>
-          </div>
+              <span class="text-[0.85rem] text-text-secondary shrink-0 mr-3">Install Path</span>
+              <span
+                class="font-mono text-[0.78rem] text-accent py-[3px] px-2.5 rounded truncate max-w-[300px]"
+                style="background: rgba(99, 140, 255, 0.08);"
+                title={game.install_dir}
+              >
+                {game.install_dir}
+              </span>
+            </div>
+          {/if}
         </div>
       </div>
     </div>

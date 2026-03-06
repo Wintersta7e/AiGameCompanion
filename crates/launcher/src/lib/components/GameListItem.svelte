@@ -76,9 +76,11 @@
       />
     {:else}
       <div
-        class="w-full h-full"
-        style="background: linear-gradient(135deg, rgba(99, 140, 255, 0.2) 0%, rgba(168, 85, 247, 0.2) 100%);"
-      ></div>
+        class="w-full h-full flex items-center justify-center font-display font-bold text-[0.9rem] text-white/70"
+        style="background: linear-gradient(135deg, {sourceColors[game.source] ?? '#638cff'}33 0%, {sourceColors[game.source] ?? '#a855f7'}33 100%);"
+      >
+        {game.name.charAt(0).toUpperCase()}
+      </div>
     {/if}
   </div>
 
