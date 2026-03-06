@@ -1,6 +1,24 @@
 <script lang="ts">
+  import TopBar from "./lib/components/TopBar.svelte";
+  import StatusBar from "./lib/components/StatusBar.svelte";
+  import GameList from "./lib/components/GameList.svelte";
+  import DetailPanel from "./lib/components/DetailPanel.svelte";
+  import Background from "./lib/components/Background.svelte";
+  import { scanGames, getGames } from "./lib/stores/games.svelte";
+
+  $effect(() => {
+    scanGames();
+  });
+
+  let games = $derived(getGames());
 </script>
 
-<div class="flex flex-col h-screen bg-[#0a0c14] text-[#e8ecf4]">
-  <p class="p-6 text-center">AI Game Companion Launcher</p>
+<Background />
+<div class="relative z-10 flex flex-col h-screen">
+  <TopBar />
+  <main class="flex flex-1 overflow-hidden">
+    <GameList />
+    <DetailPanel />
+  </main>
+  <StatusBar gameCount={games.length} />
 </div>
