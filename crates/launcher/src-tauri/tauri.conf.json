@@ -21,19 +21,24 @@
       }
     ],
     "security": {
-      "csp": null,
+      "csp": "default-src 'self'; img-src 'self' asset: https://asset.localhost; style-src 'self' 'unsafe-inline'; script-src 'self'; connect-src ipc: http://ipc.localhost",
       "assetProtocol": {
         "enable": true,
         "scope": {
-          "allow": ["**/*"],
-          "deny": []
+          "allow": [
+            "C:\\Program Files (x86)\\Steam\\appcache\\librarycache\\*",
+            "C:\\Program Files\\Steam\\appcache\\librarycache\\*",
+            "$HOME/.steam/steam/appcache/librarycache/*",
+            "$HOME/.local/share/Steam/appcache/librarycache/*"
+          ],
+          "deny": ["**/*.toml", "**/*.key", "**/*.pem", "**/*.env"]
         }
       }
     }
   },
   "bundle": {
     "active": true,
-    "targets": "all",
+    "targets": ["nsis", "msi"],
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",
@@ -49,7 +54,7 @@
         {
           "name": "../../../target/x86_64-pc-windows-msvc/release/injector",
           "sidecar": true,
-          "args": true
+          "args": ["--process", { "validator": "^[\\w.-]+\\.exe$" }, "--timeout", { "validator": "^\\d{1,3}$" }]
         }
       ]
     }
