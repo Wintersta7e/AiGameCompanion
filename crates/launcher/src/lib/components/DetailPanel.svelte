@@ -1,8 +1,26 @@
 <script lang="ts">
-  import { convertFileSrc } from "@tauri-apps/api/core";
+  import { convertFileSrc, invoke } from "@tauri-apps/api/core";
   import { getSelectedGame, launchGame, getGameStatus } from "../stores/games.svelte";
   import type { Game } from "../stores/games.svelte";
   import { formatPlayTime, formatLastPlayed } from "../utils/format";
+
+  async function openConfig(): Promise<void> {
+    if (!game) return;
+    try {
+      await invoke("open_game_config", { gameId: game.id });
+    } catch (e) {
+      console.error("Failed to open config:", e);
+    }
+  }
+
+  async function openLogs(): Promise<void> {
+    if (!game) return;
+    try {
+      await invoke("open_game_logs", { gameId: game.id });
+    } catch (e) {
+      console.error("Failed to open logs:", e);
+    }
+  }
 
   let game: Game | undefined = $derived(getSelectedGame());
 
@@ -128,18 +146,18 @@
           {launchButtonText}
         </button>
         <button
-          disabled
-          title="Coming soon"
-          class="py-3.5 px-5 border border-border-subtle rounded-[10px] font-display text-[0.85rem] font-semibold tracking-wider uppercase text-text-secondary transition-all duration-150 opacity-50 cursor-not-allowed"
+          title="Open config.toml"
+          class="py-3.5 px-5 border border-border-subtle rounded-[10px] font-display text-[0.85rem] font-semibold tracking-wider uppercase text-text-secondary transition-all duration-150 cursor-pointer hover:text-text-primary hover:bg-[rgba(255,255,255,0.06)] hover:border-border-glow"
           style="background: rgba(255, 255, 255, 0.03);"
+          onclick={openConfig}
         >
           Config
         </button>
         <button
-          disabled
-          title="Coming soon"
-          class="py-3.5 px-5 border border-border-subtle rounded-[10px] font-display text-[0.85rem] font-semibold tracking-wider uppercase text-text-secondary transition-all duration-150 opacity-50 cursor-not-allowed"
+          title="Open companion.log"
+          class="py-3.5 px-5 border border-border-subtle rounded-[10px] font-display text-[0.85rem] font-semibold tracking-wider uppercase text-text-secondary transition-all duration-150 cursor-pointer hover:text-text-primary hover:bg-[rgba(255,255,255,0.06)] hover:border-border-glow"
           style="background: rgba(255, 255, 255, 0.03);"
+          onclick={openLogs}
         >
           Logs
         </button>
