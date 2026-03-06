@@ -93,4 +93,14 @@
     {/if}
   </div>
 
+  <!-- Rescan button -->
+  <button
+    class="m-2 py-2.5 px-3 border border-dashed border-border-subtle rounded-[10px] bg-transparent text-text-muted font-display text-[0.8rem] font-semibold tracking-wide uppercase transition-all duration-150 text-center cursor-pointer hover:text-accent hover:border-border-glow hover:bg-[rgba(99,140,255,0.05)]"
+    onclick={() => scanGames()}
+    disabled={isLoading}
+    class:opacity-50={isLoading}
+    class:cursor-not-allowed={isLoading}
+  >
+    {isLoading ? "Scanning..." : "Rescan Games"}
+  </button>
 </aside>

@@ -126,46 +126,45 @@ pub async fn launch_game(game_id: String, app: tauri::AppHandle) -> Result<Strin
     Ok("injecting".to_string())
 }
 
-#[tauri::command]
-pub fn open_game_config(game_id: String, app: tauri::AppHandle) -> Result<(), String> {
+/// Resolve the directory containing the overlay DLL (config.toml + companion.log live here).
+fn overlay_dir(app: &tauri::AppHandle) -> Result<std::path::PathBuf, String> {
     let state = app.state::<AppState>();
-    let install_dir = {
-        let launcher = state.launcher.lock();
-        launcher
-            .games
-            .iter()
-            .find(|g| g.id == game_id)
-            .and_then(|g| g.install_dir.clone())
-            .ok_or_else(|| format!("No install dir for game: {game_id}"))?
-    };
-    let config_path = std::path::Path::new(&install_dir).join("config.toml");
+    let custom = state.launcher.lock().settings.overlay_dll_path.clone();
+    if let Some(ref dll_path) = custom {
+        let p = std::path::Path::new(dll_path);
+        if let Some(parent) = p.parent() {
+            return Ok(parent.to_path_buf());
+        }
+    }
+    // Default: same directory as the launcher exe
+    std::env::current_exe()
+        .ok()
+        .and_then(|p| p.parent().map(|d| d.to_path_buf()))
+        .ok_or_else(|| "Cannot determine overlay directory".to_string())
+}
+
+#[tauri::command]
+pub fn open_game_config(app: tauri::AppHandle) -> Result<(), String> {
+    let dir = overlay_dir(&app)?;
+    let config_path = dir.join("config.toml");
     if config_path.exists() {
         app.opener()
             .open_path(config_path.to_string_lossy().as_ref(), None::<&str>)
             .map_err(|e| format!("Failed to open config: {e}"))
     } else {
-        Err(format!("Config not found: {}", config_path.display()))
+        Err(format!("config.toml not found in {}", dir.display()))
     }
 }
 
 #[tauri::command]
-pub fn open_game_logs(game_id: String, app: tauri::AppHandle) -> Result<(), String> {
-    let state = app.state::<AppState>();
-    let install_dir = {
-        let launcher = state.launcher.lock();
-        launcher
-            .games
-            .iter()
-            .find(|g| g.id == game_id)
-            .and_then(|g| g.install_dir.clone())
-            .ok_or_else(|| format!("No install dir for game: {game_id}"))?
-    };
-    let log_path = std::path::Path::new(&install_dir).join("companion.log");
+pub fn open_game_logs(app: tauri::AppHandle) -> Result<(), String> {
+    let dir = overlay_dir(&app)?;
+    let log_path = dir.join("companion.log");
     if log_path.exists() {
         app.opener()
             .open_path(log_path.to_string_lossy().as_ref(), None::<&str>)
             .map_err(|e| format!("Failed to open log: {e}"))
     } else {
-        Err(format!("Log not found: {}", log_path.display()))
+        Err(format!("companion.log not found in {}", dir.display()))
     }
 }

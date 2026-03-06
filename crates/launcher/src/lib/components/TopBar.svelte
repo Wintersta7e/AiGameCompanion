@@ -1,7 +1,7 @@
 <script lang="ts">
   import { getCurrentWindow } from "@tauri-apps/api/window";
   import { getSearchQuery, setSearchQuery } from "../stores/games.svelte";
-  import appIcon from "../assets/icon-32.png";
+  import appIcon from "../assets/icon-128.png";
 
   let { onOpenSettings }: { onOpenSettings: () => void } = $props();
 
@@ -43,7 +43,7 @@
     <img
       src={appIcon}
       alt="AI Game Companion"
-      class="w-8 h-8 rounded-lg"
+      class="w-9 h-9 rounded-lg"
       style="box-shadow: 0 0 16px rgba(99, 140, 255, 0.3);"
     />
     <span
