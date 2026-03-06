@@ -1,3 +1,4 @@
+use tauri::Emitter;
 use tauri::Manager;
 use tauri::State;
 use tauri_plugin_opener::OpenerExt;
@@ -106,10 +107,28 @@ pub async fn launch_game(game_id: String, app: tauri::AppHandle) -> Result<Strin
             .map_err(|e| format!("Sidecar error: {e}"))?
             .args(["--process", &exe_name, "--timeout", "30"]);
 
-        let (_rx, child) = sidecar
+        let (mut rx, child) = sidecar
             .spawn()
             .map_err(|e| format!("Failed to spawn injector: {e}"))?;
         state.active_injectors.lock().insert(game_id.clone(), child);
+
+        // Listen for sidecar exit and emit event to frontend
+        let app_handle = app.clone();
+        let gid = game_id.clone();
+        tauri::async_runtime::spawn(async move {
+            use tauri_plugin_shell::process::CommandEvent;
+            while let Some(event) = rx.recv().await {
+                match event {
+                    CommandEvent::Terminated(_) | CommandEvent::Error(_) => {
+                        let _ = app_handle.emit("injector-finished", &gid);
+                        let s = app_handle.state::<AppState>();
+                        s.active_injectors.lock().remove(&gid);
+                        break;
+                    }
+                    _ => {}
+                }
+            }
+        });
     }
 
     // Update last_played timestamp

@@ -31,12 +31,8 @@ const SKIP_PATTERNS: &[&str] = &[
     "beservice",
 ];
 
-/// Cover art filename suffixes to try, in priority order.
-const COVER_ART_SUFFIXES: &[&str] = &[
-    "_library_600x900.jpg",
-    "_library_600x900_2x.jpg",
-    "_header.jpg",
-];
+/// Steam CDN base URL for app images.
+const STEAM_CDN: &str = "https://cdn.cloudflare.steamstatic.com/steam/apps";
 
 /// Discover installed Steam games.
 ///
@@ -51,8 +47,7 @@ pub fn discover_steam_games() -> Vec<Game> {
         }
     };
 
-    let steam_path = steam_dir.path().to_path_buf();
-    tracing::info!("Steam located at {}", steam_path.display());
+    tracing::info!("Steam located at {}", steam_dir.path().display());
 
     let libraries = match steam_dir.libraries() {
         Ok(iter) => iter,
@@ -87,7 +82,7 @@ pub fn discover_steam_games() -> Vec<Game> {
             let install_exists = install_dir.exists();
             let app_id = app.app_id;
 
-            let cover_art_path = find_cover_art(&steam_path, app_id);
+            let cover_art_path = Some(format!("{STEAM_CDN}/{app_id}/library_600x900_2x.jpg"));
             let install_path = if install_exists {
                 Some(install_dir.to_string_lossy().into_owned())
             } else {
@@ -119,17 +114,6 @@ pub fn resolve_game_exe(install_dir: &Path) -> (String, Option<String>) {
     find_main_exe(install_dir)
 }
 
-/// Look for cover art in Steam's library cache.
-fn find_cover_art(steam_path: &Path, app_id: u32) -> Option<String> {
-    let cache_dir = steam_path.join("appcache").join("librarycache");
-    for suffix in COVER_ART_SUFFIXES {
-        let path = cache_dir.join(format!("{app_id}{suffix}"));
-        if path.exists() {
-            return Some(path.to_string_lossy().into_owned());
-        }
-    }
-    None
-}
 
 /// Find the main executable in a game's install directory.
 ///

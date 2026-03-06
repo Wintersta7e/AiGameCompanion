@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { convertFileSrc, invoke } from "@tauri-apps/api/core";
+  import { invoke } from "@tauri-apps/api/core";
   import { getSelectedGame, launchGame, getGameStatus } from "../stores/games.svelte";
   import type { Game } from "../stores/games.svelte";
   import { formatPlayTime, formatLastPlayed } from "../utils/format";
@@ -36,7 +36,7 @@
   });
 
   let coverSrc = $derived(
-    game?.cover_art_path && !coverError ? convertFileSrc(game.cover_art_path) : null,
+    game?.cover_art_path && !coverError ? game.cover_art_path : null,
   );
 
   let playTimeFormatted = $derived(formatPlayTime(game?.play_time_minutes ?? 0, true));

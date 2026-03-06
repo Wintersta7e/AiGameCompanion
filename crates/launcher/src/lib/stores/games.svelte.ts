@@ -1,4 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
 
 export interface Game {
   id: string;
@@ -91,6 +92,12 @@ export function getSelectedGame(): Game | undefined {
 }
 
 let gameStatuses = $state<Record<string, string>>({});
+
+// Listen for injector process exit and reset status
+listen<string>("injector-finished", (event) => {
+  const gameId = event.payload;
+  gameStatuses = { ...gameStatuses, [gameId]: "idle" };
+});
 
 export function getGameStatus(id: string): string {
   return gameStatuses[id] ?? "idle";

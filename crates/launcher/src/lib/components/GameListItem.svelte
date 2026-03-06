@@ -1,5 +1,4 @@
 <script lang="ts">
-  import { convertFileSrc } from "@tauri-apps/api/core";
   import type { Game } from "../stores/games.svelte";
   import { setSelectedGameId, getGameStatus } from "../stores/games.svelte";
   import { formatPlayTime } from "../utils/format";
@@ -19,9 +18,12 @@
     manual: "#06d6a0",
   };
 
-  let coverSrc = $derived(
-    game.cover_art_path ? convertFileSrc(game.cover_art_path) : null,
-  );
+  let coverSrc = $derived(game.cover_art_path ?? null);
+  let imgError = $state(false);
+
+  $effect(() => {
+    if (game) imgError = false;
+  });
 
   let playTimeFormatted = $derived(formatPlayTime(game.play_time_minutes));
 
@@ -67,12 +69,13 @@
     class="w-[42px] h-[56px] rounded-md overflow-hidden shrink-0"
     style="box-shadow: 0 2px 8px rgba(0, 0, 0, 0.3);"
   >
-    {#if coverSrc}
+    {#if coverSrc && !imgError}
       <img
         src={coverSrc}
         alt={game.name}
         class="w-full h-full object-cover"
         loading="lazy"
+        onerror={() => { imgError = true; }}
       />
     {:else}
       <div
