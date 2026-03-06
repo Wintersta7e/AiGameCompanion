@@ -133,6 +133,35 @@ Options:
 With no flags: enters watch mode using [[games]] from config.toml
 ```
 
+## Launcher
+
+The project includes a desktop launcher app for managing your game library, launching games with automatic overlay injection, and configuring settings -- all from a single GUI.
+
+### Features
+- **Steam library auto-detection** -- discovers all installed games across multiple drives
+- **Cover art** -- loads game artwork from the Steam CDN
+- **One-click launch + inject** -- launches the game via Steam and runs the injector automatically
+- **Settings** -- configure overlay DLL path, scan-on-startup, minimize-to-tray, launch-on-startup
+- **Config & Logs** -- quick buttons to open `config.toml` and `companion.log`
+- **Game details** -- install path, executable, play time, source info
+
+### Tech Stack
+- [Tauri v2](https://v2.tauri.app) -- lightweight desktop framework (Rust backend + WebView2)
+- [Svelte 5](https://svelte.dev) -- reactive frontend with runes
+- [Tailwind CSS 4](https://tailwindcss.com) -- utility-first styling
+
+### Build
+
+```bash
+# Frontend (from crates/launcher/)
+node node_modules/vite/bin/vite.js build
+
+# Backend (from repo root)
+cargo xwin build -p launcher --release --target x86_64-pc-windows-msvc --features custom-protocol
+```
+
+The `custom-protocol` feature is required for release builds -- it embeds the frontend assets into the binary.
+
 ## Project Structure
 
 ```
@@ -148,8 +177,11 @@ With no flags: enters watch mode using [[games]] from config.toml
 │   │   ├── game_detect.rs         # 3-tier game name detection
 │   │   ├── logging.rs             # Session transcript logging
 │   │   └── state.rs               # AppState (parking_lot::Mutex), streaming/capture flags
-│   └── injector/src/
-│       └── main.rs                # CLI, watch mode, DLL injection, process finding
+│   ├── injector/src/
+│   │   └── main.rs                # CLI, watch mode, DLL injection, process finding
+│   └── launcher/                  # Desktop launcher (Tauri v2 + Svelte 5)
+│       ├── src/                   # Svelte frontend
+│       └── src-tauri/             # Rust backend (Steam discovery, settings, sidecar)
 ├── vendor/
 │   └── hudhook/                   # Vendored hudhook 0.8.3 (patched for DX12 compatibility)
 ├── config.example.toml            # Config template (no real API key)
@@ -168,6 +200,8 @@ With no flags: enters watch mode using [[games]] from config.toml
 | [tokio](https://tokio.rs) | Async runtime for non-blocking API calls |
 | [parking_lot](https://docs.rs/parking_lot) | Fast mutex for render thread shared state |
 | [tracing](https://docs.rs/tracing) | Structured logging to `companion.log` |
+| [Tauri v2](https://v2.tauri.app) | Desktop launcher framework (Rust + WebView2) |
+| [Svelte 5](https://svelte.dev) | Reactive frontend for the launcher |
 | [cargo-xwin](https://github.com/rust-cross/cargo-xwin) | MSVC cross-compilation from WSL2 |
 
 ## Building from Source
@@ -282,7 +316,12 @@ Press **F10** in-game -- the overlay captures the screen and sends it to your lo
 
 ## Roadmap
 
-**v0.4 -- In Progress**
+**v0.5 -- Launcher**
+- Desktop launcher with Steam library discovery
+- One-click launch + automatic overlay injection
+- Settings GUI and per-game configuration
+
+**Future**
 - Quick-ask hotkey (one-button screenshot + predefined question)
 - Per-game profiles + personality modes
 - Voice I/O (speech-to-text input, text-to-speech output)
