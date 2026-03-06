@@ -1,5 +1,6 @@
 [workspace]
-members = ["crates/overlay", "crates/injector"]
+members = ["crates/overlay", "crates/injector", "crates/launcher/src-tauri"]
+default-members = ["crates/overlay", "crates/injector"]
 exclude = ["vendor/hudhook"]
 resolver = "2"
 

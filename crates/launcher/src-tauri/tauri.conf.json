@@ -1,0 +1,56 @@
+{
+  "$schema": "https://raw.githubusercontent.com/nicegui-app/tauri-v2-schema/main/tauri.conf.json",
+  "productName": "AI Game Companion",
+  "version": "0.1.0",
+  "identifier": "com.aigamecompanion.launcher",
+  "build": {
+    "frontendDist": "../dist",
+    "devUrl": "http://localhost:1420",
+    "beforeDevCommand": "npm run dev",
+    "beforeBuildCommand": "npm run build"
+  },
+  "app": {
+    "windows": [
+      {
+        "title": "AI Game Companion",
+        "width": 1100,
+        "height": 700,
+        "minWidth": 900,
+        "minHeight": 600
+      }
+    ],
+    "security": {
+      "csp": null,
+      "assetProtocol": {
+        "enable": true,
+        "scope": {
+          "allow": ["**/*"],
+          "deny": []
+        }
+      }
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": "all",
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.icns",
+      "icons/icon.ico"
+    ]
+  },
+  "plugins": {
+    "shell": {
+      "sidecar": true,
+      "scope": [
+        {
+          "name": "../../../target/x86_64-pc-windows-msvc/release/injector",
+          "sidecar": true,
+          "args": true
+        }
+      ]
+    }
+  }
+}
