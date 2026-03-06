@@ -316,12 +316,6 @@ Press **F10** in-game -- the overlay captures the screen and sends it to your lo
 
 ## Roadmap
 
-**v0.5 -- Launcher**
-- Desktop launcher with Steam library discovery
-- One-click launch + automatic overlay injection
-- Settings GUI and per-game configuration
-
-**Future**
 - Quick-ask hotkey (one-button screenshot + predefined question)
 - Per-game profiles + personality modes
 - Voice I/O (speech-to-text input, text-to-speech output)
