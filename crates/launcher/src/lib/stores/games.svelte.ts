@@ -7,6 +7,7 @@ export interface Game {
   source_id: string | null;
   exe_name: string;
   exe_path: string | null;
+  install_dir: string | null;
   cover_art_path: string | null;
   last_played: string | null;
   play_time_minutes: number;

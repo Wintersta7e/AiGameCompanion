@@ -16,9 +16,14 @@ pub fn get_games(state: State<'_, AppState>) -> Vec<Game> {
 
 #[tauri::command]
 pub async fn scan_games(state: State<'_, AppState>) -> Result<Vec<Game>, String> {
-    let mut steam_games = tokio::task::spawn_blocking(discovery::steam::discover_steam_games)
-        .await
-        .map_err(|e| format!("Scan task failed: {e}"))?;
+    tracing::info!("scan_games: starting Steam discovery");
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    std::thread::spawn(move || {
+        let result = discovery::steam::discover_steam_games();
+        let _ = tx.send(result);
+    });
+    let mut steam_games = rx.await.map_err(|e| format!("Scan task failed: {e}"))?;
+    tracing::info!("scan_games: found {} games", steam_games.len());
 
     let mut launcher = state.launcher.lock();
     // Merge: preserve play_time and last_played from existing state
@@ -71,17 +76,35 @@ pub async fn launch_game(game_id: String, app: tauri::AppHandle) -> Result<Strin
         }
     }
 
+    // Resolve exe name on demand if not cached
+    let mut exe_name = game.exe_name.clone();
+    if exe_name.is_empty() {
+        if let Some(dir) = &game.install_dir {
+            let (resolved_name, resolved_path) =
+                discovery::steam::resolve_game_exe(std::path::Path::new(dir));
+            exe_name = resolved_name;
+            // Cache the resolved exe for next time
+            let mut launcher = state.launcher.lock();
+            if let Some(g) = launcher.games.iter_mut().find(|g| g.id == game_id) {
+                g.exe_name.clone_from(&exe_name);
+                g.exe_path = resolved_path;
+            }
+            drop(launcher);
+            let _ = state.save();
+        }
+    }
+
     // Validate exe_name before passing to sidecar
-    if !game.exe_name.is_empty() {
-        if game.exe_name.contains("--") || game.exe_name.contains('/') || game.exe_name.contains('\\') {
-            return Err(format!("Invalid exe name: {}", game.exe_name));
+    if !exe_name.is_empty() {
+        if exe_name.contains("--") || exe_name.contains('/') || exe_name.contains('\\') {
+            return Err(format!("Invalid exe name: {exe_name}"));
         }
 
         let shell = app.shell();
         let sidecar = shell
             .sidecar("injector")
             .map_err(|e| format!("Sidecar error: {e}"))?
-            .args(["--process", &game.exe_name, "--timeout", "30"]);
+            .args(["--process", &exe_name, "--timeout", "30"]);
 
         let (_rx, child) = sidecar
             .spawn()
@@ -101,4 +124,48 @@ pub async fn launch_game(game_id: String, app: tauri::AppHandle) -> Result<Strin
     }
 
     Ok("injecting".to_string())
+}
+
+#[tauri::command]
+pub fn open_game_config(game_id: String, app: tauri::AppHandle) -> Result<(), String> {
+    let state = app.state::<AppState>();
+    let install_dir = {
+        let launcher = state.launcher.lock();
+        launcher
+            .games
+            .iter()
+            .find(|g| g.id == game_id)
+            .and_then(|g| g.install_dir.clone())
+            .ok_or_else(|| format!("No install dir for game: {game_id}"))?
+    };
+    let config_path = std::path::Path::new(&install_dir).join("config.toml");
+    if config_path.exists() {
+        app.opener()
+            .open_path(config_path.to_string_lossy().as_ref(), None::<&str>)
+            .map_err(|e| format!("Failed to open config: {e}"))
+    } else {
+        Err(format!("Config not found: {}", config_path.display()))
+    }
+}
+
+#[tauri::command]
+pub fn open_game_logs(game_id: String, app: tauri::AppHandle) -> Result<(), String> {
+    let state = app.state::<AppState>();
+    let install_dir = {
+        let launcher = state.launcher.lock();
+        launcher
+            .games
+            .iter()
+            .find(|g| g.id == game_id)
+            .and_then(|g| g.install_dir.clone())
+            .ok_or_else(|| format!("No install dir for game: {game_id}"))?
+    };
+    let log_path = std::path::Path::new(&install_dir).join("companion.log");
+    if log_path.exists() {
+        app.opener()
+            .open_path(log_path.to_string_lossy().as_ref(), None::<&str>)
+            .map_err(|e| format!("Failed to open log: {e}"))
+    } else {
+        Err(format!("Log not found: {}", log_path.display()))
+    }
 }

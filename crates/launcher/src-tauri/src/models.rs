@@ -27,6 +27,7 @@ pub struct Game {
     pub source_id: Option<String>,
     pub exe_name: String,
     pub exe_path: Option<String>,
+    pub install_dir: Option<String>,
     pub cover_art_path: Option<String>,
     pub last_played: Option<String>,
     pub play_time_minutes: u64,

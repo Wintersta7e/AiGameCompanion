@@ -41,6 +41,7 @@ const COVER_ART_SUFFIXES: &[&str] = &[
 /// Discover installed Steam games.
 ///
 /// Returns an alphabetically sorted list of games found across all Steam libraries.
+/// Exe detection is deferred to launch time for speed.
 pub fn discover_steam_games() -> Vec<Game> {
     let steam_dir = match SteamDir::locate() {
         Ok(dir) => dir,
@@ -51,6 +52,7 @@ pub fn discover_steam_games() -> Vec<Game> {
     };
 
     let steam_path = steam_dir.path().to_path_buf();
+    tracing::info!("Steam located at {}", steam_path.display());
 
     let libraries = match steam_dir.libraries() {
         Ok(iter) => iter,
@@ -71,6 +73,8 @@ pub fn discover_steam_games() -> Vec<Game> {
             }
         };
 
+        tracing::info!("Scanning library: {}", library.path().display());
+
         for app_result in library.apps() {
             let Ok(app) = app_result else { continue };
 
@@ -80,22 +84,24 @@ pub fn discover_steam_games() -> Vec<Game> {
             };
 
             let install_dir = library.resolve_app_dir(&app);
-            if !install_dir.exists() {
-                continue;
-            }
-
+            let install_exists = install_dir.exists();
             let app_id = app.app_id;
 
             let cover_art_path = find_cover_art(&steam_path, app_id);
-            let (exe_name, exe_path) = find_main_exe(&install_dir);
+            let install_path = if install_exists {
+                Some(install_dir.to_string_lossy().into_owned())
+            } else {
+                None
+            };
 
             games.push(Game {
                 id: format!("steam_{app_id}"),
                 name,
                 source: GameSource::Steam,
                 source_id: Some(app_id.to_string()),
-                exe_name,
-                exe_path,
+                exe_name: String::new(),
+                exe_path: None,
+                install_dir: install_path,
                 cover_art_path,
                 last_played: None,
                 play_time_minutes: 0,
@@ -103,8 +109,14 @@ pub fn discover_steam_games() -> Vec<Game> {
         }
     }
 
+    tracing::info!("Discovery complete: {} games found", games.len());
     games.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
     games
+}
+
+/// Resolve the main exe for a game on demand (called at launch time).
+pub fn resolve_game_exe(install_dir: &Path) -> (String, Option<String>) {
+    find_main_exe(install_dir)
 }
 
 /// Look for cover art in Steam's library cache.
@@ -143,16 +155,22 @@ fn find_main_exe(install_dir: &Path) -> (String, Option<String>) {
     }
 }
 
+/// Max exe candidates to collect per game before stopping early.
+const MAX_EXE_CANDIDATES: usize = 20;
+
 /// Recursively collect `.exe` files, filtering out known non-game executables.
 fn collect_exes(dir: &Path, out: &mut Vec<(PathBuf, u64)>, depth: u32) {
     // Limit recursion depth to avoid traversing massive directory trees
-    if depth > 4 {
+    if depth > 2 || out.len() >= MAX_EXE_CANDIDATES {
         return;
     }
 
     let Ok(entries) = std::fs::read_dir(dir) else { return };
 
     for entry in entries.flatten() {
+        if out.len() >= MAX_EXE_CANDIDATES {
+            return;
+        }
         let path = entry.path();
         if path.is_dir() {
             collect_exes(&path, out, depth + 1);
