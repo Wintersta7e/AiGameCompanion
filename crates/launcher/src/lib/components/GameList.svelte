@@ -5,11 +5,14 @@
     getFilterSource,
     getSearchQuery,
     getSelectedGameId,
+    getIsLoading,
+    getError,
     scanGames,
     setFilterSource,
   } from "../stores/games.svelte";
+  import type { FilterSource } from "../stores/games.svelte";
 
-  const filters = [
+  const filters: readonly { label: string; value: FilterSource }[] = [
     { label: "All", value: "all" },
     { label: "Steam", value: "steam" },
     { label: "Epic", value: "epic" },
@@ -20,8 +23,10 @@
   let activeFilter = $derived(getFilterSource());
   let selectedId = $derived(getSelectedGameId());
   let currentSearch = $derived(getSearchQuery());
+  let isLoading = $derived(getIsLoading());
+  let errorMsg = $derived(getError());
 
-  function handleFilterClick(value: string): void {
+  function handleFilterClick(value: FilterSource): void {
     setFilterSource(value);
   }
 </script>
@@ -41,6 +46,7 @@
           class:text-text-muted={activeFilter !== filter.value}
           class:bg-transparent={activeFilter !== filter.value}
           class:hover:text-text-secondary={activeFilter !== filter.value}
+          aria-pressed={activeFilter === filter.value}
           onclick={() => handleFilterClick(filter.value)}
         >
           {filter.label}
@@ -51,7 +57,18 @@
 
   <!-- Game list -->
   <div class="flex-1 overflow-y-auto p-2">
-    {#if filteredGames.length > 0}
+    {#if isLoading}
+      <div class="flex items-center justify-center h-full">
+        <div class="text-text-muted text-sm font-display">Scanning games...</div>
+      </div>
+    {:else if errorMsg}
+      <div class="flex items-center justify-center h-full">
+        <div class="text-center px-4">
+          <div class="text-accent-warm text-sm font-display mb-2">Failed to scan games</div>
+          <div class="text-text-muted text-xs font-mono">{errorMsg}</div>
+        </div>
+      </div>
+    {:else if filteredGames.length > 0}
       {#each filteredGames as game, i (game.id)}
         <GameListItem {game} selected={game.id === selectedId} index={i} />
       {/each}
@@ -78,7 +95,9 @@
 
   <!-- Add game button -->
   <button
-    class="m-2 py-2.5 px-3 border border-dashed border-border-subtle rounded-[10px] bg-transparent text-text-muted font-display text-[0.8rem] font-semibold tracking-wide uppercase cursor-pointer transition-all duration-150 text-center hover:border-border-glow hover:text-accent hover:bg-[rgba(99,140,255,0.04)]"
+    disabled
+    title="Coming soon"
+    class="m-2 py-2.5 px-3 border border-dashed border-border-subtle rounded-[10px] bg-transparent text-text-muted font-display text-[0.8rem] font-semibold tracking-wide uppercase transition-all duration-150 text-center opacity-50 cursor-not-allowed"
   >
     + Add Game
   </button>

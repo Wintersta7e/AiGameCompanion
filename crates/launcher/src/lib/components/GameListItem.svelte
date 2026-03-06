@@ -1,7 +1,8 @@
 <script lang="ts">
   import { convertFileSrc } from "@tauri-apps/api/core";
   import type { Game } from "../stores/games.svelte";
-  import { setSelectedGameId } from "../stores/games.svelte";
+  import { setSelectedGameId, getGameStatus } from "../stores/games.svelte";
+  import { formatPlayTime } from "../utils/format";
 
   interface Props {
     game: Game;
@@ -24,11 +25,27 @@
 
   let playTimeFormatted = $derived(formatPlayTime(game.play_time_minutes));
 
-  function formatPlayTime(minutes: number): string {
-    if (minutes < 60) return `${minutes}m`;
-    const hours = Math.floor(minutes / 60);
-    return `${hours}h`;
-  }
+  let status = $derived(getGameStatus(game.id));
+
+  let statusDotColor = $derived(
+    status === "launching"
+      ? "#ffc107"
+      : status === "injecting"
+        ? "#638cff"
+        : status === "error"
+          ? "#ff6b6b"
+          : "#06d6a0",
+  );
+
+  let statusDotShadow = $derived(
+    status === "launching"
+      ? "0 0 6px rgba(255, 193, 7, 0.4)"
+      : status === "injecting"
+        ? "0 0 6px rgba(99, 140, 255, 0.4)"
+        : status === "error"
+          ? "0 0 6px rgba(255, 107, 107, 0.4)"
+          : "0 0 6px rgba(6, 214, 160, 0.4)",
+  );
 
   function handleClick(): void {
     setSelectedGameId(game.id);
@@ -55,6 +72,7 @@
         src={coverSrc}
         alt={game.name}
         class="w-full h-full object-cover"
+        loading="lazy"
       />
     {:else}
       <div
@@ -82,7 +100,7 @@
 
   <!-- Status dot -->
   <div
-    class="w-[7px] h-[7px] rounded-full shrink-0 bg-accent-tertiary"
-    style="box-shadow: 0 0 6px rgba(6, 214, 160, 0.4);"
+    class="w-[7px] h-[7px] rounded-full shrink-0"
+    style="background: {statusDotColor}; box-shadow: {statusDotShadow};"
   ></div>
 </button>

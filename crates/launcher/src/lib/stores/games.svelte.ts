@@ -12,10 +12,14 @@ export interface Game {
   play_time_minutes: number;
 }
 
+export type FilterSource = "all" | "steam" | "epic" | "gog";
+
 let games = $state<Game[]>([]);
 let selectedGameId = $state<string | null>(null);
-let filterSource = $state<string>("all");
+let filterSource = $state<FilterSource>("all");
 let searchQuery = $state<string>("");
+let isLoading = $state<boolean>(true);
+let error = $state<string | null>(null);
 
 export function getGames(): Game[] {
   return games;
@@ -25,7 +29,7 @@ export function getSelectedGameId(): string | null {
   return selectedGameId;
 }
 
-export function getFilterSource(): string {
+export function getFilterSource(): FilterSource {
   return filterSource;
 }
 
@@ -33,11 +37,19 @@ export function getSearchQuery(): string {
   return searchQuery;
 }
 
+export function getIsLoading(): boolean {
+  return isLoading;
+}
+
+export function getError(): string | null {
+  return error;
+}
+
 export function setSelectedGameId(id: string | null): void {
   selectedGameId = id;
 }
 
-export function setFilterSource(source: string): void {
+export function setFilterSource(source: FilterSource): void {
   filterSource = source;
 }
 
@@ -46,6 +58,8 @@ export function setSearchQuery(query: string): void {
 }
 
 export async function scanGames(): Promise<void> {
+  isLoading = true;
+  error = null;
   try {
     const result = await invoke<Game[]>("scan_games");
     games = result;
@@ -54,18 +68,9 @@ export async function scanGames(): Promise<void> {
     }
   } catch (err) {
     console.error("Failed to scan games:", err);
-  }
-}
-
-export async function loadGames(): Promise<void> {
-  try {
-    const result = await invoke<Game[]>("get_games");
-    games = result;
-    if (result.length > 0 && selectedGameId === null) {
-      selectedGameId = result[0].id;
-    }
-  } catch (err) {
-    console.error("Failed to load games:", err);
+    error = String(err);
+  } finally {
+    isLoading = false;
   }
 }
 
@@ -91,6 +96,10 @@ export function getGameStatus(id: string): string {
 }
 
 export async function launchGame(gameId: string): Promise<void> {
+  // Duplicate-launch protection
+  if (gameStatuses[gameId] === "launching" || gameStatuses[gameId] === "injecting") {
+    return;
+  }
   gameStatuses = { ...gameStatuses, [gameId]: "launching" };
   try {
     const result = await invoke<string>("launch_game", { gameId });
@@ -98,5 +107,6 @@ export async function launchGame(gameId: string): Promise<void> {
   } catch (err) {
     console.error("Failed to launch game:", err);
     gameStatuses = { ...gameStatuses, [gameId]: "error" };
+    error = String(err);
   }
 }

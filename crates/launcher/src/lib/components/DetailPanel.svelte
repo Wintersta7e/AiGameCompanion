@@ -2,54 +2,51 @@
   import { convertFileSrc } from "@tauri-apps/api/core";
   import { getSelectedGame, launchGame, getGameStatus } from "../stores/games.svelte";
   import type { Game } from "../stores/games.svelte";
+  import { formatPlayTime, formatLastPlayed } from "../utils/format";
 
   let game: Game | undefined = $derived(getSelectedGame());
 
+  let coverError = $state(false);
+
+  $effect(() => {
+    if (game) coverError = false;
+  });
+
   let coverSrc = $derived(
-    game?.cover_art_path ? convertFileSrc(game.cover_art_path) : null,
+    game?.cover_art_path && !coverError ? convertFileSrc(game.cover_art_path) : null,
   );
 
-  let playTimeFormatted = $derived(formatPlayTime(game?.play_time_minutes ?? 0));
+  let playTimeFormatted = $derived(formatPlayTime(game?.play_time_minutes ?? 0, true));
   let lastPlayedFormatted = $derived(formatLastPlayed(game?.last_played ?? null));
 
-  let launchStatus = $derived(game ? getGameStatus(game.id) : "idle");
+  let currentStatus = $derived(game ? getGameStatus(game.id) : "idle");
   let launchButtonText = $derived(
-    launchStatus === "launching"
+    currentStatus === "launching"
       ? "Launching..."
-      : launchStatus === "injecting"
+      : currentStatus === "injecting"
         ? "Injecting..."
         : "Launch + Inject",
   );
-  let launchDisabled = $derived(launchStatus === "launching" || launchStatus === "injecting");
+  let launchDisabled = $derived(currentStatus === "launching" || currentStatus === "injecting");
 
-  function formatPlayTime(minutes: number): string {
-    if (minutes === 0) return "0h";
-    if (minutes < 60) return `${minutes}m`;
-    const hours = Math.floor(minutes / 60);
-    const mins = minutes % 60;
-    if (mins === 0) return `${hours}h`;
-    return `${hours}h ${mins}m`;
-  }
-
-  function formatLastPlayed(dateStr: string | null): string {
-    if (!dateStr) return "Never";
-    try {
-      const date = new Date(dateStr);
-      const now = new Date();
-      const diffMs = now.getTime() - date.getTime();
-      const diffMins = Math.floor(diffMs / 60000);
-      if (diffMins < 1) return "Just now";
-      if (diffMins < 60) return `${diffMins} minute${diffMins === 1 ? "" : "s"} ago`;
-      const diffHours = Math.floor(diffMins / 60);
-      if (diffHours < 24) return `${diffHours} hour${diffHours === 1 ? "" : "s"} ago`;
-      const diffDays = Math.floor(diffHours / 24);
-      if (diffDays < 30) return `${diffDays} day${diffDays === 1 ? "" : "s"} ago`;
-      const diffMonths = Math.floor(diffDays / 30);
-      return `${diffMonths} month${diffMonths === 1 ? "" : "s"} ago`;
-    } catch {
-      return "Unknown";
-    }
-  }
+  let statusLabel = $derived(
+    currentStatus === "launching"
+      ? "Launching"
+      : currentStatus === "injecting"
+        ? "Injecting"
+        : currentStatus === "error"
+          ? "Error"
+          : "Ready",
+  );
+  let statusStyle = $derived(
+    currentStatus === "error"
+      ? "background: rgba(255, 107, 107, 0.12); color: #ff6b6b; border-color: rgba(255, 107, 107, 0.2);"
+      : currentStatus === "launching"
+        ? "background: rgba(255, 193, 7, 0.12); color: #ffc107; border-color: rgba(255, 193, 7, 0.2);"
+        : currentStatus === "injecting"
+          ? "background: rgba(99, 140, 255, 0.15); color: #638cff; border-color: rgba(99, 140, 255, 0.2);"
+          : "background: rgba(6, 214, 160, 0.12); color: #06d6a0; border-color: rgba(6, 214, 160, 0.2);",
+  );
 
   function capitalizeSource(source: string): string {
     if (source === "gog") return "GOG";
@@ -67,6 +64,7 @@
           alt={game.name}
           class="w-full h-full object-cover"
           style="filter: brightness(0.4) saturate(1.2);"
+          onerror={() => { coverError = true; }}
         />
       {:else}
         <div
@@ -96,9 +94,9 @@
           </span>
           <span
             class="py-[3px] px-2.5 rounded-full font-display text-[0.7rem] font-semibold tracking-wide uppercase border"
-            style="background: rgba(6, 214, 160, 0.12); color: #06d6a0; border-color: rgba(6, 214, 160, 0.2);"
+            style={statusStyle}
           >
-            Ready
+            {statusLabel}
           </span>
           <span class="text-text-secondary">{game.exe_name}</span>
         </div>
@@ -130,13 +128,17 @@
           {launchButtonText}
         </button>
         <button
-          class="py-3.5 px-5 border border-border-subtle rounded-[10px] font-display text-[0.85rem] font-semibold tracking-wider uppercase cursor-pointer text-text-secondary transition-all duration-150 hover:border-border-glow hover:text-accent hover:bg-[rgba(99,140,255,0.06)]"
+          disabled
+          title="Coming soon"
+          class="py-3.5 px-5 border border-border-subtle rounded-[10px] font-display text-[0.85rem] font-semibold tracking-wider uppercase text-text-secondary transition-all duration-150 opacity-50 cursor-not-allowed"
           style="background: rgba(255, 255, 255, 0.03);"
         >
           Config
         </button>
         <button
-          class="py-3.5 px-5 border border-border-subtle rounded-[10px] font-display text-[0.85rem] font-semibold tracking-wider uppercase cursor-pointer text-text-secondary transition-all duration-150 hover:border-border-glow hover:text-accent hover:bg-[rgba(99,140,255,0.06)]"
+          disabled
+          title="Coming soon"
+          class="py-3.5 px-5 border border-border-subtle rounded-[10px] font-display text-[0.85rem] font-semibold tracking-wider uppercase text-text-secondary transition-all duration-150 opacity-50 cursor-not-allowed"
           style="background: rgba(255, 255, 255, 0.03);"
         >
           Logs

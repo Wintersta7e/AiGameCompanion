@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { onMount } from "svelte";
   import TopBar from "./lib/components/TopBar.svelte";
   import StatusBar from "./lib/components/StatusBar.svelte";
   import GameList from "./lib/components/GameList.svelte";
@@ -6,7 +7,7 @@
   import Background from "./lib/components/Background.svelte";
   import { scanGames, getGames } from "./lib/stores/games.svelte";
 
-  $effect(() => {
+  onMount(() => {
     scanGames();
   });
 

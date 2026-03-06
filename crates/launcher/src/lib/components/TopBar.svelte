@@ -7,21 +7,26 @@
   let searchFocused = $state(false);
   let currentQuery = $derived(getSearchQuery());
 
+  let debounceTimer: ReturnType<typeof setTimeout> | null = null;
+
   function handleInput(e: Event): void {
     const target = e.target as HTMLInputElement;
-    setSearchQuery(target.value);
+    if (debounceTimer) clearTimeout(debounceTimer);
+    debounceTimer = setTimeout(() => {
+      setSearchQuery(target.value);
+    }, 150);
   }
 
-  function minimize(): void {
-    appWindow.minimize();
+  async function minimize(): Promise<void> {
+    try { await appWindow.minimize(); } catch (e) { console.error("Minimize failed:", e); }
   }
 
-  function toggleMaximize(): void {
-    appWindow.toggleMaximize();
+  async function toggleMaximize(): Promise<void> {
+    try { await appWindow.toggleMaximize(); } catch (e) { console.error("Maximize failed:", e); }
   }
 
-  function close(): void {
-    appWindow.close();
+  async function close(): Promise<void> {
+    try { await appWindow.close(); } catch (e) { console.error("Close failed:", e); }
   }
 </script>
 
@@ -51,7 +56,10 @@
 
   <!-- Right: Search + Settings -->
   <div class="flex items-center gap-2.5">
+    <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
     <div
+      role="search"
+      onmousedown={(e) => e.stopPropagation()}
       class="flex items-center gap-2 py-[7px] px-3.5 rounded-[10px] border transition-all duration-300"
       class:w-[220px]={!searchFocused}
       class:w-[280px]={searchFocused}
@@ -77,14 +85,17 @@
         oninput={handleInput}
         onfocus={() => (searchFocused = true)}
         onblur={() => (searchFocused = false)}
+        aria-label="Search games"
         class="bg-transparent border-none outline-none text-text-primary font-body text-[0.85rem] w-full placeholder:text-text-muted"
       />
     </div>
 
     <button
-      class="w-9 h-9 flex items-center justify-center border border-border-subtle rounded-md cursor-pointer text-text-secondary transition-all duration-150 hover:border-border-glow hover:text-accent hover:bg-[rgba(99,140,255,0.08)]"
+      disabled
+      class="w-9 h-9 flex items-center justify-center border border-border-subtle rounded-md text-text-secondary transition-all duration-150 opacity-50 cursor-not-allowed"
       style="background: rgba(255, 255, 255, 0.03);"
-      title="Settings"
+      title="Coming soon"
+      aria-label="Settings"
     >
       <svg
         width="16"
@@ -110,6 +121,7 @@
       class="w-8 h-8 flex items-center justify-center rounded-md cursor-pointer text-text-secondary transition-all duration-150 hover:text-text-primary hover:bg-[rgba(255,255,255,0.08)]"
       onclick={minimize}
       title="Minimize"
+      aria-label="Minimize"
     >
       <svg width="12" height="12" viewBox="0 0 12 12" fill="none">
         <line x1="2" y1="6" x2="10" y2="6" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" />
@@ -120,6 +132,7 @@
       class="w-8 h-8 flex items-center justify-center rounded-md cursor-pointer text-text-secondary transition-all duration-150 hover:text-text-primary hover:bg-[rgba(255,255,255,0.08)]"
       onclick={toggleMaximize}
       title="Maximize"
+      aria-label="Maximize"
     >
       <svg width="12" height="12" viewBox="0 0 12 12" fill="none">
         <rect x="2" y="2" width="8" height="8" rx="1" stroke="currentColor" stroke-width="1.5" fill="none" />
@@ -130,6 +143,7 @@
       class="w-8 h-8 flex items-center justify-center rounded-md cursor-pointer text-text-secondary transition-all duration-150 hover:text-white hover:bg-[rgba(255,60,60,0.7)]"
       onclick={close}
       title="Close"
+      aria-label="Close"
     >
       <svg width="12" height="12" viewBox="0 0 12 12" fill="none">
         <line x1="2" y1="2" x2="10" y2="10" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" />
