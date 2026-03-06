@@ -83,3 +83,20 @@ export function getFilteredGames(): Game[] {
 export function getSelectedGame(): Game | undefined {
   return games.find((g) => g.id === selectedGameId);
 }
+
+let gameStatuses = $state<Record<string, string>>({});
+
+export function getGameStatus(id: string): string {
+  return gameStatuses[id] ?? "idle";
+}
+
+export async function launchGame(gameId: string): Promise<void> {
+  gameStatuses = { ...gameStatuses, [gameId]: "launching" };
+  try {
+    const result = await invoke<string>("launch_game", { gameId });
+    gameStatuses = { ...gameStatuses, [gameId]: result };
+  } catch (err) {
+    console.error("Failed to launch game:", err);
+    gameStatuses = { ...gameStatuses, [gameId]: "error" };
+  }
+}

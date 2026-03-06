@@ -3,7 +3,9 @@
   import {
     getFilteredGames,
     getFilterSource,
+    getSearchQuery,
     getSelectedGameId,
+    scanGames,
     setFilterSource,
   } from "../stores/games.svelte";
 
@@ -17,6 +19,7 @@
   let filteredGames = $derived(getFilteredGames());
   let activeFilter = $derived(getFilterSource());
   let selectedId = $derived(getSelectedGameId());
+  let currentSearch = $derived(getSearchQuery());
 
   function handleFilterClick(value: string): void {
     setFilterSource(value);
@@ -48,9 +51,29 @@
 
   <!-- Game list -->
   <div class="flex-1 overflow-y-auto p-2">
-    {#each filteredGames as game, i (game.id)}
-      <GameListItem {game} selected={game.id === selectedId} index={i} />
-    {/each}
+    {#if filteredGames.length > 0}
+      {#each filteredGames as game, i (game.id)}
+        <GameListItem {game} selected={game.id === selectedId} index={i} />
+      {/each}
+    {:else}
+      <div class="flex items-center justify-center h-full">
+        <div class="text-center px-4">
+          {#if currentSearch}
+            <div class="text-text-muted text-sm font-display">No games match your search</div>
+          {:else if activeFilter !== "all"}
+            <div class="text-text-muted text-sm font-display">No {activeFilter} games found</div>
+          {:else}
+            <div class="text-text-muted text-sm font-display mb-3">No games found</div>
+            <button
+              class="py-2 px-4 border border-border-subtle rounded-[10px] bg-transparent text-accent font-display text-[0.8rem] font-semibold tracking-wide uppercase cursor-pointer transition-all duration-150 hover:border-border-glow hover:bg-[rgba(99,140,255,0.08)]"
+              onclick={() => scanGames()}
+            >
+              Scan for Games
+            </button>
+          {/if}
+        </div>
+      </div>
+    {/if}
   </div>
 
   <!-- Add game button -->

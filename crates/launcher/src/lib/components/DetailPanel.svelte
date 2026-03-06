@@ -1,6 +1,6 @@
 <script lang="ts">
   import { convertFileSrc } from "@tauri-apps/api/core";
-  import { getSelectedGame } from "../stores/games.svelte";
+  import { getSelectedGame, launchGame, getGameStatus } from "../stores/games.svelte";
   import type { Game } from "../stores/games.svelte";
 
   let game: Game | undefined = $derived(getSelectedGame());
@@ -11,6 +11,16 @@
 
   let playTimeFormatted = $derived(formatPlayTime(game?.play_time_minutes ?? 0));
   let lastPlayedFormatted = $derived(formatLastPlayed(game?.last_played ?? null));
+
+  let launchStatus = $derived(game ? getGameStatus(game.id) : "idle");
+  let launchButtonText = $derived(
+    launchStatus === "launching"
+      ? "Launching..."
+      : launchStatus === "injecting"
+        ? "Injecting..."
+        : "Launch + Inject",
+  );
+  let launchDisabled = $derived(launchStatus === "launching" || launchStatus === "injecting");
 
   function formatPlayTime(minutes: number): string {
     if (minutes === 0) return "0h";
@@ -100,10 +110,14 @@
       <!-- Action buttons -->
       <div class="flex gap-3 mb-7 animate-fade-up" style="animation-delay: 0.1s;">
         <button
-          class="flex-1 max-w-[280px] py-3.5 px-7 border-none rounded-[10px] text-white font-display text-base font-bold tracking-[2px] uppercase cursor-not-allowed opacity-60 flex items-center justify-center gap-2.5 transition-all duration-300"
+          class="flex-1 max-w-[280px] py-3.5 px-7 border-none rounded-[10px] text-white font-display text-base font-bold tracking-[2px] uppercase flex items-center justify-center gap-2.5 transition-all duration-300"
+          class:cursor-pointer={!launchDisabled}
+          class:cursor-not-allowed={launchDisabled}
+          class:opacity-60={launchDisabled}
           style="background: linear-gradient(135deg, #638cff 0%, #06d6a0 100%); box-shadow: 0 4px 20px rgba(99, 140, 255, 0.25);"
-          disabled
-          title="Launch + Inject (coming soon)"
+          disabled={launchDisabled}
+          onclick={() => game && launchGame(game.id)}
+          title="Launch + Inject"
         >
           <svg
             width="18"
@@ -113,7 +127,7 @@
           >
             <polygon points="5 3 19 12 5 21 5 3" />
           </svg>
-          Launch + Inject
+          {launchButtonText}
         </button>
         <button
           class="py-3.5 px-5 border border-border-subtle rounded-[10px] font-display text-[0.85rem] font-semibold tracking-wider uppercase cursor-pointer text-text-secondary transition-all duration-150 hover:border-border-glow hover:text-accent hover:bg-[rgba(99,140,255,0.06)]"
