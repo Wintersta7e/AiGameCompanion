@@ -34,6 +34,10 @@ fn main() {
             commands::games::get_games,
             commands::games::scan_games,
             commands::games::launch_game,
+            commands::games::open_game_config,
+            commands::games::open_game_logs,
+            commands::settings::get_settings,
+            commands::settings::update_settings,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

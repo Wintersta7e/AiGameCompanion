@@ -2,6 +2,8 @@
   import { getCurrentWindow } from "@tauri-apps/api/window";
   import { getSearchQuery, setSearchQuery } from "../stores/games.svelte";
 
+  let { onOpenSettings }: { onOpenSettings: () => void } = $props();
+
   const appWindow = getCurrentWindow();
 
   let searchFocused = $state(false);
@@ -91,11 +93,11 @@
     </div>
 
     <button
-      disabled
-      class="w-9 h-9 flex items-center justify-center border border-border-subtle rounded-md text-text-secondary transition-all duration-150 opacity-50 cursor-not-allowed"
+      class="w-9 h-9 flex items-center justify-center border border-border-subtle rounded-md text-text-secondary transition-all duration-150 cursor-pointer hover:text-text-primary hover:bg-[rgba(255,255,255,0.08)] hover:border-border-glow"
       style="background: rgba(255, 255, 255, 0.03);"
-      title="Coming soon"
+      title="Settings"
       aria-label="Settings"
+      onclick={onOpenSettings}
     >
       <svg
         width="16"
