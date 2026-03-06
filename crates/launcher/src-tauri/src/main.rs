@@ -1,5 +1,6 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod commands;
 mod discovery;
 mod models;
 mod state;
@@ -18,6 +19,10 @@ fn main() {
     tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
         .manage(app_state)
+        .invoke_handler(tauri::generate_handler![
+            commands::games::get_games,
+            commands::games::scan_games,
+        ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }
