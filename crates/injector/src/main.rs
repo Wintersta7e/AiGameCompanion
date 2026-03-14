@@ -226,8 +226,8 @@ fn watch_mode(games: Vec<GameEntry>, dll_path: PathBuf) -> Result<()> {
 
     // Track which PIDs we've already injected into
     let mut injected_pids: HashSet<u32> = HashSet::new();
-    // Track which game process names have an active injected PID
-    let mut active_injections: HashMap<String, u32> = HashMap::new();
+    // Track active injections: process name -> set of PIDs (supports multi-instance games)
+    let mut active_injections: HashMap<String, HashSet<u32>> = HashMap::new();
 
     loop {
         let procs = match enumerate_processes() {
@@ -242,21 +242,21 @@ fn watch_mode(games: Vec<GameEntry>, dll_path: PathBuf) -> Result<()> {
         let current_pids: HashSet<u32> = procs.iter().map(|p| p.pid).collect();
 
         // Check for exited games
-        let exited: Vec<String> = active_injections
-            .iter()
-            .filter(|(_, pid)| !current_pids.contains(pid))
-            .map(|(name, _)| name.clone())
-            .collect();
-
-        for proc_lower in exited {
-            let pid = active_injections.remove(&proc_lower).unwrap();
-            injected_pids.remove(&pid);
-            if let Some(game) = game_map.get(&proc_lower) {
-                println!("{} {} exited -- will re-inject on next launch", timestamp(), game.display_name());
+        for (proc_lower, pids) in &mut active_injections {
+            let exited: Vec<u32> = pids.iter().filter(|pid| !current_pids.contains(pid)).copied().collect();
+            for pid in &exited {
+                pids.remove(pid);
+                injected_pids.remove(pid);
+            }
+            if !exited.is_empty() {
+                if let Some(game) = game_map.get(proc_lower.as_str()) {
+                    println!("{} {} exited -- will re-inject on next launch", timestamp(), game.display_name());
+                }
             }
         }
+        active_injections.retain(|_, pids| !pids.is_empty());
 
-        // Check for new games to inject
+        // Check for new games to inject (using discovered PID directly, not a second lookup)
         for proc_info in &procs {
             let proc_lower = proc_info.name.to_lowercase();
 
@@ -275,7 +275,7 @@ fn watch_mode(games: Vec<GameEntry>, dll_path: PathBuf) -> Result<()> {
                     Ok(()) => {
                         println!("{} Injected into {} (PID {})", timestamp(), game.display_name(), proc_info.pid);
                         injected_pids.insert(proc_info.pid);
-                        active_injections.insert(proc_lower, proc_info.pid);
+                        active_injections.entry(proc_lower).or_default().insert(proc_info.pid);
                     }
                     Err(e) => {
                         eprintln!("{} Failed to inject into {}: {e}", timestamp(), game.display_name());

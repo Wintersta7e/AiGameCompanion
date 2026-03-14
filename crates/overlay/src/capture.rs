@@ -3,7 +3,8 @@ use base64::Engine;
 use image::imageops::FilterType;
 use image::RgbaImage;
 use std::io::Cursor;
-use windows::Win32::Foundation::HWND;
+use tracing::warn;
+use windows::Win32::Foundation::{HWND, RECT};
 use windows::Win32::Graphics::Gdi::{
     BitBlt, CreateCompatibleBitmap, CreateCompatibleDC, DeleteDC, DeleteObject, GetDIBits, GetDC,
     ReleaseDC, SelectObject, BITMAPINFO, BITMAPINFOHEADER, BI_RGB, DIB_RGB_COLORS, SRCCOPY,
@@ -22,21 +23,18 @@ pub fn capture_screenshot() -> Option<String> {
 unsafe fn capture_gdi() -> Option<String> {
     let hwnd = GetForegroundWindow();
     if hwnd.0 == 0 {
-        eprintln!("[companion] Screenshot failed: no foreground window");
+        warn!("Screenshot failed: no foreground window");
         return None;
     }
 
-    // Use GetWindowRect for screen coordinates (not GetClientRect which is relative)
-    let mut rect = std::mem::zeroed();
-    if GetWindowRect(hwnd, &mut rect).is_err() {
-        eprintln!("[companion] Screenshot failed: GetWindowRect failed");
-        return None;
-    }
+    // Try DWM extended frame bounds first (excludes shadow/chrome),
+    // fall back to GetWindowRect.
+    let rect = get_window_bounds(hwnd)?;
 
     let width = rect.right - rect.left;
     let height = rect.bottom - rect.top;
     if width <= 0 || height <= 0 {
-        eprintln!("[companion] Screenshot failed: zero dimensions ({width}x{height})");
+        warn!("Screenshot failed: zero dimensions ({width}x{height})");
         return None;
     }
     let (width, height) = (width as u32, height as u32);
@@ -44,7 +42,7 @@ unsafe fn capture_gdi() -> Option<String> {
     // Get the SCREEN DC (null HWND) -- captures DWM-composited content including DX12
     let hdc_screen = GetDC(HWND(0));
     if hdc_screen.is_invalid() {
-        eprintln!("[companion] Screenshot failed: GetDC(screen) returned invalid handle");
+        warn!("Screenshot failed: GetDC(screen) returned invalid handle");
         return None;
     }
 
@@ -52,7 +50,7 @@ unsafe fn capture_gdi() -> Option<String> {
     let hdc_mem = CreateCompatibleDC(hdc_screen);
     if hdc_mem.is_invalid() {
         ReleaseDC(HWND(0), hdc_screen);
-        eprintln!("[companion] Screenshot failed: CreateCompatibleDC failed");
+        warn!("Screenshot failed: CreateCompatibleDC failed");
         return None;
     }
 
@@ -60,7 +58,7 @@ unsafe fn capture_gdi() -> Option<String> {
     if hbitmap.is_invalid() {
         DeleteDC(hdc_mem);
         ReleaseDC(HWND(0), hdc_screen);
-        eprintln!("[companion] Screenshot failed: CreateCompatibleBitmap failed");
+        warn!("Screenshot failed: CreateCompatibleBitmap failed");
         return None;
     }
 
@@ -85,7 +83,7 @@ unsafe fn capture_gdi() -> Option<String> {
         DeleteDC(hdc_mem);
         ReleaseDC(HWND(0), hdc_screen);
         DeleteObject(hbitmap);
-        eprintln!("[companion] Screenshot failed: BitBlt failed");
+        warn!("Screenshot failed: BitBlt failed");
         return None;
     }
 
@@ -122,7 +120,7 @@ unsafe fn capture_gdi() -> Option<String> {
     DeleteObject(hbitmap);
 
     if lines == 0 {
-        eprintln!("[companion] Screenshot failed: GetDIBits returned 0 lines");
+        warn!("Screenshot failed: GetDIBits returned 0 lines");
         return None;
     }
 
@@ -133,7 +131,7 @@ unsafe fn capture_gdi() -> Option<String> {
 
     // Build image
     let Some(mut img) = RgbaImage::from_raw(width, height, pixels) else {
-        eprintln!("[companion] Screenshot failed: could not create image from raw pixels");
+        warn!("Screenshot failed: could not create image from raw pixels");
         return None;
     };
 
@@ -147,10 +145,36 @@ unsafe fn capture_gdi() -> Option<String> {
     // Encode to PNG
     let mut png_buf = Cursor::new(Vec::new());
     if img.write_to(&mut png_buf, image::ImageFormat::Png).is_err() {
-        eprintln!("[companion] Screenshot failed: PNG encoding failed");
+        warn!("Screenshot failed: PNG encoding failed");
         return None;
     }
 
     // Base64 encode
     Some(STANDARD.encode(png_buf.into_inner()))
+}
+
+/// Get the visible window bounds, preferring DWM extended frame bounds
+/// (excludes shadows and invisible borders) over GetWindowRect.
+unsafe fn get_window_bounds(hwnd: HWND) -> Option<RECT> {
+    use windows::Win32::Graphics::Dwm::{DwmGetWindowAttribute, DWMWA_EXTENDED_FRAME_BOUNDS};
+
+    // Try DWM first -- gives exact visible bounds without shadow
+    let mut rect: RECT = std::mem::zeroed();
+    let hr = DwmGetWindowAttribute(
+        hwnd,
+        DWMWA_EXTENDED_FRAME_BOUNDS,
+        &mut rect as *mut RECT as *mut _,
+        std::mem::size_of::<RECT>() as u32,
+    );
+    if hr.is_ok() {
+        return Some(rect);
+    }
+
+    // Fallback to GetWindowRect (includes shadow on Win10/11)
+    if GetWindowRect(hwnd, &mut rect).is_ok() {
+        Some(rect)
+    } else {
+        warn!("Screenshot failed: GetWindowRect failed");
+        None
+    }
 }

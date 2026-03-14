@@ -7,6 +7,9 @@ use serde::{Deserialize, Serialize};
 use crate::config::CONFIG;
 use crate::state::{ChatMessage, MessageRole, STATE};
 
+/// Maximum total bytes to accumulate from an SSE stream before aborting.
+const MAX_STREAM_BYTES: usize = 2 * 1024 * 1024; // 2 MB
+
 /// Max number of messages to send to the API. Older messages are trimmed to avoid
 /// huge payloads (especially with screenshots) and runaway token costs.
 const MAX_HISTORY_MESSAGES: usize = 50;
@@ -118,11 +121,19 @@ pub async fn send_message(
     }
 
     // Trim conversation history to avoid huge payloads and token costs.
-    // Ensure the trimmed slice starts with a User message (API requirement).
+    // Exclude translation messages and ensure the slice starts with a User message.
+    let messages: Vec<ChatMessage> = messages
+        .into_iter()
+        .filter(|m| !m.is_translation)
+        .collect();
     let messages = if messages.len() > MAX_HISTORY_MESSAGES {
         let mut start = messages.len() - MAX_HISTORY_MESSAGES;
-        if messages[start].role == MessageRole::Assistant {
+        // Skip leading Assistant messages (API requires User first)
+        while start < messages.len() && messages[start].role == MessageRole::Assistant {
             start += 1;
+        }
+        if start >= messages.len() {
+            return Err("No user messages in conversation history.".into());
         }
         messages[start..].to_vec()
     } else {
@@ -131,6 +142,7 @@ pub async fn send_message(
 
     // Build contents array
     let mut contents: Vec<Content> = Vec::with_capacity(messages.len());
+    let last_user_idx = messages.iter().rposition(|m| m.role == MessageRole::User);
 
     for (i, msg) in messages.iter().enumerate() {
         let role = match msg.role {
@@ -138,7 +150,7 @@ pub async fn send_message(
             MessageRole::Assistant => "model",
         };
 
-        let is_last_user = msg.role == MessageRole::User && i == messages.len() - 1;
+        let is_last_user = Some(i) == last_user_idx;
 
         let parts = if is_last_user {
             if let Some(ref screenshot_data) = screenshot {
@@ -209,6 +221,11 @@ pub async fn send_message(
         safety_settings,
     };
 
+    // Validate model name to prevent URL path traversal
+    if !config.model.chars().all(|c| c.is_alphanumeric() || c == '-' || c == '.' || c == '_') {
+        return Err("Invalid model name in config.toml. Use alphanumeric, hyphens, dots only.".into());
+    }
+
     let url = format!(
         "https://generativelanguage.googleapis.com/v1beta/models/{}:streamGenerateContent?alt=sse",
         config.model
@@ -245,43 +262,25 @@ pub async fn send_message(
     let mut stream = response.bytes_stream();
     let mut byte_buf: Vec<u8> = Vec::new();
     let mut full_text = String::new();
+    let mut total_bytes: usize = 0;
 
     while let Some(chunk_result) = stream.next().await {
         let chunk = chunk_result.map_err(|e| format!("Stream error: {e}"))?;
+        total_bytes += chunk.len();
+        if total_bytes > MAX_STREAM_BYTES {
+            return Err("Response too large. Stream aborted.".into());
+        }
         byte_buf.extend_from_slice(chunk.as_ref());
 
         // Process complete lines from the byte buffer
-        while let Some(newline_pos) = byte_buf.iter().position(|&b| b == b'\n') {
-            let line_bytes = byte_buf[..newline_pos].to_vec();
-            byte_buf.drain(..=newline_pos);
+        process_sse_lines(&mut byte_buf, &mut full_text, generation)?;
+    }
 
-            let line = String::from_utf8_lossy(&line_bytes).trim().to_string();
-            if line.is_empty() {
-                continue;
-            }
-
-            if let Some(json_str) = line.strip_prefix("data: ") {
-                if let Ok(resp) = serde_json::from_str::<GeminiResponse>(json_str) {
-                    let chunk_text: String = resp
-                        .candidates
-                        .into_iter()
-                        .flat_map(|c| c.content.parts)
-                        .filter_map(|p| p.text)
-                        .collect::<Vec<_>>()
-                        .join("");
-
-                    if !chunk_text.is_empty() {
-                        full_text.push_str(&chunk_text);
-
-                        let mut state = STATE.lock();
-                        if state.request_generation != generation {
-                            return Err("Cancelled".into());
-                        }
-                        state.streaming_response.push_str(&chunk_text);
-                    }
-                }
-            }
-        }
+    // Drain any remaining data in the byte buffer after stream ends
+    if !byte_buf.is_empty() {
+        // Add a synthetic newline so the line gets processed
+        byte_buf.push(b'\n');
+        process_sse_lines(&mut byte_buf, &mut full_text, generation)?;
     }
 
     if full_text.is_empty() {
@@ -289,4 +288,51 @@ pub async fn send_message(
     } else {
         Ok(full_text)
     }
+}
+
+/// Process complete lines from the SSE byte buffer, extracting text chunks.
+fn process_sse_lines(
+    byte_buf: &mut Vec<u8>,
+    full_text: &mut String,
+    generation: u64,
+) -> Result<(), String> {
+    while let Some(newline_pos) = byte_buf.iter().position(|&b| b == b'\n') {
+        let line_bytes = byte_buf[..newline_pos].to_vec();
+        byte_buf.drain(..=newline_pos);
+
+        let line = match String::from_utf8(line_bytes) {
+            Ok(s) => s,
+            Err(_) => {
+                tracing::warn!("SSE: non-UTF-8 line dropped");
+                continue;
+            }
+        };
+        let line = line.trim();
+        if line.is_empty() {
+            continue;
+        }
+
+        if let Some(json_str) = line.strip_prefix("data: ") {
+            if let Ok(resp) = serde_json::from_str::<GeminiResponse>(json_str) {
+                let chunk_text: String = resp
+                    .candidates
+                    .into_iter()
+                    .flat_map(|c| c.content.parts)
+                    .filter_map(|p| p.text)
+                    .collect::<Vec<_>>()
+                    .join("");
+
+                if !chunk_text.is_empty() {
+                    full_text.push_str(&chunk_text);
+
+                    let mut state = STATE.lock();
+                    if state.request_generation != generation {
+                        return Err("Cancelled".into());
+                    }
+                    state.streaming_response.push_str(&chunk_text);
+                }
+            }
+        }
+    }
+    Ok(())
 }

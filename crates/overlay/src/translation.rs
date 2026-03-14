@@ -80,6 +80,13 @@ async fn send_local_translation(screenshot: String) -> Result<String, String> {
     let config = &CONFIG.translation.local;
     let prompt = build_translation_prompt();
 
+    // Build the data-URI by prepending the prefix to the existing string
+    // instead of formatting (which would clone the entire base64 payload).
+    let mut data_uri = String::with_capacity("data:image/png;base64,".len() + screenshot.len());
+    data_uri.push_str("data:image/png;base64,");
+    data_uri.push_str(&screenshot);
+    drop(screenshot); // free the original
+
     let request = ChatCompletionRequest {
         model: config.model.clone(),
         messages: vec![OaiMessage {
@@ -88,7 +95,7 @@ async fn send_local_translation(screenshot: String) -> Result<String, String> {
                 OaiContentPart::Text { text: prompt },
                 OaiContentPart::ImageUrl {
                     image_url: ImageUrl {
-                        url: format!("data:image/png;base64,{screenshot}"),
+                        url: data_uri,
                     },
                 },
             ]),
@@ -154,7 +161,13 @@ pub fn spawn_translate_request(
             crate::spawn_api_request(gen, msgs, screenshot);
         }
         TranslationProvider::Local => {
-            crate::RUNTIME.spawn(async move {
+            let Some(rt) = crate::RUNTIME.as_ref() else {
+                let mut state = STATE.lock();
+                state.error = Some("API unavailable: tokio runtime failed to start.".into());
+                state.is_loading = false;
+                return;
+            };
+            rt.spawn(async move {
                 let result = match screenshot {
                     Some(data) => send_local_translation(data).await,
                     None => Err("No screenshot captured for translation.".into()),
@@ -173,10 +186,10 @@ pub fn spawn_translate_request(
                             .find(|m| m.role == MessageRole::User)
                             .map(|m| m.content.clone())
                             .unwrap_or_default();
-                        state.messages.push(ChatMessage {
-                            role: MessageRole::Assistant,
-                            content: response.clone(),
-                        });
+                        state.push_message(ChatMessage::translation(
+                            MessageRole::Assistant,
+                            response.clone(),
+                        ));
                         state.streaming_response.clear();
                         state.is_loading = false;
                         drop(state);

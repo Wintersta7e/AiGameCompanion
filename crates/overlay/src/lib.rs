@@ -19,7 +19,7 @@ use hudhook::windows::Win32::UI::Input::KeyboardAndMouse::{GetAsyncKeyState, VK_
 use hudhook::*;
 use once_cell::sync::Lazy;
 use tokio::runtime::Runtime;
-use tracing::info;
+use tracing::{error, info};
 
 use crate::config::{GraphicsApi, DLL_HINSTANCE, CONFIG, parse_vk_code};
 use crate::state::{ChatMessage, MessageRole, STATE};
@@ -27,13 +27,25 @@ use crate::state::{ChatMessage, MessageRole, STATE};
 /// Set to true once render() is called, confirming hooks are active.
 static RENDER_ACTIVE: AtomicBool = AtomicBool::new(false);
 
+/// Mirrors `STATE.visible` without requiring a lock. Updated under lock,
+/// read lock-free on every frame to avoid unnecessary mutex contention.
+static OVERLAY_VISIBLE: AtomicBool = AtomicBool::new(false);
+
 /// Global tokio runtime for async API work. 2 worker threads.
-static RUNTIME: Lazy<Runtime> = Lazy::new(|| {
-    tokio::runtime::Builder::new_multi_thread()
+/// Uses `OnceLock` + explicit error handling instead of `expect()` to avoid
+/// panicking inside the host game process.
+static RUNTIME: Lazy<Option<Runtime>> = Lazy::new(|| {
+    match tokio::runtime::Builder::new_multi_thread()
         .worker_threads(2)
         .enable_all()
         .build()
-        .expect("Failed to create tokio runtime")
+    {
+        Ok(rt) => Some(rt),
+        Err(e) => {
+            error!("Failed to create tokio runtime: {e}. API features disabled.");
+            None
+        }
+    }
 });
 
 /// Spawn an async API request on the tokio runtime.
@@ -43,37 +55,46 @@ pub(crate) fn spawn_api_request(
     messages: Vec<ChatMessage>,
     screenshot: Option<String>,
 ) {
-    RUNTIME.spawn(async move {
+    let Some(rt) = RUNTIME.as_ref() else {
+        let mut state = STATE.lock();
+        state.error = Some("API unavailable: tokio runtime failed to start.".into());
+        state.is_loading = false;
+        return;
+    };
+
+    // Capture last user message now (O(1) — it's always at the end) to avoid
+    // a linear scan inside the lock after the async task completes.
+    let last_user_msg = messages
+        .iter()
+        .rev()
+        .find(|m| m.role == MessageRole::User)
+        .map(|m| m.content.clone())
+        .unwrap_or_default();
+
+    rt.spawn(async move {
         let result = api::send_message(messages, screenshot, gen).await;
         let mut state = STATE.lock();
         if state.request_generation == gen {
             match result {
                 Ok(response) => {
-                    let last_user = state
-                        .messages
-                        .iter()
-                        .rev()
-                        .find(|m| m.role == MessageRole::User)
-                        .map(|m| m.content.clone())
-                        .unwrap_or_default();
-                    state.messages.push(ChatMessage {
-                        role: MessageRole::Assistant,
-                        content: response.clone(),
-                    });
+                    state.push_message(ChatMessage::new(
+                        MessageRole::Assistant,
+                        response.clone(),
+                    ));
                     state.streaming_response.clear();
                     state.is_loading = false;
                     // Drop the lock BEFORE file I/O
                     drop(state);
-                    logging::log_exchange(&last_user, &response);
+                    logging::log_exchange(&last_user_msg, &response);
                 }
                 Err(err) => {
                     if !state.streaming_response.is_empty() {
                         let partial = state.streaming_response.clone();
                         state.streaming_response.clear();
-                        state.messages.push(ChatMessage {
-                            role: MessageRole::Assistant,
-                            content: partial,
-                        });
+                        state.push_message(ChatMessage::new(
+                            MessageRole::Assistant,
+                            partial,
+                        ));
                     }
                     state.error = Some(err);
                     state.is_loading = false;
@@ -183,6 +204,7 @@ impl ImguiRenderLoop for CompanionRenderLoop {
         if f9_pressed && !self.f9_was_pressed {
             let mut state = STATE.lock();
             state.visible = !state.visible;
+            OVERLAY_VISIBLE.store(state.visible, Ordering::SeqCst);
         }
         self.f9_was_pressed = f9_pressed;
 
@@ -192,25 +214,23 @@ impl ImguiRenderLoop for CompanionRenderLoop {
                 let translate_pressed = unsafe { GetAsyncKeyState(vk) } & (1 << 15) != 0;
                 if translate_pressed && !self.translate_was_pressed {
                     let mut state = STATE.lock();
-                    // Only trigger if not already loading
-                    if !state.is_loading {
-                        // Auto-insert user message
-                        state.messages.push(ChatMessage {
-                            role: MessageRole::User,
-                            content: "[Translate screen]".into(),
-                        });
+                    // Only trigger if not already loading and no capture in progress
+                    if !state.is_loading && !state.capture_pending {
+                        state.push_message(ChatMessage::translation(
+                            MessageRole::User,
+                            "[Translate screen]".into(),
+                        ));
                         state.is_loading = true;
                         state.error = None;
                         state.request_generation += 1;
                         state.streaming_response.clear();
-                        // Trigger hide-capture-show
                         state.capture_pending = true;
                         state.capture_wait_frames = 2;
                         state.captured_screenshot = None;
                         state.send_pending_capture = true;
                         state.translate_pending = true;
-                        // Make overlay visible so user sees the response
                         state.visible = true;
+                        OVERLAY_VISIBLE.store(true, Ordering::SeqCst);
                     }
                 }
                 self.translate_was_pressed = translate_pressed;
@@ -225,23 +245,29 @@ impl ImguiRenderLoop for CompanionRenderLoop {
                     state.capture_wait_frames -= 1;
                     return; // skip drawing, let clean frame render
                 }
-                // Waited enough frames. Capture now.
-                drop(state);
-                let screenshot = capture::capture_screenshot();
-                let mut state = STATE.lock();
-                state.captured_screenshot = screenshot;
+                // Waited enough frames. Capture now (off render thread via spawn_blocking).
                 state.capture_pending = false;
-                return; // don't draw this frame either
+                drop(state);
+
+                if let Some(rt) = RUNTIME.as_ref() {
+                    rt.spawn_blocking(move || {
+                        let screenshot = capture::capture_screenshot();
+                        let mut state = STATE.lock();
+                        state.captured_screenshot = screenshot;
+                    });
+                }
+                return; // don't draw this frame
             }
 
             // Check if we need to spawn an API call after capture completed
-            if state.send_pending_capture && !state.capture_pending {
+            if state.send_pending_capture && state.captured_screenshot.is_some() {
                 state.send_pending_capture = false;
                 let is_translate = state.translate_pending;
                 state.translate_pending = false;
-                let messages = state.messages.clone();
-                let screenshot = state.captured_screenshot.take();
+                // Extract data under lock, then drop before cloning messages
                 let gen = state.request_generation;
+                let screenshot = state.captured_screenshot.take();
+                let messages = state.messages.clone();
 
                 if screenshot.is_none() {
                     state.error = Some("Screenshot capture failed -- sending text only.".into());
@@ -257,16 +283,14 @@ impl ImguiRenderLoop for CompanionRenderLoop {
             }
         }
 
-        // --- Draw UI if visible ---
-        let visible = STATE.lock().visible;
-        if visible {
+        // --- Draw UI if visible (lock-free check) ---
+        if OVERLAY_VISIBLE.load(Ordering::SeqCst) {
             ui::draw_panel(ui);
         }
     }
 
     fn message_filter(&self, _io: &imgui::Io) -> MessageFilter {
-        let visible = STATE.lock().visible;
-        if visible {
+        if OVERLAY_VISIBLE.load(Ordering::SeqCst) {
             MessageFilter::InputAll
         } else {
             MessageFilter::empty()

@@ -1,0 +1,157 @@
+@import url("https://fonts.googleapis.com/css2?family=Rajdhani:wght@400;500;600;700&family=Exo+2:ital,wght@0,300;0,400;0,500;0,600;0,700;1,400&family=JetBrains+Mono:wght@400;500;600&display=swap");
+@import "tailwindcss";
+
+@theme {
+  /* ── Background palette ── */
+  --color-bg-deep: #0a0c14;
+  --color-bg-surface: #111522;
+  --color-bg-card: #161b2e;
+  --color-bg-glass: rgba(22, 27, 46, 0.65);
+
+  /* ── Border palette ── */
+  --color-border-subtle: rgba(99, 140, 255, 0.08);
+  --color-border-glow: rgba(99, 140, 255, 0.25);
+
+  /* ── Accent palette ── */
+  --color-accent: #638cff;
+  --color-accent-secondary: #a855f7;
+  --color-accent-tertiary: #06d6a0;
+  --color-accent-warm: #ff6b6b;
+
+  /* ── Text palette ── */
+  --color-text-primary: #e8ecf4;
+  --color-text-secondary: #8892b0;
+  --color-text-muted: #4a5578;
+
+  /* ── Font families ── */
+  --font-display: "Rajdhani", sans-serif;
+  --font-body: "Exo 2", sans-serif;
+  --font-mono: "JetBrains Mono", monospace;
+
+  /* ── Accent opacity variants ── */
+  --color-accent-8: rgba(99, 140, 255, 0.08);
+  --color-accent-12: rgba(99, 140, 255, 0.12);
+  --color-accent-15: rgba(99, 140, 255, 0.15);
+  --color-accent-25: rgba(99, 140, 255, 0.25);
+  --color-secondary-15: rgba(168, 85, 247, 0.15);
+  --color-tertiary-12: rgba(6, 214, 160, 0.12);
+  --color-warm-12: rgba(255, 107, 107, 0.12);
+  --color-bg-interactive: rgba(255, 255, 255, 0.03);
+  --color-bg-hover: rgba(255, 255, 255, 0.06);
+
+  /* ── Animations ── */
+  --animate-drift: drift 20s ease-in-out infinite;
+  --animate-card-in: card-in 0.35s ease-out both;
+  --animate-fade-up: fade-up 0.4s ease-out both;
+  --animate-pulse-glow: pulse-glow 2s ease-in-out infinite;
+}
+
+/* ── Base body styles ── */
+body {
+  font-family: var(--font-body);
+  background-color: var(--color-bg-deep);
+  color: var(--color-text-primary);
+  overflow: hidden;
+  margin: 0;
+}
+
+/* ── Heading font ── */
+h1,
+h2,
+h3,
+h4,
+h5,
+h6 {
+  font-family: var(--font-display);
+}
+
+/* ── Keyframes: drift -- ambient background orb movement ── */
+@keyframes drift {
+  0%,
+  100% {
+    transform: translate(0, 0) scale(1);
+    opacity: 0.3;
+  }
+  25% {
+    transform: translate(30px, -20px) scale(1.05);
+    opacity: 0.4;
+  }
+  50% {
+    transform: translate(-20px, 15px) scale(0.95);
+    opacity: 0.25;
+  }
+  75% {
+    transform: translate(10px, 25px) scale(1.02);
+    opacity: 0.35;
+  }
+}
+
+/* ── Keyframes: card-in -- list items slide in from the left ── */
+@keyframes card-in {
+  from {
+    opacity: 0;
+    transform: translateX(-16px);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(0);
+  }
+}
+
+/* ── Keyframes: fade-up -- detail panel elements rise into view ── */
+@keyframes fade-up {
+  from {
+    opacity: 0;
+    transform: translateY(12px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+/* ── Keyframes: pulse-glow -- status indicator pulsing ── */
+@keyframes pulse-glow {
+  0%,
+  100% {
+    opacity: 1;
+    box-shadow: 0 0 4px currentColor;
+  }
+  50% {
+    opacity: 0.6;
+    box-shadow: 0 0 12px currentColor;
+  }
+}
+
+/* ── Reduced motion -- respect user preference ── */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}
+
+/* ── Custom scrollbar -- thin, accent-colored ── */
+body, .overflow-y-auto, .overflow-auto {
+  scrollbar-width: thin;
+  scrollbar-color: var(--color-accent) transparent;
+}
+
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background-color: rgba(99, 140, 255, 0.3);
+  border-radius: 3px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background-color: rgba(99, 140, 255, 0.5);
+}
