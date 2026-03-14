@@ -128,6 +128,9 @@ fn current_exe_name() -> Option<String> {
     if len == 0 {
         return None;
     }
+    if len >= buf.len() {
+        tracing::warn!("Exe path may be truncated ({len} >= {} chars)", buf.len());
+    }
 
     let path = String::from_utf16_lossy(&buf[..len]);
     path.rsplit('\\')
