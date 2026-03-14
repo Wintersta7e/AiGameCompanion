@@ -43,7 +43,12 @@ impl Process {
         let proc_addr =
             unsafe { GetProcAddress(GetModuleHandleW(w!("Kernel32"))?, s!("LoadLibraryW")) };
 
-        let dll_path = HSTRING::from(dll_path.canonicalize().unwrap().as_path());
+        let dll_path = HSTRING::from(
+            dll_path
+                .canonicalize()
+                .map_err(|_| Error::from_hresult(HRESULT(-1)))?
+                .as_path(),
+        );
         let dll_path_buf = unsafe {
             VirtualAllocEx(
                 self.0,
