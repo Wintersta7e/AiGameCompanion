@@ -59,6 +59,23 @@ export function setSearchQuery(query: string): void {
   searchQuery = query;
 }
 
+export async function loadGames(): Promise<void> {
+  isLoading = true;
+  error = null;
+  try {
+    const result = await invoke<Game[]>("get_games");
+    games = result;
+    if (result.length > 0 && selectedGameId === null) {
+      selectedGameId = result[0].id;
+    }
+  } catch (err) {
+    console.error("Failed to load games:", err);
+    error = String(err);
+  } finally {
+    isLoading = false;
+  }
+}
+
 export async function scanGames(): Promise<void> {
   isLoading = true;
   error = null;

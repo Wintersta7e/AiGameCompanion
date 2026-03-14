@@ -47,6 +47,11 @@ pub async fn scan_games(state: State<'_, AppState>) -> Result<Vec<Game>, String>
 pub async fn launch_game(game_id: String, app: tauri::AppHandle) -> Result<String, String> {
     let state = app.state::<AppState>();
 
+    // Guard: prevent duplicate injection for the same game
+    if state.active_injectors.lock().contains_key(&game_id) {
+        return Err(format!("Injector already active for this game"));
+    }
+
     // Get game from state
     let game = {
         let launcher = state.launcher.lock();
@@ -71,6 +76,14 @@ pub async fn launch_game(game_id: String, app: tauri::AppHandle) -> Result<Strin
     } else {
         // For non-Steam games, launch via exe_path directly
         if let Some(exe_path) = &game.exe_path {
+            let path = std::path::Path::new(exe_path);
+            // Validate the exe path exists and has an .exe extension
+            if !path.exists() {
+                return Err(format!("Executable not found: {exe_path}"));
+            }
+            if path.extension().and_then(|e| e.to_str()) != Some("exe") {
+                return Err(format!("Invalid executable: {exe_path}"));
+            }
             app.opener().open_path(exe_path, None::<&str>).map_err(|e| format!("Failed to launch: {e}"))?;
         } else {
             return Err(format!("No executable path for game: {}", game.name));

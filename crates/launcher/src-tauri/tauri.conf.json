@@ -25,12 +25,6 @@
       "assetProtocol": {
         "enable": true,
         "scope": {
-          "allow": [
-            "C:\\Program Files (x86)\\Steam\\appcache\\librarycache\\*",
-            "C:\\Program Files\\Steam\\appcache\\librarycache\\*",
-            "$HOME/.steam/steam/appcache/librarycache/*",
-            "$HOME/.local/share/Steam/appcache/librarycache/*"
-          ],
           "deny": ["**/*.toml", "**/*.key", "**/*.pem", "**/*.env"]
         }
       }

@@ -17,6 +17,7 @@
     launch_on_startup: false,
   });
   let saving = $state(false);
+  let saveError = $state<string | null>(null);
 
   async function load(): Promise<void> {
     try {
@@ -28,11 +29,13 @@
 
   async function save(): Promise<void> {
     saving = true;
+    saveError = null;
     try {
       await invoke("update_settings", { settings });
       open = false;
     } catch (e) {
       console.error("Failed to save settings:", e);
+      saveError = String(e);
     } finally {
       saving = false;
     }
@@ -126,7 +129,7 @@
 
         <!-- Toggle: Minimize to Tray -->
         <label class="flex items-center justify-between cursor-pointer group">
-          <span class="font-body text-sm text-text-secondary group-hover:text-text-primary transition-colors">Minimize to tray</span>
+          <span class="font-body text-sm text-text-secondary group-hover:text-text-primary transition-colors">Minimize to tray <span class="text-text-muted text-xs">(coming soon)</span></span>
           <button
             role="switch"
             aria-label="Minimize to tray"
@@ -144,7 +147,7 @@
 
         <!-- Toggle: Launch on Startup -->
         <label class="flex items-center justify-between cursor-pointer group">
-          <span class="font-body text-sm text-text-secondary group-hover:text-text-primary transition-colors">Launch on system startup</span>
+          <span class="font-body text-sm text-text-secondary group-hover:text-text-primary transition-colors">Launch on system startup <span class="text-text-muted text-xs">(coming soon)</span></span>
           <button
             role="switch"
             aria-label="Launch on system startup"
@@ -162,6 +165,9 @@
       </div>
 
       <!-- Footer -->
+      {#if saveError}
+        <div class="px-6 py-2 text-sm text-red-400">{saveError}</div>
+      {/if}
       <div class="flex justify-end gap-3 px-6 py-4 border-t border-border-subtle">
         <button
           class="px-4 py-2 rounded-lg font-body text-sm text-text-secondary hover:text-text-primary hover:bg-[rgba(255,255,255,0.06)] transition-all duration-150"
