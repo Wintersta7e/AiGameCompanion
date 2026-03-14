@@ -6,10 +6,21 @@
   import DetailPanel from "./lib/components/DetailPanel.svelte";
   import Background from "./lib/components/Background.svelte";
   import SettingsModal from "./lib/components/SettingsModal.svelte";
-  import { scanGames, getGames } from "./lib/stores/games.svelte";
+  import { invoke } from "@tauri-apps/api/core";
+  import { scanGames, getGames, loadGames } from "./lib/stores/games.svelte";
 
-  onMount(() => {
-    scanGames();
+  onMount(async () => {
+    try {
+      const settings = await invoke<{ scan_on_startup: boolean }>("get_settings");
+      if (settings.scan_on_startup) {
+        scanGames();
+      } else {
+        loadGames();
+      }
+    } catch {
+      // Fallback: scan if settings can't be loaded
+      scanGames();
+    }
   });
 
   let games = $derived(getGames());

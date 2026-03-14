@@ -107,10 +107,10 @@ pub fn draw_panel(ui: &Ui) {
                     if !state.streaming_response.is_empty() {
                         let partial = format!("{} [cancelled]", state.streaming_response);
                         state.streaming_response.clear();
-                        state.messages.push(ChatMessage {
-                            role: MessageRole::Assistant,
-                            content: partial,
-                        });
+                        state.push_message(ChatMessage::new(
+                            MessageRole::Assistant,
+                            partial,
+                        ));
                     }
                     state.is_loading = false;
                     state.request_generation += 1; // invalidate in-flight request
@@ -133,10 +133,10 @@ pub fn draw_panel(ui: &Ui) {
                         let mut state = STATE.lock();
                         let text = state.input_buffer.trim().to_string();
                         if !text.is_empty() {
-                            state.messages.push(ChatMessage {
-                                role: MessageRole::User,
-                                content: text,
-                            });
+                            state.push_message(ChatMessage::new(
+                                MessageRole::User,
+                                text,
+                            ));
                             state.input_buffer.clear();
                             state.is_loading = true;
                             state.error = None;

@@ -5,6 +5,7 @@ use hudhook::windows::Win32::Foundation::{HINSTANCE, HMODULE};
 use hudhook::windows::Win32::System::LibraryLoader::GetModuleFileNameW;
 use once_cell::sync::Lazy;
 use serde::Deserialize;
+use tracing::warn;
 
 /// Which graphics API to hook into.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
@@ -38,6 +39,9 @@ pub(crate) fn dll_directory() -> Option<PathBuf> {
     let len = unsafe { GetModuleFileNameW(hmodule, &mut buf) } as usize;
     if len == 0 {
         return None;
+    }
+    if len >= buf.len() {
+        warn!("DLL path may be truncated ({len} >= {} chars)", buf.len());
     }
     let path = PathBuf::from(String::from_utf16_lossy(&buf[..len]));
     path.parent().map(|p| p.to_path_buf())
@@ -286,7 +290,7 @@ pub fn parse_vk_code(hotkey: &str) -> Option<i32> {
 
 pub static CONFIG: Lazy<Config> = Lazy::new(|| {
     let Some(dir) = dll_directory() else {
-        eprintln!("[companion] Could not determine DLL directory, using defaults");
+        warn!("Could not determine DLL directory, using defaults");
         return Config::default();
     };
 
@@ -295,7 +299,7 @@ pub static CONFIG: Lazy<Config> = Lazy::new(|| {
         Ok(contents) => match toml::from_str(&contents) {
             Ok(config) => config,
             Err(e) => {
-                eprintln!("[companion] Failed to parse config.toml: {e}");
+                warn!("Failed to parse config.toml: {e}");
                 Config::default()
             }
         },
