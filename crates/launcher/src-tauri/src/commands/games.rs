@@ -6,7 +6,7 @@ use tauri_plugin_shell::ShellExt;
 
 use crate::discovery;
 use crate::models::{Game, GameSource};
-use crate::state::AppState;
+use crate::state::{ActiveSession, AppState};
 
 #[tauri::command]
 #[allow(clippy::needless_pass_by_value)]
@@ -44,6 +44,7 @@ pub async fn scan_games(state: State<'_, AppState>) -> Result<Vec<Game>, String>
 }
 
 #[tauri::command]
+#[allow(clippy::too_many_lines)]
 pub async fn launch_game(game_id: String, app: tauri::AppHandle) -> Result<String, String> {
     let state = app.state::<AppState>();
 
@@ -130,9 +131,12 @@ pub async fn launch_game(game_id: String, app: tauri::AppHandle) -> Result<Strin
         let (mut rx, child) = sidecar
             .spawn()
             .map_err(|e| format!("Failed to spawn injector: {e}"))?;
-        state.active_injectors.lock().insert(game_id.clone(), child);
+        state.active_injectors.lock().insert(game_id.clone(), ActiveSession {
+            child,
+            started_at: std::time::Instant::now(),
+        });
 
-        // Listen for sidecar exit and emit event to frontend
+        // Listen for sidecar exit, track play time, and emit event to frontend
         let app_handle = app.clone();
         let gid = game_id.clone();
         tauri::async_runtime::spawn(async move {
@@ -142,7 +146,25 @@ pub async fn launch_game(game_id: String, app: tauri::AppHandle) -> Result<Strin
                     CommandEvent::Terminated(_) | CommandEvent::Error(_) => {
                         let _ = app_handle.emit("injector-finished", &gid);
                         let s = app_handle.state::<AppState>();
-                        s.active_injectors.lock().remove(&gid);
+                        // Remove session and compute play time
+                        let session = s.active_injectors.lock().remove(&gid);
+                        if let Some(session) = session {
+                            let elapsed_mins = session.started_at.elapsed().as_secs() / 60;
+                            if elapsed_mins > 0 {
+                                let mut launcher = s.launcher.lock();
+                                if let Some(g) = launcher.games.iter_mut().find(|g| g.id == gid) {
+                                    g.play_time_minutes += elapsed_mins;
+                                    tracing::info!(
+                                        "Session ended for {}: +{}min (total: {}min)",
+                                        g.name, elapsed_mins, g.play_time_minutes
+                                    );
+                                }
+                                drop(launcher);
+                                if let Err(e) = s.save() {
+                                    tracing::error!("Failed to save play time: {e}");
+                                }
+                            }
+                        }
                         break;
                     }
                     _ => {}

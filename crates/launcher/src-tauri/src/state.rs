@@ -1,15 +1,24 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
+use std::time::Instant;
 
 use parking_lot::Mutex;
 use tauri_plugin_shell::process::CommandChild;
 
 use crate::models::LauncherState;
 
+/// Tracks an active injection session for play time accounting.
+/// The `CommandChild` is held alive so the sidecar process isn't killed on drop.
+#[allow(dead_code)]
+pub struct ActiveSession {
+    pub child: CommandChild,
+    pub started_at: Instant,
+}
+
 pub struct AppState {
     pub launcher: Mutex<LauncherState>,
     pub state_path: PathBuf,
-    pub active_injectors: Mutex<HashMap<String, CommandChild>>,
+    pub active_injectors: Mutex<HashMap<String, ActiveSession>>,
 }
 
 impl AppState {
