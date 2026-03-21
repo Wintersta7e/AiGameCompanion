@@ -12,10 +12,14 @@ use std::time::Duration;
 
 use hudhook::hooks::dx11::ImguiDx11Hooks;
 use hudhook::hooks::dx12::ImguiDx12Hooks;
-use hudhook::windows::Win32::Foundation::HINSTANCE;
+use hudhook::windows::Win32::Foundation::{HINSTANCE, HWND, LPARAM, WPARAM};
 use hudhook::windows::Win32::System::LibraryLoader::GetModuleHandleA;
 use hudhook::windows::Win32::System::SystemServices::DLL_PROCESS_ATTACH;
 use hudhook::windows::Win32::UI::Input::KeyboardAndMouse::{GetAsyncKeyState, VK_F9};
+use hudhook::windows::Win32::UI::WindowsAndMessaging::{
+    ClipCursor, GetClipCursor, SetCursor, LoadCursorW, IDC_ARROW,
+    WM_SETCURSOR, HTCLIENT,
+};
 use hudhook::*;
 use once_cell::sync::Lazy;
 use tokio::runtime::Runtime;
@@ -154,6 +158,10 @@ struct CompanionRenderLoop {
     f9_was_pressed: bool,
     translate_was_pressed: bool,
     logged_first_render: bool,
+    /// Saved cursor clip rect from the game, restored when the overlay hides.
+    saved_clip_rect: Option<hudhook::windows::Win32::Foundation::RECT>,
+    /// Whether we previously had the overlay visible (for edge-triggered clip/cursor logic).
+    was_visible: bool,
 }
 
 impl CompanionRenderLoop {
@@ -162,6 +170,8 @@ impl CompanionRenderLoop {
             f9_was_pressed: false,
             translate_was_pressed: false,
             logged_first_render: false,
+            saved_clip_rect: None,
+            was_visible: false,
         }
     }
 }
@@ -192,21 +202,53 @@ impl ImguiRenderLoop for CompanionRenderLoop {
         ctx.style_mut().scale_all_sizes(scale);
     }
 
+    fn before_render<'a>(
+        &'a mut self,
+        ctx: &mut imgui::Context,
+        _render_context: &'a mut dyn hudhook::RenderContext,
+    ) {
+        let visible = OVERLAY_VISIBLE.load(Ordering::Acquire);
+        let capturing = STATE.lock().capture_pending;
+
+        // ImGui software cursor -- games hide the hardware cursor via
+        // SetCursor(NULL) on every WM_SETCURSOR, so we draw our own.
+        // Disable during capture so the cursor doesn't burn into screenshots.
+        ctx.io_mut().mouse_draw_cursor = visible && !capturing;
+
+        // Edge-triggered: save/restore the game's ClipCursor rect.
+        if visible && !self.was_visible {
+            // Overlay just opened -- save and release cursor clip.
+            let mut rect = hudhook::windows::Win32::Foundation::RECT::default();
+            if unsafe { GetClipCursor(&mut rect) }.is_ok() {
+                self.saved_clip_rect = Some(rect);
+            }
+            unsafe { let _ = ClipCursor(None); }
+        } else if !visible && self.was_visible {
+            // Overlay just closed -- restore game's cursor clip.
+            if let Some(ref rect) = self.saved_clip_rect.take() {
+                unsafe { let _ = ClipCursor(Some(rect)); }
+            }
+        }
+        self.was_visible = visible;
+    }
+
     fn render(&mut self, ui: &mut imgui::Ui) {
         if !self.logged_first_render {
-            RENDER_ACTIVE.store(true, Ordering::SeqCst);
+            RENDER_ACTIVE.store(true, Ordering::Relaxed);
             info!("render() called -- hooks are active!");
             self.logged_first_render = true;
         }
 
-        // --- Hotkey toggle (F9) with rising-edge debounce ---
-        let f9_pressed = unsafe { GetAsyncKeyState(VK_F9.0 as i32) } & (1 << 15) != 0;
-        if f9_pressed && !self.f9_was_pressed {
+        // --- Hotkey toggle with rising-edge debounce ---
+        // Use configured hotkey (default F9), fall back to F9 if unparseable.
+        let toggle_vk = parse_vk_code(&CONFIG.overlay.hotkey).unwrap_or(VK_F9.0 as i32);
+        let toggle_pressed = unsafe { GetAsyncKeyState(toggle_vk) } & (1 << 15) != 0;
+        if toggle_pressed && !self.f9_was_pressed {
             let mut state = STATE.lock();
             state.visible = !state.visible;
-            OVERLAY_VISIBLE.store(state.visible, Ordering::SeqCst);
+            OVERLAY_VISIBLE.store(state.visible, Ordering::Release);
         }
-        self.f9_was_pressed = f9_pressed;
+        self.f9_was_pressed = toggle_pressed;
 
         // --- Translate hotkey (F10 default) with rising-edge debounce ---
         if CONFIG.translation.enabled {
@@ -230,7 +272,7 @@ impl ImguiRenderLoop for CompanionRenderLoop {
                         state.send_pending_capture = true;
                         state.translate_pending = true;
                         state.visible = true;
-                        OVERLAY_VISIBLE.store(true, Ordering::SeqCst);
+                        OVERLAY_VISIBLE.store(true, Ordering::Release);
                     }
                 }
                 self.translate_was_pressed = translate_pressed;
@@ -251,17 +293,34 @@ impl ImguiRenderLoop for CompanionRenderLoop {
 
                 if let Some(rt) = RUNTIME.as_ref() {
                     rt.spawn_blocking(move || {
-                        let screenshot = capture::capture_screenshot();
+                        let result = std::panic::catch_unwind(|| {
+                            capture::capture_screenshot()
+                        });
                         let mut state = STATE.lock();
-                        state.captured_screenshot = screenshot;
+                        state.captured_screenshot = match result {
+                            Ok(screenshot) => screenshot,
+                            Err(_) => {
+                                error!("Screenshot capture panicked");
+                                None
+                            }
+                        };
+                        state.capture_complete = true;
                     });
+                } else {
+                    // No runtime -- reset state so we don't get stuck
+                    let mut state = STATE.lock();
+                    state.send_pending_capture = false;
+                    state.translate_pending = false;
+                    state.is_loading = false;
+                    state.error = Some("Screenshot unavailable: tokio runtime not started.".into());
                 }
                 return; // don't draw this frame
             }
 
             // Check if we need to spawn an API call after capture completed
-            if state.send_pending_capture && state.captured_screenshot.is_some() {
+            if state.send_pending_capture && state.capture_complete {
                 state.send_pending_capture = false;
+                state.capture_complete = false;
                 let is_translate = state.translate_pending;
                 state.translate_pending = false;
                 // Extract data under lock, then drop before cloning messages
@@ -284,16 +343,33 @@ impl ImguiRenderLoop for CompanionRenderLoop {
         }
 
         // --- Draw UI if visible (lock-free check) ---
-        if OVERLAY_VISIBLE.load(Ordering::SeqCst) {
+        if OVERLAY_VISIBLE.load(Ordering::Acquire) {
             ui::draw_panel(ui);
         }
     }
 
     fn message_filter(&self, _io: &imgui::Io) -> MessageFilter {
-        if OVERLAY_VISIBLE.load(Ordering::SeqCst) {
+        if OVERLAY_VISIBLE.load(Ordering::Acquire) {
             MessageFilter::InputAll
         } else {
             MessageFilter::empty()
+        }
+    }
+
+    fn on_wnd_proc(&self, _hwnd: HWND, umsg: u32, _wparam: WPARAM, lparam: LPARAM) {
+        // Games constantly call SetCursor(NULL) via WM_SETCURSOR to hide the
+        // hardware cursor. When the overlay is visible, force the arrow cursor
+        // so the user can see where they're clicking. The ImGui software cursor
+        // (mouse_draw_cursor) is the primary cursor, but setting the hardware
+        // cursor too avoids a brief flicker when the OS processes WM_SETCURSOR
+        // before our frame renders.
+        if umsg == WM_SETCURSOR
+            && OVERLAY_VISIBLE.load(Ordering::Acquire)
+            && (lparam.0 as u32 & 0xFFFF) == HTCLIENT
+        {
+            if let Ok(arrow) = unsafe { LoadCursorW(None, IDC_ARROW) } {
+                unsafe { SetCursor(arrow); }
+            }
         }
     }
 }
@@ -308,8 +384,11 @@ pub unsafe extern "system" fn DllMain(
     _: *mut std::ffi::c_void,
 ) {
     if reason == DLL_PROCESS_ATTACH {
-        // Save HINSTANCE before spawning -- needed by config.rs to find config.toml
-        let _ = DLL_HINSTANCE.set(hmodule);
+        // Save HINSTANCE before spawning -- needed by config.rs to find config.toml.
+        // If already set, this is a duplicate DLL_PROCESS_ATTACH -- bail.
+        if DLL_HINSTANCE.set(hmodule).is_err() {
+            return;
+        }
 
         std::thread::spawn(move || {
             // Set up tracing FIRST so we capture hudhook's internal logs.
@@ -407,13 +486,13 @@ pub unsafe extern "system" fn DllMain(
             info!("Monitoring hook activity...");
             for i in 1..=10 {
                 std::thread::sleep(Duration::from_secs(1));
-                if RENDER_ACTIVE.load(Ordering::SeqCst) {
+                if RENDER_ACTIVE.load(Ordering::Relaxed) {
                     info!("Hooks confirmed active after {i}s");
                     break;
                 }
                 info!("Waiting for first render call... {i}s");
             }
-            if !RENDER_ACTIVE.load(Ordering::SeqCst) {
+            if !RENDER_ACTIVE.load(Ordering::Relaxed) {
                 info!("WARNING: render() not called after 10s -- hooks may not be intercepting Present()");
             }
 
