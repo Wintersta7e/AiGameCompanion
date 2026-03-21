@@ -16,7 +16,7 @@ fn main() {
         .plugin(tauri_plugin_opener::init())
         .setup(|app| {
             let app_dir = app.path().app_data_dir().expect("Failed to get app data dir");
-            std::fs::create_dir_all(&app_dir).ok();
+            std::fs::create_dir_all(&app_dir).expect("Failed to create app data directory");
 
             let log_file =
                 std::fs::File::create(app_dir.join("launcher.log")).expect("Failed to create log file");

@@ -1,15 +1,17 @@
 use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum GameSource {
     Steam,
     Epic,
     Gog,
+    #[default]
     Manual,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default)]
 pub struct Game {
     pub id: String,
     pub name: String,
@@ -24,6 +26,7 @@ pub struct Game {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
 pub struct LauncherSettings {
     pub overlay_dll_path: Option<String>,
     pub scan_on_startup: bool,

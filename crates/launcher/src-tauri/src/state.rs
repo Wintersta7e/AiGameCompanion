@@ -14,10 +14,28 @@ pub struct AppState {
 
 impl AppState {
     pub fn load(state_path: PathBuf) -> Self {
+        // Recover from interrupted atomic write (tmp file left behind)
+        let tmp_path = state_path.with_extension("json.tmp");
+        if !state_path.exists() && tmp_path.exists() {
+            let _ = std::fs::rename(&tmp_path, &state_path);
+        }
+
         let launcher = if state_path.exists() {
             match std::fs::read_to_string(&state_path) {
-                Ok(contents) => serde_json::from_str(&contents).unwrap_or_default(),
-                Err(_) => LauncherState::default(),
+                Ok(contents) => match serde_json::from_str(&contents) {
+                    Ok(state) => state,
+                    Err(e) => {
+                        tracing::error!("Corrupt launcher state at {}: {e}", state_path.display());
+                        // Backup before overwriting with defaults
+                        let backup = state_path.with_extension("json.bak");
+                        let _ = std::fs::copy(&state_path, &backup);
+                        LauncherState::default()
+                    }
+                },
+                Err(e) => {
+                    tracing::error!("Failed to read launcher state: {e}");
+                    LauncherState::default()
+                }
             }
         } else {
             LauncherState::default()
