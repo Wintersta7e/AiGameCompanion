@@ -11,7 +11,10 @@ static LOCAL_CLIENT: Lazy<reqwest::Client> = Lazy::new(|| {
     reqwest::Client::builder()
         .timeout(Duration::from_secs(120))
         .build()
-        .unwrap_or_else(|_| reqwest::Client::new())
+        .unwrap_or_else(|e| {
+            tracing::warn!("Local HTTP client builder failed: {e}, using default (no timeout)");
+            reqwest::Client::new()
+        })
 });
 
 // --- OpenAI-compatible request/response structs ---

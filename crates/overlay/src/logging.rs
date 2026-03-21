@@ -4,6 +4,7 @@ use std::path::PathBuf;
 use std::sync::OnceLock;
 
 use chrono::Local;
+use tracing::warn;
 
 use crate::config::CONFIG;
 
@@ -19,7 +20,10 @@ pub fn init_session_log(game_name: Option<&str>) {
         }
 
         let dir = log_directory()?;
-        fs::create_dir_all(&dir).ok()?;
+        if let Err(e) = fs::create_dir_all(&dir) {
+            warn!("Failed to create log directory {}: {e}", dir.display());
+            return None;
+        }
 
         let game_slug = game_name
             .unwrap_or("Unknown")
@@ -31,19 +35,28 @@ pub fn init_session_log(game_name: Option<&str>) {
         let path = dir.join(filename);
 
         // Write header
-        let mut file = OpenOptions::new()
+        let mut file = match OpenOptions::new()
             .create(true)
             .truncate(true)
             .write(true)
             .open(&path)
-            .ok()?;
+        {
+            Ok(f) => f,
+            Err(e) => {
+                warn!("Failed to create session log {}: {e}", path.display());
+                return None;
+            }
+        };
 
         let header = format!(
             "=== AI Game Companion - Session Log ===\nGame: {}\nDate: {}\n========================================\n\n",
             game_name.unwrap_or("Unknown"),
             Local::now().format("%Y-%m-%d %H:%M:%S")
         );
-        file.write_all(header.as_bytes()).ok()?;
+        if let Err(e) = file.write_all(header.as_bytes()) {
+            warn!("Failed to write session log header: {e}");
+            return None;
+        }
 
         Some(path)
     });
@@ -63,7 +76,10 @@ pub fn log_exchange(user_msg: &str, assistant_msg: &str) {
 
     let mut file = match OpenOptions::new().append(true).open(path) {
         Ok(f) => f,
-        Err(_) => return, // Silently fail -- logging should never crash the game
+        Err(e) => {
+            warn!("Failed to open session log for append: {e}");
+            return;
+        }
     };
 
     let now = Local::now().format("%H:%M:%S");
@@ -71,5 +87,7 @@ pub fn log_exchange(user_msg: &str, assistant_msg: &str) {
         "[{now}] You:\n{user_msg}\n\n[{now}] Sage:\n{assistant_msg}\n\n"
     );
 
-    let _ = file.write_all(entry.as_bytes());
+    if let Err(e) = file.write_all(entry.as_bytes()) {
+        warn!("Failed to write session log entry: {e}");
+    }
 }

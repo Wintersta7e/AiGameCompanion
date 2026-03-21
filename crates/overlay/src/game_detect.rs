@@ -47,15 +47,29 @@ fn name_from_config() -> Option<String> {
     None
 }
 
+/// Callback data for `EnumWindows`. Must be `repr(C)` so the layout is
+/// guaranteed stable across compiler versions -- the callback casts from
+/// a raw `LPARAM` pointer.
+#[repr(C)]
+struct EnumWindowData {
+    target_pid: u32,
+    best_title: *mut String,
+}
+
 /// Find the main visible window of the current process and return its title.
 fn name_from_window_title() -> Option<String> {
     let pid = unsafe { GetCurrentProcessId() };
     let mut best_title = String::new();
 
+    let mut data = EnumWindowData {
+        target_pid: pid,
+        best_title: &mut best_title,
+    };
+
     unsafe {
         let _ = EnumWindows(
             Some(enum_window_callback),
-            LPARAM(&mut (pid, &mut best_title) as *mut (u32, &mut String) as isize),
+            LPARAM(&mut data as *mut EnumWindowData as isize),
         );
     }
 
@@ -68,13 +82,12 @@ fn name_from_window_title() -> Option<String> {
 }
 
 unsafe extern "system" fn enum_window_callback(hwnd: HWND, lparam: LPARAM) -> BOOL {
-    let data = &mut *(lparam.0 as *mut (u32, &mut String));
-    let (target_pid, ref mut best_title) = *data;
+    let data = &mut *(lparam.0 as *mut EnumWindowData);
 
     let mut window_pid: u32 = 0;
     GetWindowThreadProcessId(hwnd, Some(&mut window_pid));
 
-    if window_pid != target_pid {
+    if window_pid != data.target_pid {
         return BOOL(1); // continue
     }
 
@@ -91,8 +104,9 @@ unsafe extern "system" fn enum_window_callback(hwnd: HWND, lparam: LPARAM) -> BO
     let title = String::from_utf16_lossy(&buf[..len]);
 
     // Keep the longest visible window title (main game window is usually longest)
-    if title.len() > best_title.len() {
-        **best_title = title;
+    let best = &mut *data.best_title;
+    if title.len() > best.len() {
+        *best = title;
     }
 
     BOOL(1) // continue enumeration
