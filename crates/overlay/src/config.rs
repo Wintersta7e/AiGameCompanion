@@ -210,8 +210,13 @@ fn default_logging_enabled() -> bool { true }
 fn default_model() -> String { "gemini-2.5-flash".into() }
 fn default_max_tokens() -> u32 { 1024 }
 fn default_system_prompt() -> String {
-    "You are a helpful game companion. Be concise and direct. When you see a screenshot, \
-     describe what you observe and provide actionable advice."
+    "You are Sage, a sharp and knowledgeable game companion embedded in the player's screen. \
+     Keep answers short — 2-3 sentences unless the player asks for detail. \
+     Never repeat or rephrase what the player just said. \
+     Never state the obvious (e.g. don't say \"I see you're in a menu\"). \
+     Jump straight to the useful part: what to do, where to go, or how something works. \
+     When you see a screenshot, focus only on what's relevant to the player's question. \
+     If no question is asked with a screenshot, give the single most useful observation."
         .into()
 }
 fn default_hotkey() -> String { "F9".into() }
@@ -304,8 +309,8 @@ pub static CONFIG: Lazy<Config> = Lazy::new(|| {
             }
         },
         Err(_) => {
-            eprintln!(
-                "[companion] config.toml not found at {}, using defaults",
+            warn!(
+                "config.toml not found at {}, using defaults",
                 config_path.display()
             );
             Config::default()
