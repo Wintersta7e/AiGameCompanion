@@ -50,6 +50,8 @@ pub struct AppState {
     pub capture_wait_frames: u8,
     /// Captured screenshot data, ready for the async task to pick up.
     pub captured_screenshot: Option<String>,
+    /// Set to true by the capture task when it finishes (success or failure).
+    pub capture_complete: bool,
     /// If true, a send was initiated with screenshot; spawn API call after capture completes.
     pub send_pending_capture: bool,
     /// If true, the pending capture is for translation (not a normal screenshot send).

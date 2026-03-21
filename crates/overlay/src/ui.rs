@@ -115,6 +115,7 @@ pub fn draw_panel(ui: &Ui) {
                     state.is_loading = false;
                     state.request_generation += 1; // invalidate in-flight request
                     state.capture_pending = false;
+                    state.capture_complete = false;
                     state.send_pending_capture = false;
                     state.translate_pending = false;
                     state.captured_screenshot = None;
