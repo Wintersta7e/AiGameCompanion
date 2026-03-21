@@ -129,7 +129,7 @@
 
         <!-- Toggle: Minimize to Tray -->
         <label class="flex items-center justify-between cursor-pointer group">
-          <span class="font-body text-sm text-text-secondary group-hover:text-text-primary transition-colors">Minimize to tray <span class="text-text-muted text-xs">(coming soon)</span></span>
+          <span class="font-body text-sm text-text-secondary group-hover:text-text-primary transition-colors">Minimize to tray</span>
           <button
             role="switch"
             aria-label="Minimize to tray"
@@ -147,7 +147,7 @@
 
         <!-- Toggle: Launch on Startup -->
         <label class="flex items-center justify-between cursor-pointer group">
-          <span class="font-body text-sm text-text-secondary group-hover:text-text-primary transition-colors">Launch on system startup <span class="text-text-muted text-xs">(coming soon)</span></span>
+          <span class="font-body text-sm text-text-secondary group-hover:text-text-primary transition-colors">Launch on system startup</span>
           <button
             role="switch"
             aria-label="Launch on system startup"
