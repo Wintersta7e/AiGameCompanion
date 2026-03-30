@@ -4,6 +4,7 @@ mod config;
 mod game_detect;
 mod logging;
 mod provider;
+mod proxy_client;
 mod state;
 mod translation;
 mod ui;
