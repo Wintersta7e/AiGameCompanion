@@ -5,6 +5,7 @@
 mod commands;
 mod discovery;
 mod models;
+mod proxy;
 mod state;
 
 use state::AppState;
@@ -65,6 +66,7 @@ fn main() {
                             }
                         }
                         "quit" => {
+                            crate::proxy::cleanup_port_file();
                             app.exit(0);
                         }
                         _ => {}
@@ -82,6 +84,27 @@ fn main() {
                 .build(app)?;
 
             app.manage(app_state);
+
+            // Start the proxy server on a separate tokio runtime.
+            // The server runs forever, so the thread blocks on a pending future
+            // after the server spawns its listener task.
+            std::thread::spawn(|| {
+                let rt = tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .expect("Failed to create proxy runtime");
+                rt.block_on(async {
+                    match proxy::start_proxy().await {
+                        Ok(addr) => {
+                            tracing::info!("Proxy server started on {addr}");
+                            // Keep the runtime alive so the spawned server task continues
+                            std::future::pending::<()>().await;
+                        }
+                        Err(e) => tracing::error!("Failed to start proxy: {e}"),
+                    }
+                });
+            });
+
             Ok(())
         })
         .on_window_event(|window, event| {
