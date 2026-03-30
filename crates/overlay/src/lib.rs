@@ -3,6 +3,7 @@ mod capture;
 mod config;
 mod game_detect;
 mod logging;
+mod provider;
 mod state;
 mod translation;
 mod ui;

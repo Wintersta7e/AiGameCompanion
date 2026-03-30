@@ -7,6 +7,8 @@ use once_cell::sync::Lazy;
 use serde::Deserialize;
 use tracing::warn;
 
+use crate::provider::Provider;
+
 /// Which graphics API to hook into.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -97,18 +99,102 @@ impl SafetyFilter {
 
 fn default_safety_filter() -> SafetyFilter { SafetyFilter::Off }
 
+fn default_provider() -> Provider { Provider::Gemini }
+
+fn default_gemini_model() -> String { "gemini-2.5-flash".into() }
+fn default_claude_model() -> String { "haiku".into() }
+fn default_openai_model() -> String { "gpt-4o".into() }
+
 #[derive(Deserialize, Clone)]
-pub struct ApiConfig {
+pub struct GeminiConfig {
     #[serde(default)]
     pub key: String,
-    #[serde(default = "default_model")]
+    #[serde(default = "default_gemini_model")]
     pub model: String,
+}
+
+impl Default for GeminiConfig {
+    fn default() -> Self {
+        Self {
+            key: String::new(),
+            model: default_gemini_model(),
+        }
+    }
+}
+
+#[derive(Deserialize, Clone)]
+#[allow(dead_code)]
+pub struct ClaudeConfig {
+    #[serde(default = "default_claude_model")]
+    pub model: String,
+}
+
+impl Default for ClaudeConfig {
+    fn default() -> Self {
+        Self {
+            model: default_claude_model(),
+        }
+    }
+}
+
+#[derive(Deserialize, Clone)]
+#[allow(dead_code)]
+pub struct OpenaiConfig {
+    #[serde(default = "default_openai_model")]
+    pub model: String,
+}
+
+impl Default for OpenaiConfig {
+    fn default() -> Self {
+        Self {
+            model: default_openai_model(),
+        }
+    }
+}
+
+#[derive(Deserialize, Clone)]
+#[allow(dead_code)]
+pub struct ApiConfig {
+    #[serde(default = "default_provider")]
+    pub provider: Provider,
+
+    // Legacy top-level fields for backward compatibility.
+    // After deserialization, `migrate_legacy()` copies these into the
+    // appropriate nested provider config if the nested fields are empty/default.
+    #[serde(default)]
+    key: String,
+    #[serde(default = "default_model")]
+    model: String,
+
+    #[serde(default)]
+    pub gemini: GeminiConfig,
+    #[serde(default)]
+    pub claude: ClaudeConfig,
+    #[serde(default)]
+    pub openai: OpenaiConfig,
+
     #[serde(default = "default_max_tokens")]
     pub max_tokens: u32,
     #[serde(default = "default_system_prompt")]
     pub system_prompt: String,
     #[serde(default = "default_safety_filter")]
     pub safety_filter: SafetyFilter,
+}
+
+impl ApiConfig {
+    /// Migrate legacy top-level `key` and `model` into `gemini.*` if the nested
+    /// fields are still at their defaults. This lets existing config.toml files
+    /// (with `[api] key = "..."`) keep working without changes.
+    pub fn migrate_legacy(&mut self) {
+        if !self.key.is_empty() && self.gemini.key.is_empty() {
+            self.gemini.key = self.key.clone();
+        }
+        // If the user set a non-default legacy model and hasn't set gemini.model,
+        // carry the legacy value forward.
+        if self.model != default_model() && self.gemini.model == default_gemini_model() {
+            self.gemini.model = self.model.clone();
+        }
+    }
 }
 
 #[derive(Deserialize, Clone)]
@@ -232,8 +318,12 @@ fn default_quality() -> u8 { 85 }
 impl Default for ApiConfig {
     fn default() -> Self {
         Self {
+            provider: default_provider(),
             key: String::new(),
             model: default_model(),
+            gemini: GeminiConfig::default(),
+            claude: ClaudeConfig::default(),
+            openai: OpenaiConfig::default(),
             max_tokens: default_max_tokens(),
             system_prompt: default_system_prompt(),
             safety_filter: default_safety_filter(),
@@ -301,8 +391,11 @@ pub static CONFIG: Lazy<Config> = Lazy::new(|| {
 
     let config_path = dir.join("config.toml");
     match std::fs::read_to_string(&config_path) {
-        Ok(contents) => match toml::from_str(&contents) {
-            Ok(config) => config,
+        Ok(contents) => match toml::from_str::<Config>(&contents) {
+            Ok(mut config) => {
+                config.api.migrate_legacy();
+                config
+            }
             Err(e) => {
                 warn!("Failed to parse config.toml: {e}");
                 Config::default()

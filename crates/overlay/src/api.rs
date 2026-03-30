@@ -119,7 +119,7 @@ pub async fn send_message(
 ) -> Result<String, String> {
     let config = &CONFIG.api;
 
-    if config.key.is_empty() {
+    if config.gemini.key.is_empty() {
         return Err("No API key configured. Add your key to config.toml.".into());
     }
 
@@ -226,18 +226,18 @@ pub async fn send_message(
     };
 
     // Validate model name to prevent URL path traversal (ASCII only)
-    if !config.model.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '.' || c == '_') {
+    if !config.gemini.model.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '.' || c == '_') {
         return Err("Invalid model name in config.toml. Use ASCII alphanumeric, hyphens, dots, underscores only.".into());
     }
 
     let url = format!(
         "https://generativelanguage.googleapis.com/v1beta/models/{}:streamGenerateContent?alt=sse",
-        config.model
+        config.gemini.model
     );
 
     let response = CLIENT
         .post(&url)
-        .header("x-goog-api-key", &config.key)
+        .header("x-goog-api-key", &config.gemini.key)
         .header("content-type", "application/json")
         .json(&request)
         .send()
