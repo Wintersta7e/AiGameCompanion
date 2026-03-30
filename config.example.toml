@@ -1,15 +1,35 @@
-# Copy this file to config.toml and fill in your API key.
-# config.toml is gitignored — never commit your real key.
+# Copy this file to config.toml and configure your preferred AI provider.
+# config.toml is gitignored -- never commit your real key.
 #
-# Get a FREE Gemini API key (no credit card needed):
-#   https://aistudio.google.com → Get API Key
+# Providers:
+#   Gemini -- FREE API key from https://aistudio.google.com (no credit card)
+#   Claude -- uses your Claude Code CLI subscription (no API key needed)
+#   OpenAI -- uses your Codex CLI subscription (no API key needed)
 
 [api]
+provider = "gemini"         # default provider: "gemini", "claude", or "openai"
+max_tokens = 1024
+system_prompt = "You are Sage, a sharp and knowledgeable game companion embedded in the player's screen. Keep answers short -- 2-3 sentences unless the player asks for detail. Never repeat or rephrase what the player just said. Never state the obvious (e.g. don't say 'I see you're in a menu'). Jump straight to the useful part: what to do, where to go, or how something works. When you see a screenshot, focus only on what's relevant to the player's question. If no question is asked with a screenshot, give the single most useful observation."
+safety_filter = "off"       # Safety filter level: off, block_high, block_medium, block_low (gemini-only)
+
+# --- Gemini (direct API, free tier) ---
+# Get a FREE API key: https://aistudio.google.com -> Get API Key
+[api.gemini]
 key = "your-gemini-api-key-here"
 model = "gemini-2.5-flash"
-max_tokens = 1024
-system_prompt = "You are Sage, a sharp and knowledgeable game companion embedded in the player's screen. Keep answers short — 2-3 sentences unless the player asks for detail. Never repeat or rephrase what the player just said. Never state the obvious (e.g. don't say 'I see you're in a menu'). Jump straight to the useful part: what to do, where to go, or how something works. When you see a screenshot, focus only on what's relevant to the player's question. If no question is asked with a screenshot, give the single most useful observation."
-safety_filter = "off"       # Safety filter level: off, block_high, block_medium, block_low
+
+# --- Claude (via Claude Code CLI, uses your subscription) ---
+# Requires: Claude Code CLI installed and authenticated (claude.ai/code)
+# No API key needed -- uses your existing subscription.
+[api.claude]
+model = "haiku"             # haiku, sonnet, or opus
+
+# --- OpenAI (via Codex CLI, uses your subscription) ---
+# Requires: Codex CLI installed and authenticated (openai.com/codex)
+# No API key needed -- uses your existing subscription.
+# Note: Screenshots not yet supported for OpenAI.
+[api.openai]
+model = "gpt-4o"            # gpt-4o, o3, etc.
 
 [overlay]
 # graphics_api = "dx11"  # Force a specific API (auto-detects if omitted). Options: dx12, dx11, dx9, opengl

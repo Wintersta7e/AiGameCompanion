@@ -5,17 +5,19 @@ Ask an AI questions while playing any game in fullscreen -- without alt-tabbing.
 ![Rust](https://img.shields.io/badge/Rust-2021-DEA584?logo=rust)
 ![Windows](https://img.shields.io/badge/Windows-x86__64-0078D4?logo=windows)
 ![Gemini](https://img.shields.io/badge/Google_Gemini-free_tier-4285F4?logo=googlegemini)
+![Claude](https://img.shields.io/badge/Claude-subscription-D97757?logo=anthropic)
+![OpenAI](https://img.shields.io/badge/OpenAI-subscription-412991?logo=openai)
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](./LICENSE)
 
 ## Overview
 
-AI Game Companion is a lightweight DX12/DX11 overlay that hooks into a game's rendering pipeline via Dear ImGui. It talks to Google Gemini (free tier -- no credit card needed) and can search the web for walkthroughs, guides, and current info on your behalf.
+AI Game Companion is a lightweight DX12/DX11 overlay that hooks into a game's rendering pipeline via Dear ImGui. It talks to **Google Gemini** (free tier), **Claude**, or **OpenAI** -- switch providers mid-game. It can search the web for walkthroughs, guides, and current info on your behalf.
 
 - **Zero alt-tab** -- the overlay renders inside the game
 - **Screenshot vision** -- attach the current game frame and Sage will analyze it
 - **Streaming responses** -- answers appear word-by-word as they're generated
 - **Screen translation** -- press F10 to translate foreign text in JRPGs, untranslated games, etc.
-- **Completely free** -- Gemini free tier (~250 requests/day)
+- **Free or subscription** -- Gemini free tier, or use your Claude/OpenAI subscriptions
 
 ## Features
 
@@ -35,6 +37,19 @@ AI Game Companion is a lightweight DX12/DX11 overlay that hooks into a game's re
 - **Real-time translation** -- press F10 to capture the screen and translate all foreign text (configurable hotkey and target language)
 - **Local/offline translation** -- use a local vision model (Ollama, LM Studio) instead of Gemini for fully private, unrestricted translation
 - **Configurable safety filter** -- adjust Gemini's content filtering level to suit your needs
+- **Multi-provider AI** -- switch between Google Gemini, Claude, and OpenAI mid-game from a dropdown in the overlay
+
+### Multi-Provider AI
+
+Sage can talk through **Google Gemini**, **Claude**, or **OpenAI** -- switch providers mid-game from a dropdown in the overlay.
+
+- **Gemini** -- direct API with a free API key ([Google AI Studio](https://aistudio.google.com))
+- **Claude** -- uses your existing [Claude Code](https://claude.ai/code) CLI subscription (no separate API key needed)
+- **OpenAI** -- uses your existing [Codex CLI](https://openai.com/codex/) subscription (no separate API key needed)
+
+The launcher runs a local proxy that spawns the official CLI tools as subprocesses -- the same mechanism used by Anthropic's own [Agent SDK](https://platform.claude.com/docs/en/agent-sdk/overview) and documented for [programmatic use](https://code.claude.com/docs/en/headless). No OAuth tokens are extracted or shared. Each user authenticates their own CLI tools independently.
+
+> **Note:** Screenshots are currently supported for Gemini and Claude only. OpenAI screenshot support depends on an upstream Codex CLI fix.
 
 ### Screenshot Capture
 - **Attach screenshots** with one click -- current game frame sent as context to Gemini
@@ -53,7 +68,7 @@ AI Game Companion is a lightweight DX12/DX11 overlay that hooks into a game's re
 
 2. **Configure** -- Copy `config.example.toml` to `config.toml` next to `overlay.dll` and add your key:
    ```toml
-   [api]
+   [api.gemini]
    key = "your-gemini-api-key-here"
    ```
 
@@ -70,15 +85,24 @@ AI Game Companion is a lightweight DX12/DX11 overlay that hooks into a game's re
 
 ## Configuration Reference
 
-All fields have sensible defaults. Only `api.key` is required.
+All fields have sensible defaults. Only `api.gemini.key` is required for the default Gemini provider.
 
 ```toml
 [api]
-key = ""                    # Gemini API key (required, free from aistudio.google.com)
-model = "gemini-2.5-flash"  # Model to use
+provider = "gemini"         # "gemini", "claude", or "openai"
 max_tokens = 1024           # Max response length
 system_prompt = "You are a helpful game companion. Be concise and direct."
-safety_filter = "off"       # off, block_high, block_medium, block_low
+safety_filter = "off"       # off, block_high, block_medium, block_low (gemini-only)
+
+[api.gemini]
+key = ""                    # Gemini API key (free from aistudio.google.com)
+model = "gemini-2.5-flash"  # Gemini model
+
+[api.claude]
+model = "haiku"             # haiku, sonnet, or opus (uses Claude Code CLI subscription)
+
+[api.openai]
+model = "gpt-4o"            # gpt-4o, o3, etc. (uses Codex CLI subscription)
 
 [overlay]
 # graphics_api = "dx11"     # Force a specific API (auto-detects if omitted)
@@ -244,7 +268,7 @@ cargo xwin build --target x86_64-pc-windows-msvc
 - Try borderless windowed mode if exclusive fullscreen doesn't work
 
 **API errors**
-- "Invalid API key" -- verify `api.key` in config.toml (get yours at [Google AI Studio](https://aistudio.google.com))
+- "Invalid API key" -- verify `api.gemini.key` in config.toml (get yours at [Google AI Studio](https://aistudio.google.com))
 - "Rate limited" -- free tier allows ~250 requests/day; wait and retry
 - "Bad request" -- try a shorter message or remove the screenshot
 - "Network error" -- check internet connection
