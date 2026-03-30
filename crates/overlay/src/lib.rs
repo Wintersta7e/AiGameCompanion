@@ -68,6 +68,9 @@ pub(crate) fn spawn_api_request(
         return;
     };
 
+    // Read active provider before spawning so we dispatch to the right backend.
+    let active_provider = STATE.lock().active_provider;
+
     // Capture last user message now (O(1) — it's always at the end) to avoid
     // a linear scan inside the lock after the async task completes.
     let last_user_msg = messages
@@ -78,7 +81,14 @@ pub(crate) fn spawn_api_request(
         .unwrap_or_default();
 
     rt.spawn(async move {
-        let result = api::send_message(messages, screenshot, gen).await;
+        let result = match active_provider {
+            provider::Provider::Gemini => {
+                api::send_message(messages, screenshot, gen).await
+            }
+            provider::Provider::Claude | provider::Provider::Openai => {
+                proxy_client::send_proxy_message(active_provider, messages, screenshot, gen).await
+            }
+        };
         let mut state = STATE.lock();
         if state.request_generation == gen {
             match result {
@@ -462,8 +472,29 @@ pub unsafe extern "system" fn DllMain(
             if let Some((port, token)) = read_proxy_port_file() {
                 let mut state = STATE.lock();
                 state.proxy_port = Some(port);
-                state.proxy_token = Some(token);
+                state.proxy_token = Some(token.clone());
+                drop(state);
                 info!("Proxy discovered at localhost:{port}");
+
+                // Async health check: discover which CLI providers are available.
+                if let Some(rt) = RUNTIME.as_ref() {
+                    rt.spawn(async move {
+                        let providers = proxy_client::check_health(port, &token).await;
+                        let mut state = STATE.lock();
+                        state.proxy_providers = providers;
+                        // Validate active_provider: fall back if current choice is unavailable.
+                        if !state.is_provider_available(state.active_provider) {
+                            if state.is_provider_available(provider::Provider::Gemini) {
+                                state.active_provider = provider::Provider::Gemini;
+                            } else if state.proxy_providers.contains(&provider::Provider::Claude) {
+                                state.active_provider = provider::Provider::Claude;
+                            } else if state.proxy_providers.contains(&provider::Provider::Openai) {
+                                state.active_provider = provider::Provider::Openai;
+                            }
+                        }
+                        info!("Available providers: {:?}", state.proxy_providers);
+                    });
+                }
             } else {
                 info!("No proxy.port file found -- CLI providers unavailable");
             }

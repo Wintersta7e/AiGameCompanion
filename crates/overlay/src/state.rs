@@ -67,14 +67,12 @@ pub struct AppState {
     /// Bearer token for proxy auth (read from proxy.port file at init).
     pub proxy_token: Option<String>,
     /// Which CLI providers are available (populated from proxy /health endpoint).
-    #[allow(dead_code)] // Used by provider dispatch (Task 4) and UI dropdown (Task 5).
     pub proxy_providers: HashSet<Provider>,
 }
 
 impl AppState {
     /// Returns true if the given provider is usable right now.
     /// Gemini requires a direct API key; Claude/OpenAI need an active proxy.
-    #[allow(dead_code)] // Used by UI dropdown (Task 5) and provider dispatch (Task 4).
     pub fn is_provider_available(&self, provider: Provider) -> bool {
         match provider {
             Provider::Gemini => !crate::config::CONFIG.api.gemini.key.is_empty(),

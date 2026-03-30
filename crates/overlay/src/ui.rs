@@ -120,6 +120,13 @@ pub fn draw_panel(ui: &Ui) {
                     state.translate_pending = false;
                     state.captured_screenshot = None;
                     state.error = Some("Cancelled.".into());
+                    // Read provider + generation before dropping lock for cancel call.
+                    let provider = state.active_provider;
+                    let gen = state.request_generation;
+                    drop(state);
+                    if provider != crate::provider::Provider::Gemini {
+                        crate::proxy_client::send_cancel(gen);
+                    }
                 }
             } else {
                 let send_enabled = !input_buf.trim().is_empty();
@@ -181,6 +188,12 @@ pub fn draw_panel(ui: &Ui) {
                 state.is_loading = false;
                 state.streaming_response.clear();
                 state.request_generation += 1; // cancel any in-flight request
+                let provider = state.active_provider;
+                let gen = state.request_generation;
+                drop(state);
+                if provider != crate::provider::Provider::Gemini {
+                    crate::proxy_client::send_cancel(gen);
+                }
             }
 
             // Write back UI changes to state

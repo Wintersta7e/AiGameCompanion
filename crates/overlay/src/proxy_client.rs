@@ -93,7 +93,6 @@ fn build_history_text(messages: &[ChatMessage]) -> String {
 /// into `STATE.streaming_response`. Returns the full accumulated text on success.
 ///
 /// `generation` is checked each chunk to support cancellation.
-#[allow(dead_code)] // Wired up in Task 4 (provider dispatch).
 pub async fn send_proxy_message(
     provider: Provider,
     messages: Vec<ChatMessage>,
@@ -301,7 +300,6 @@ fn process_proxy_sse_lines(
 
 /// Fire-and-forget cancellation request to the proxy.
 /// Spawns on the tokio runtime; does not await a response.
-#[allow(dead_code)] // Wired up in Task 4 (provider dispatch).
 pub fn send_cancel(generation: u64) {
     let Some(rt) = crate::RUNTIME.as_ref() else {
         return;
@@ -333,7 +331,6 @@ pub fn send_cancel(generation: u64) {
 
 /// Query the proxy's health endpoint and return the set of available providers.
 /// Returns an empty set on any failure (timeout, connection refused, bad response).
-#[allow(dead_code)] // Wired up in Task 4 (provider dispatch).
 pub async fn check_health(port: u16, token: &str) -> HashSet<Provider> {
     let url = format!("http://127.0.0.1:{port}/health");
 
