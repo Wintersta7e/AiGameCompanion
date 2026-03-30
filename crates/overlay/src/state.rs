@@ -1,5 +1,9 @@
+use std::collections::HashSet;
+
 use once_cell::sync::Lazy;
 use parking_lot::Mutex;
+
+use crate::provider::Provider;
 
 /// Maximum messages kept in memory. Oldest are evicted when exceeded.
 /// This bounds per-frame clone cost and prevents unbounded memory growth.
@@ -56,9 +60,28 @@ pub struct AppState {
     pub send_pending_capture: bool,
     /// If true, the pending capture is for translation (not a normal screenshot send).
     pub translate_pending: bool,
+    /// Active AI provider (set from config, overridden by UI dropdown).
+    pub active_provider: Provider,
+    /// Localhost proxy port (read from proxy.port file at init).
+    pub proxy_port: Option<u16>,
+    /// Bearer token for proxy auth (read from proxy.port file at init).
+    pub proxy_token: Option<String>,
+    /// Which CLI providers are available (populated from proxy /health endpoint).
+    #[allow(dead_code)] // Used by provider dispatch (Task 4) and UI dropdown (Task 5).
+    pub proxy_providers: HashSet<Provider>,
 }
 
 impl AppState {
+    /// Returns true if the given provider is usable right now.
+    /// Gemini requires a direct API key; Claude/OpenAI need an active proxy.
+    #[allow(dead_code)] // Used by UI dropdown (Task 5) and provider dispatch (Task 4).
+    pub fn is_provider_available(&self, provider: Provider) -> bool {
+        match provider {
+            Provider::Gemini => !crate::config::CONFIG.api.gemini.key.is_empty(),
+            Provider::Claude | Provider::Openai => self.proxy_providers.contains(&provider),
+        }
+    }
+
     /// Push a message, evicting the oldest if the cap is exceeded.
     /// Always ensures the first message is a User message after eviction.
     pub fn push_message(&mut self, msg: ChatMessage) {

@@ -124,6 +124,21 @@ fn init_tracing() {
     let _ = tracing::subscriber::set_global_default(subscriber);
 }
 
+/// Read the proxy.port file from the DLL directory.
+/// Returns `(port, token)` if the file exists and has both lines.
+fn read_proxy_port_file() -> Option<(u16, String)> {
+    let dir = config::dll_directory()?;
+    let path = dir.join("proxy.port");
+    let contents = std::fs::read_to_string(&path).ok()?;
+    let mut lines = contents.lines();
+    let port: u16 = lines.next()?.trim().parse().ok()?;
+    let token = lines.next()?.trim().to_string();
+    if token.is_empty() {
+        return None;
+    }
+    Some((port, token))
+}
+
 /// Check if a module (DLL) is loaded in the current process.
 fn is_module_loaded(name: &str) -> bool {
     let Ok(cname) = std::ffi::CString::new(name) else { return false };
@@ -441,6 +456,22 @@ pub unsafe extern "system" fn DllMain(
                 info!("Game: {name}");
             }
             STATE.lock().game_name = game_name.clone();
+
+            // Read proxy.port file (written by the launcher's proxy server).
+            if let Some((port, token)) = read_proxy_port_file() {
+                let mut state = STATE.lock();
+                state.proxy_port = Some(port);
+                state.proxy_token = Some(token);
+                info!("Proxy discovered at localhost:{port}");
+            } else {
+                info!("No proxy.port file found -- CLI providers unavailable");
+            }
+
+            // Set the active provider from config.
+            {
+                let mut state = STATE.lock();
+                state.active_provider = CONFIG.api.provider;
+            }
 
             // Initialize session log
             logging::init_session_log(game_name.as_deref());
