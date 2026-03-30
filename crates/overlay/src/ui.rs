@@ -12,9 +12,30 @@ const REF_WIDTH: f32 = 1920.0;
 
 pub fn draw_panel(ui: &Ui) {
     // Snapshot state we need for drawing, then drop the lock.
-    let (messages_snapshot, is_loading, error_snapshot, attach_screenshot, input_snapshot, streaming_snapshot) = {
+    let (
+        messages_snapshot,
+        is_loading,
+        error_snapshot,
+        attach_screenshot,
+        input_snapshot,
+        streaming_snapshot,
+        available_providers,
+        current_provider,
+    ) = {
         let state = STATE.lock();
         let is_loading = state.is_loading;
+
+        let mut providers = Vec::new();
+        if state.is_provider_available(crate::provider::Provider::Gemini) {
+            providers.push(crate::provider::Provider::Gemini);
+        }
+        if state.is_provider_available(crate::provider::Provider::Claude) {
+            providers.push(crate::provider::Provider::Claude);
+        }
+        if state.is_provider_available(crate::provider::Provider::Openai) {
+            providers.push(crate::provider::Provider::Openai);
+        }
+
         (
             state
                 .messages
@@ -30,6 +51,8 @@ pub fn draw_panel(ui: &Ui) {
             } else {
                 String::new()
             },
+            providers,
+            state.active_provider,
         )
     };
 
@@ -53,8 +76,32 @@ pub fn draw_panel(ui: &Ui) {
         .build(|| {
             let window_size = ui.content_region_avail();
 
+            // --- Provider dropdown ---
+            let dropdown_height = if available_providers.len() > 1 || available_providers.is_empty() {
+                28.0 * scale
+            } else {
+                0.0
+            };
+
+            if available_providers.len() > 1 {
+                let current_label = format!("{current_provider}");
+                let combo_w = 120.0 * scale;
+                ui.set_next_item_width(combo_w);
+                if let Some(_combo) = ui.begin_combo("##provider", &current_label) {
+                    for &p in &available_providers {
+                        let label = format!("{p}");
+                        let selected = p == current_provider;
+                        if ui.selectable_config(&label).selected(selected).build() {
+                            STATE.lock().active_provider = p;
+                        }
+                    }
+                }
+            } else if available_providers.is_empty() {
+                ui.text_colored(ERROR_COLOR, "No AI provider configured");
+            }
+
             // --- Chat history (scrollable) ---
-            let chat_height = window_size[1] - input_area_height - status_bar_height;
+            let chat_height = window_size[1] - input_area_height - status_bar_height - dropdown_height;
 
             if let Some(_child) =
                 ui.child_window("##chat_history")
@@ -160,7 +207,10 @@ pub fn draw_panel(ui: &Ui) {
                         // Clear local buffer so write-back doesn't overwrite the cleared state
                         input_buf.clear();
 
-                        if attach_screenshot {
+                        let skip_screenshot = attach_screenshot
+                            && current_provider == crate::provider::Provider::Openai;
+
+                        if attach_screenshot && !skip_screenshot {
                             // Initiate hide-capture-show. The actual API call will be
                             // triggered from lib.rs once capture completes.
                             let mut state = STATE.lock();
@@ -169,6 +219,13 @@ pub fn draw_panel(ui: &Ui) {
                             state.captured_screenshot = None;
                             state.send_pending_capture = true;
                         } else {
+                            if skip_screenshot {
+                                // OpenAI doesn't support screenshot attachment yet
+                                STATE.lock().push_message(ChatMessage::new(
+                                    MessageRole::Assistant,
+                                    "(Screenshots not yet available for OpenAI)".into(),
+                                ));
+                            }
                             // No screenshot -- spawn API call immediately
                             let messages = STATE.lock().messages.clone();
                             crate::spawn_api_request(gen, messages, None);
