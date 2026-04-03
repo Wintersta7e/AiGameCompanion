@@ -219,6 +219,7 @@ pub fn draw_panel(ui: &Ui) {
                             state.capture_wait_frames = 2;
                             state.captured_screenshot = None;
                             state.send_pending_capture = true;
+                            state.capture_generation = state.request_generation;
                             crate::CAPTURE_ACTIVE.store(true, std::sync::atomic::Ordering::Release);
                         } else {
                             if skip_screenshot {

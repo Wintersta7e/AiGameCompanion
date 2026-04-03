@@ -298,7 +298,7 @@ pub struct TranslationConfig {
 }
 
 fn default_translation_enabled() -> bool {
-    true
+    false
 }
 fn default_target_language() -> String {
     "English".into()

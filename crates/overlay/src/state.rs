@@ -119,6 +119,9 @@ pub struct AppState {
     pub capture_complete: bool,
     /// If true, a send was initiated with screenshot; spawn API call after capture completes.
     pub send_pending_capture: bool,
+    /// Generation at which capture was initiated. Used by spawn_blocking to
+    /// reject stale capture results after cancel+resend races.
+    pub capture_generation: u64,
     /// If true, the pending capture is for translation (not a normal screenshot send).
     pub translate_pending: bool,
     /// Active AI provider (set from config, overridden by UI dropdown).

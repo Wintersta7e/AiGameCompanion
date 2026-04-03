@@ -313,6 +313,7 @@ impl ImguiRenderLoop for CompanionRenderLoop {
                     state.capture_wait_frames = 2;
                     state.captured_screenshot = None;
                     state.send_pending_capture = true;
+                    state.capture_generation = state.request_generation;
                     state.translate_pending = true;
                     state.visible = true;
                     OVERLAY_VISIBLE.store(true, Ordering::Release);
@@ -332,6 +333,7 @@ impl ImguiRenderLoop for CompanionRenderLoop {
                 }
                 // Waited enough frames. Capture now (off render thread via spawn_blocking).
                 state.capture_pending = false;
+                let cap_gen = state.capture_generation;
                 drop(state);
 
                 if let Some(rt) = RUNTIME.as_ref() {
@@ -340,10 +342,11 @@ impl ImguiRenderLoop for CompanionRenderLoop {
                             capture::capture_screenshot()
                         });
                         let mut state = STATE.lock();
-                        // Guard: if cancel cleared send_pending_capture while
-                        // we were capturing, don't set capture_complete (it
-                        // would trigger a spurious API call with stale data).
-                        if state.send_pending_capture {
+                        // Guard: reject stale captures from a previous request
+                        // (cancel+resend race) by comparing generation.
+                        if state.send_pending_capture
+                            && state.capture_generation == cap_gen
+                        {
                             state.captured_screenshot = match result {
                                 Ok(screenshot) => screenshot,
                                 Err(_) => {

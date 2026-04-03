@@ -134,7 +134,7 @@ fn validate_model_name(model: &str) -> Result<(), StatusCode> {
     }
     if !model
         .chars()
-        .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '.' | '_' | ':'))
+        .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '.' | '_'))
     {
         return Err(StatusCode::BAD_REQUEST);
     }
