@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 use std::fmt::Write as _;
 use std::net::SocketAddr;
+use std::os::windows::process::CommandExt as _;
 use std::sync::Arc;
 
 use axum::body::Body;
@@ -21,11 +22,28 @@ use tokio_stream::wrappers::LinesStream;
 // Types
 // ---------------------------------------------------------------------------
 
+/// How to invoke a CLI tool.
+#[derive(Debug, Clone, Copy)]
+enum CliMode {
+    /// Not available on this system.
+    Unavailable,
+    /// Available directly on Windows PATH.
+    Native,
+    /// Available inside WSL (invoke via `wsl.exe`).
+    Wsl,
+}
+
+impl CliMode {
+    fn is_available(self) -> bool {
+        !matches!(self, Self::Unavailable)
+    }
+}
+
 struct ProxyState {
     token: String,
     active_child: Mutex<Option<(u64, Child)>>,
-    claude_available: bool,
-    codex_available: bool,
+    claude_mode: CliMode,
+    codex_mode: CliMode,
 }
 
 #[derive(Deserialize)]
@@ -61,20 +79,51 @@ struct HealthResponse {
 // Helpers
 // ---------------------------------------------------------------------------
 
+/// Windows `CREATE_NO_WINDOW` flag -- prevents console popups from
+/// `wsl.exe` and other console subsystem processes.
+const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+
+/// Escape a string for use in a bash -c / -ic command.
+fn shell_escape(s: &str) -> String {
+    format!("'{}'", s.replace('\'', "'\\''"))
+}
+
 fn generate_token() -> String {
     let bytes: [u8; 32] = rand::random();
     hex::encode(bytes)
 }
 
-fn is_cli_available(name: &str) -> bool {
-    // Use std::process for a quick synchronous check during startup
-    std::process::Command::new(name)
+/// Check if a CLI tool is available, first natively on Windows PATH,
+/// then inside WSL (using `bash -ic` to pick up nvm/profile PATH).
+fn detect_cli(name: &str) -> CliMode {
+    // Try native Windows first.
+    let native = std::process::Command::new(name)
         .arg("--version")
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
+        .creation_flags(CREATE_NO_WINDOW)
         .status()
         .map(|s| s.success())
-        .unwrap_or(false)
+        .unwrap_or(false);
+    if native {
+        return CliMode::Native;
+    }
+
+    // Try via WSL with interactive shell so .bashrc (nvm, etc.) is sourced.
+    let version_cmd = format!("{name} --version");
+    let wsl = std::process::Command::new("wsl.exe")
+        .args(["--", "bash", "-ic", &version_cmd])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .creation_flags(CREATE_NO_WINDOW)
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false);
+    if wsl {
+        return CliMode::Wsl;
+    }
+
+    CliMode::Unavailable
 }
 
 fn validate_token(headers: &HeaderMap, expected: &str) -> Result<(), StatusCode> {
@@ -123,8 +172,8 @@ async fn health(
     validate_token(&headers, &state.token)?;
 
     let mut providers = HashMap::new();
-    providers.insert("claude".to_owned(), state.claude_available);
-    providers.insert("codex".to_owned(), state.codex_available);
+    providers.insert("claude".to_owned(), state.claude_mode.is_available());
+    providers.insert("openai".to_owned(), state.codex_mode.is_available());
 
     Ok(axum::Json(HealthResponse {
         status: "ok".to_owned(),
@@ -144,13 +193,13 @@ async fn chat(
 
     match req.provider.as_str() {
         "claude" => {
-            if !state.claude_available {
+            if !state.claude_mode.is_available() {
                 return Ok(error_stream_response("Claude CLI is not available on this system"));
             }
             handle_claude(state, req).await
         }
-        "codex" => {
-            if !state.codex_available {
+        "openai" | "codex" => {
+            if !state.codex_mode.is_available() {
                 return Ok(error_stream_response("Codex CLI is not available on this system"));
             }
             handle_codex(state, req).await
@@ -188,33 +237,39 @@ async fn handle_claude(
     state: Arc<ProxyState>,
     req: ChatRequest,
 ) -> Result<Response, StatusCode> {
-    let mut cmd = Command::new("claude");
-    cmd.args([
-        "-p",
-        "--input-format",
-        "stream-json",
-        "--output-format",
-        "stream-json",
-        "--verbose",
-        "--include-partial-messages",
-        "--tools",
-        "",
-        "--no-session-persistence",
-        "--model",
-        &req.model,
-        "--append-system-prompt",
-        &req.system_prompt,
-    ]);
+    let claude_args = format!(
+        "claude -p --input-format stream-json --output-format stream-json \
+         --verbose --include-partial-messages --tools '' \
+         --no-session-persistence --model {} --system-prompt {}",
+        shell_escape(&req.model),
+        shell_escape(&req.system_prompt),
+    );
+    let mut cmd = if let CliMode::Wsl = state.claude_mode {
+        let mut c = Command::new("wsl.exe");
+        c.args(["--", "bash", "-ic", &claude_args]);
+        c
+    } else {
+        let mut c = Command::new("claude");
+        c.args([
+            "-p", "--input-format", "stream-json",
+            "--output-format", "stream-json", "--verbose",
+            "--include-partial-messages", "--tools", "",
+            "--no-session-persistence", "--model", &req.model,
+            "--system-prompt", &req.system_prompt,
+        ]);
+        c
+    };
     cmd.stdin(std::process::Stdio::piped());
     cmd.stdout(std::process::Stdio::piped());
-    cmd.stderr(std::process::Stdio::null());
+    cmd.stderr(std::process::Stdio::piped());
+    cmd.creation_flags(CREATE_NO_WINDOW);
 
     let mut child = cmd.spawn().map_err(|e| {
         tracing::error!("Failed to spawn claude CLI: {e}");
         StatusCode::INTERNAL_SERVER_ERROR
     })?;
 
-    // Build NDJSON input for Claude
+    // Build NDJSON input with image embedded in the content array.
     let input = build_claude_input(&req.messages, req.screenshot.as_deref());
     let mut stdin = child.stdin.take().ok_or_else(|| {
         tracing::error!("Failed to take stdin from claude process");
@@ -232,6 +287,19 @@ async fn handle_claude(
         tracing::error!("Failed to take stdout from claude process");
         StatusCode::INTERNAL_SERVER_ERROR
     })?;
+
+    // Log stderr in the background so we can diagnose Claude CLI failures.
+    if let Some(stderr) = child.stderr.take() {
+        tokio::spawn(async move {
+            let reader = BufReader::new(stderr);
+            let mut lines = LinesStream::new(reader.lines());
+            while let Some(Ok(line)) = lines.next().await {
+                if !line.trim().is_empty() {
+                    tracing::warn!("claude stderr: {line}");
+                }
+            }
+        });
+    }
 
     // Register active child for cancellation
     {
@@ -254,7 +322,6 @@ async fn handle_claude(
                     Ok(line) => parse_claude_line(&line),
                     Err(e) => {
                         tracing::warn!("Error reading claude stdout: {e}");
-                        // Clean up active child on read error
                         let mut guard = state_ref.active_child.lock().await;
                         if matches!(&*guard, Some((id, _)) if *id == request_id) {
                             *guard = None;
@@ -265,7 +332,6 @@ async fn handle_claude(
             }
         })
         .chain(futures_util::stream::once(async move {
-            // Clean up active child when stream ends
             let mut guard = state.active_child.lock().await;
             if matches!(&*guard, Some((id, _)) if *id == request_id) {
                 *guard = None;
@@ -280,36 +346,57 @@ async fn handle_codex(
     state: Arc<ProxyState>,
     req: ChatRequest,
 ) -> Result<Response, StatusCode> {
-    // Codex requires a git directory -- use a temp dir with git init
-    let work_dir = std::env::temp_dir().join("aigc-codex-workdir");
-    if !work_dir.exists() {
-        let _ = std::fs::create_dir_all(&work_dir);
-        // Initialize a bare git repo so Codex is happy
-        let _ = std::process::Command::new("git")
-            .args(["init"])
-            .current_dir(&work_dir)
+    // Codex requires a git directory -- use a temp dir with git init.
+    let is_wsl = matches!(state.codex_mode, CliMode::Wsl);
+    let work_dir_str = if is_wsl {
+        // WSL-side path. Ensure it exists.
+        let dir = "/tmp/aigc-codex-workdir";
+        let _ = std::process::Command::new("wsl.exe")
+            .args(["--", "bash", "-c", &format!("mkdir -p {dir} && git -C {dir} init")])
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null())
+            .creation_flags(CREATE_NO_WINDOW)
             .status();
-    }
+        dir.to_string()
+    } else {
+        let dir = std::env::temp_dir().join("aigc-codex-workdir");
+        if !dir.exists() {
+            let _ = std::fs::create_dir_all(&dir);
+            let _ = std::process::Command::new("git")
+                .args(["init"])
+                .current_dir(&dir)
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .creation_flags(CREATE_NO_WINDOW)
+                .status();
+        }
+        dir.to_string_lossy().to_string()
+    };
 
-    let mut cmd = Command::new("codex");
-    cmd.args([
-        "-a",
-        "never",
-        "exec",
-        "-",
-        "--model",
-        &req.model,
-        "--json",
-        "--sandbox",
-        "read-only",
-        "-C",
-        &work_dir.to_string_lossy(),
-    ]);
+    // Let Codex use its own default model (gpt-5.3-codex) unless the user
+    // explicitly configured a codex-compatible model. The overlay's
+    // openai.model (gpt-4o) is for direct API use, not Codex CLI.
+    let mut cmd = if is_wsl {
+        let codex_cmd = format!(
+            "codex -a never -s read-only -C {} exec --skip-git-repo-check",
+            shell_escape(&work_dir_str),
+        );
+        let mut c = Command::new("wsl.exe");
+        c.args(["--", "bash", "-ic", &codex_cmd]);
+        c
+    } else {
+        let mut c = Command::new("codex");
+        c.args([
+            "-a", "never",
+            "-s", "read-only", "-C", &work_dir_str,
+            "exec", "--skip-git-repo-check",
+        ]);
+        c
+    };
     cmd.stdin(std::process::Stdio::piped());
     cmd.stdout(std::process::Stdio::piped());
-    cmd.stderr(std::process::Stdio::null());
+    cmd.stderr(std::process::Stdio::piped());
+    cmd.creation_flags(CREATE_NO_WINDOW);
 
     let mut child = cmd.spawn().map_err(|e| {
         tracing::error!("Failed to spawn codex CLI: {e}");
@@ -333,6 +420,19 @@ async fn handle_codex(
         tracing::error!("Failed to take stdout from codex process");
         StatusCode::INTERNAL_SERVER_ERROR
     })?;
+
+    // Log stderr in the background so we can diagnose Codex CLI failures.
+    if let Some(stderr) = child.stderr.take() {
+        tokio::spawn(async move {
+            let reader = BufReader::new(stderr);
+            let mut lines = LinesStream::new(reader.lines());
+            while let Some(Ok(line)) = lines.next().await {
+                if !line.trim().is_empty() {
+                    tracing::warn!("codex stderr: {line}");
+                }
+            }
+        });
+    }
 
     {
         let mut guard = state.active_child.lock().await;
@@ -379,12 +479,8 @@ async fn handle_codex(
 // ---------------------------------------------------------------------------
 
 fn build_claude_input(messages: &[ChatMessage], screenshot: Option<&str>) -> String {
-    // Build the content array for the last user message
-    let mut content_parts = Vec::new();
-
-    // Collect all messages into conversation -- Claude stream-json expects a single
-    // user turn with all context.  We concatenate prior messages as text context,
-    // then add the screenshot if present.
+    // Collect all messages into a single user turn. Claude stream-json expects
+    // one user message; conversation history is concatenated as text context.
     let mut combined_text = String::new();
     for msg in messages {
         if !combined_text.is_empty() {
@@ -393,10 +489,10 @@ fn build_claude_input(messages: &[ChatMessage], screenshot: Option<&str>) -> Str
         let _ = write!(combined_text, "[{}]: {}", msg.role, msg.content);
     }
 
-    content_parts.push(serde_json::json!({
+    let mut content_parts = vec![serde_json::json!({
         "type": "text",
         "text": combined_text,
-    }));
+    })];
 
     if let Some(data) = screenshot {
         content_parts.push(serde_json::json!({
@@ -479,46 +575,54 @@ fn parse_claude_line(line: &str) -> Option<String> {
     }
 }
 
-/// Parse a single JSONL line from Codex CLI stdout.
+/// Parse a single line from Codex CLI stdout.
+///
+/// Codex `exec` outputs plain text (no `--json` flag), so non-JSON lines
+/// are emitted as text chunks. If the line happens to be JSON (e.g. a
+/// refusal object), we parse it specially.
 fn parse_codex_line(line: &str) -> Option<String> {
-    let v: serde_json::Value = serde_json::from_str(line).ok()?;
-
-    // Check for refusal
-    if let Some(refusal_type) = v.get("type").and_then(serde_json::Value::as_str) {
-        if refusal_type == "refusal" {
-            let msg = v
-                .get("content")
-                .and_then(serde_json::Value::as_str)
-                .unwrap_or("Model refused the request");
-            return Some(sse_error(msg));
-        }
-    }
-
-    // Look for content array with output_text items
-    if let Some(content) = v.get("content").and_then(serde_json::Value::as_array) {
-        let mut collected = String::new();
-        for item in content {
-            if item.get("type").and_then(serde_json::Value::as_str) == Some("output_text") {
-                if let Some(text) = item.get("text").and_then(serde_json::Value::as_str) {
-                    collected.push_str(text);
-                }
+    // Try JSON first (handles refusals and structured output).
+    if let Ok(v) = serde_json::from_str::<serde_json::Value>(line) {
+        // Check for refusal
+        if let Some(refusal_type) = v.get("type").and_then(serde_json::Value::as_str) {
+            if refusal_type == "refusal" {
+                let msg = v
+                    .get("content")
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or("Model refused the request");
+                return Some(sse_error(msg));
             }
         }
-        if !collected.is_empty() {
-            return Some(sse_text(&collected));
+
+        // Look for content array with output_text items
+        if let Some(content) = v.get("content").and_then(serde_json::Value::as_array) {
+            let mut collected = String::new();
+            for item in content {
+                if item.get("type").and_then(serde_json::Value::as_str) == Some("output_text") {
+                    if let Some(text) = item.get("text").and_then(serde_json::Value::as_str) {
+                        collected.push_str(text);
+                    }
+                }
+            }
+            if !collected.is_empty() {
+                return Some(sse_text(&collected));
+            }
         }
+
+        // Top-level text field
+        if let Some(text) = v.get("text").and_then(serde_json::Value::as_str) {
+            if !text.is_empty() {
+                return Some(sse_text(text));
+            }
+        }
+
+        // Unrecognized JSON structure -- skip
+        tracing::debug!("Ignoring unrecognized codex JSON: {line}");
+        return None;
     }
 
-    // Best-effort: check for top-level text field
-    if let Some(text) = v.get("text").and_then(serde_json::Value::as_str) {
-        if !text.is_empty() {
-            return Some(sse_text(text));
-        }
-    }
-
-    // Unparseable structure -- log and skip
-    tracing::debug!("Ignoring unrecognized codex output: {line}");
-    None
+    // Plain text line -- emit as-is.
+    Some(sse_text(line))
 }
 
 // ---------------------------------------------------------------------------
@@ -595,24 +699,25 @@ fn port_file_path() -> std::path::PathBuf {
 /// once the listener is bound and ready.
 pub async fn start_proxy() -> Result<SocketAddr, Box<dyn std::error::Error>> {
     let token = generate_token();
-    let claude_available = is_cli_available("claude");
-    let codex_available = is_cli_available("codex");
+    let claude_mode = detect_cli("claude");
+    let codex_mode = detect_cli("codex");
 
     tracing::info!(
-        "CLI availability -- claude: {claude_available}, codex: {codex_available}"
+        "CLI availability -- claude: {claude_mode:?}, codex: {codex_mode:?}"
     );
 
     let state = Arc::new(ProxyState {
         token: token.clone(),
         active_child: Mutex::new(None),
-        claude_available,
-        codex_available,
+        claude_mode,
+        codex_mode,
     });
 
     let router = Router::new()
         .route("/health", get(health))
         .route("/chat", post(chat))
         .route("/cancel", post(cancel))
+        .layer(axum::extract::DefaultBodyLimit::max(10 * 1024 * 1024)) // 10 MB for screenshots
         .with_state(state);
 
     let listener = TcpListener::bind("127.0.0.1:0").await?;
@@ -634,6 +739,25 @@ pub async fn start_proxy() -> Result<SocketAddr, Box<dyn std::error::Error>> {
     });
 
     Ok(addr)
+}
+
+/// Start the proxy server on a background thread with its own tokio runtime.
+pub fn spawn_proxy_thread() {
+    std::thread::spawn(|| {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("Failed to create proxy runtime");
+        rt.block_on(async {
+            match start_proxy().await {
+                Ok(addr) => {
+                    tracing::info!("Proxy server started on {addr}");
+                    std::future::pending::<()>().await;
+                }
+                Err(e) => tracing::error!("Failed to start proxy: {e}"),
+            }
+        });
+    });
 }
 
 /// Remove the proxy.port file. Call on shutdown.

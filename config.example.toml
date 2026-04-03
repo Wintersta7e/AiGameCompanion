@@ -39,6 +39,7 @@ height = 400
 opacity = 0.85
 font_size = 16
 translate_hotkey = "F10"
+# hook_delay = 15  # Extra seconds to wait before hooking. Set 15-20 for games with long DX12 init (e.g. Horizon).
 
 [capture]
 enabled = true

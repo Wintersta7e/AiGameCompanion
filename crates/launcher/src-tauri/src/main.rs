@@ -67,7 +67,8 @@ fn main() {
                         }
                         "quit" => {
                             crate::proxy::cleanup_port_file();
-                            app.exit(0);
+                            // app.exit() may not kill the proxy thread, so force it.
+                            std::process::exit(0);
                         }
                         _ => {}
                     }
@@ -84,37 +85,22 @@ fn main() {
                 .build(app)?;
 
             app.manage(app_state);
-
-            // Start the proxy server on a separate tokio runtime.
-            // The server runs forever, so the thread blocks on a pending future
-            // after the server spawns its listener task.
-            std::thread::spawn(|| {
-                let rt = tokio::runtime::Builder::new_current_thread()
-                    .enable_all()
-                    .build()
-                    .expect("Failed to create proxy runtime");
-                rt.block_on(async {
-                    match proxy::start_proxy().await {
-                        Ok(addr) => {
-                            tracing::info!("Proxy server started on {addr}");
-                            // Keep the runtime alive so the spawned server task continues
-                            std::future::pending::<()>().await;
-                        }
-                        Err(e) => tracing::error!("Failed to start proxy: {e}"),
-                    }
-                });
-            });
-
+            proxy::spawn_proxy_thread();
             Ok(())
         })
         .on_window_event(|window, event| {
-            // Minimize to tray: intercept close and hide instead of quitting
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
                 let state = window.state::<AppState>();
                 let minimize_to_tray = state.launcher.lock().settings.minimize_to_tray;
                 if minimize_to_tray {
+                    // Hide to tray instead of closing.
                     api.prevent_close();
                     let _ = window.hide();
+                } else {
+                    // Real close: clean up and force exit so the proxy thread
+                    // doesn't keep the process alive.
+                    crate::proxy::cleanup_port_file();
+                    std::process::exit(0);
                 }
             }
         })
@@ -129,4 +115,10 @@ fn main() {
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
+
+    // Tauri's event loop has exited (all windows closed). The proxy thread
+    // blocks on `pending().await` and will never return on its own, so clean
+    // up and force-terminate all threads.
+    proxy::cleanup_port_file();
+    std::process::exit(0);
 }

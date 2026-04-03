@@ -189,6 +189,8 @@ struct CompanionRenderLoop {
     saved_clip_rect: Option<hudhook::windows::Win32::Foundation::RECT>,
     /// Whether we previously had the overlay visible (for edge-triggered clip/cursor logic).
     was_visible: bool,
+    /// True once the deferred proxy health check has been attempted.
+    health_check_done: bool,
 }
 
 impl CompanionRenderLoop {
@@ -199,6 +201,7 @@ impl CompanionRenderLoop {
             logged_first_render: false,
             saved_clip_rect: None,
             was_visible: false,
+            health_check_done: false,
         }
     }
 }
@@ -371,6 +374,49 @@ impl ImguiRenderLoop for CompanionRenderLoop {
 
         // --- Draw UI if visible (lock-free check) ---
         if OVERLAY_VISIBLE.load(Ordering::Acquire) {
+            // Deferred proxy health check: runs once on first overlay open.
+            // This is where the tokio RUNTIME first initializes (2 worker
+            // threads). Doing it here instead of init_hook_thread avoids
+            // starting threads during the DX12 stabilization window.
+            if !self.health_check_done {
+                self.health_check_done = true;
+                let mut state = STATE.lock();
+                if state.health_check_needed {
+                    state.health_check_needed = false;
+                    let port = state.proxy_port;
+                    let token = state.proxy_token.clone();
+                    drop(state);
+                    if let (Some(port), Some(token)) = (port, token) {
+                        if let Some(rt) = RUNTIME.as_ref() {
+                            info!("Running deferred proxy health check...");
+                            rt.spawn(async move {
+                                let providers =
+                                    proxy_client::check_health(port, &token).await;
+                                let mut st = STATE.lock();
+                                st.proxy_providers = providers;
+                                if !st.is_provider_available(st.active_provider) {
+                                    if st.is_provider_available(provider::Provider::Gemini)
+                                    {
+                                        st.active_provider = provider::Provider::Gemini;
+                                    } else if st
+                                        .proxy_providers
+                                        .contains(&provider::Provider::Claude)
+                                    {
+                                        st.active_provider = provider::Provider::Claude;
+                                    } else if st
+                                        .proxy_providers
+                                        .contains(&provider::Provider::Openai)
+                                    {
+                                        st.active_provider = provider::Provider::Openai;
+                                    }
+                                }
+                                info!("Available providers: {:?}", st.proxy_providers);
+                            });
+                        }
+                    }
+                }
+            }
+
             ui::draw_panel(ui);
         }
     }
@@ -401,6 +447,187 @@ impl ImguiRenderLoop for CompanionRenderLoop {
     }
 }
 
+/// Build and apply DX12 hooks with one retry on panic.
+/// The dummy device creation in `get_target_addrs()` can panic if the game's
+/// DX12 pipeline isn't fully initialized. Retrying after a delay usually works.
+fn build_and_apply_dx12(hmodule: HINSTANCE) -> Result<(), hudhook::mh::MH_STATUS> {
+    let attempt = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let hh = Hudhook::builder()
+            .with::<ImguiDx12Hooks>(CompanionRenderLoop::new())
+            .with_hmodule(hmodule)
+            .build();
+        hh.apply()
+    }));
+    match attempt {
+        Ok(result) => result,
+        Err(_) => {
+            error!("DX12 hook build panicked on first attempt, retrying in 5s...");
+            std::thread::sleep(Duration::from_secs(5));
+            let hh = Hudhook::builder()
+                .with::<ImguiDx12Hooks>(CompanionRenderLoop::new())
+                .with_hmodule(hmodule)
+                .build();
+            hh.apply()
+        }
+    }
+}
+
+/// Build and apply DX11 hooks (no retry needed -- DX11 init is simpler).
+fn build_and_apply_dx11(hmodule: HINSTANCE) -> Result<(), hudhook::mh::MH_STATUS> {
+    let hh = Hudhook::builder()
+        .with::<ImguiDx11Hooks>(CompanionRenderLoop::new())
+        .with_hmodule(hmodule)
+        .build();
+    hh.apply()
+}
+
+/// Core init logic, called from DllMain's spawned thread inside catch_unwind.
+fn init_hook_thread(hmodule: HINSTANCE) {
+    // Set up tracing FIRST so we capture hudhook's internal logs.
+    init_tracing();
+    info!("DllMain: thread started");
+
+    // Wait for DXGI -- required by both DX12 and DX11.
+    info!("Waiting for graphics DLLs...");
+    while !is_module_loaded("dxgi.dll") {
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    info!("dxgi.dll loaded");
+
+    // Determine which graphics API to hook.
+    let api = if let Some(forced) = CONFIG.overlay.graphics_api {
+        info!("Config override: graphics_api = {forced}");
+        forced
+    } else {
+        // Wait for a graphics DLL to appear (up to 15s).
+        info!("Auto-detecting graphics API...");
+        let mut detected = None;
+        for _ in 0..150 {
+            detected = detect_graphics_api();
+            if detected.is_some() {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(100));
+        }
+        match detected {
+            Some(api) => {
+                info!("Auto-detected: {api}");
+                api
+            }
+            None => {
+                info!("ERROR: No supported graphics API detected -- ejecting");
+                eject();
+                return;
+            }
+        }
+    };
+
+    // Wait for the game to create a visible window. The DX12 swapchain is
+    // bound to the HWND, so a visible window is a reliable signal that the
+    // device and swapchain exist. This replaces the old fixed 2-second sleep
+    // and adapts to each game's actual init time.
+    info!("Waiting for game window...");
+    if !game_detect::wait_for_game_window(Duration::from_secs(30)) {
+        info!("WARNING: No game window after 30s, proceeding anyway");
+    }
+    // Buffer for DX12 pipeline finalization after window is ready.
+    // The window appears before the device/swapchain are fully stable,
+    // so we need a few seconds for the driver to settle. Without this,
+    // creating our dummy DX12 device (for vtable hooking) can conflict
+    // with the game's in-progress initialization and crash.
+    std::thread::sleep(Duration::from_secs(3));
+
+    // Extra configurable delay for games with long DX12 initialization
+    // (e.g. Decima engine). Gives the game time to finalize its command
+    // queues before we hook ExecuteCommandLists.
+    let hook_delay = CONFIG.overlay.hook_delay;
+    if hook_delay > 0 {
+        info!("hook_delay = {hook_delay}s -- waiting for DX12 pipeline to stabilize...");
+        std::thread::sleep(Duration::from_secs(hook_delay));
+    }
+
+    // Detect game name (window title should be set by now).
+    let game_name = game_detect::detect_game_name();
+    if let Some(ref name) = game_name {
+        info!("Game: {name}");
+    }
+    STATE.lock().game_name = game_name.clone();
+
+    // Read proxy.port file (written by the launcher's proxy server).
+    // Store port/token now; defer the async health check until after hooks
+    // are active so the tokio runtime doesn't start extra threads during the
+    // critical DX12 hook initialization window.
+    let proxy_info = read_proxy_port_file();
+    if let Some((port, ref token)) = proxy_info {
+        let mut state = STATE.lock();
+        state.proxy_port = Some(port);
+        state.proxy_token = Some(token.clone());
+        state.health_check_needed = true;
+        drop(state);
+        info!("Proxy discovered at localhost:{port}");
+    } else {
+        info!("No proxy.port file found -- CLI providers unavailable");
+    }
+
+    // Set the active provider from config.
+    {
+        let mut state = STATE.lock();
+        state.active_provider = CONFIG.api.provider;
+    }
+
+    // Initialize session log
+    logging::init_session_log(game_name.as_deref());
+
+    // Build and apply hooks for the detected API.
+    // Wrapped in catch_unwind with one retry: the dummy DX12 device
+    // creation in hudhook can panic if the game's DX12 pipeline isn't
+    // fully stable yet. A 5-second retry usually succeeds.
+    info!("Building {api} hooks...");
+    let result = match api {
+        GraphicsApi::Dx12 => build_and_apply_dx12(hmodule),
+        GraphicsApi::Dx11 => build_and_apply_dx11(hmodule),
+        GraphicsApi::Dx9 => {
+            info!("DX9 detected but not yet supported -- ejecting");
+            eject();
+            return;
+        }
+        GraphicsApi::Opengl => {
+            info!("OpenGL detected but not yet supported -- ejecting");
+            eject();
+            return;
+        }
+    };
+
+    match result {
+        Ok(()) => info!("apply() succeeded for {api}"),
+        Err(e) => {
+            info!("apply() failed for {api}: {e:?}");
+            eject();
+            return;
+        }
+    }
+
+    // Monitor: check if render() is being called within 10 seconds.
+    info!("Monitoring hook activity...");
+    for i in 1..=10 {
+        std::thread::sleep(Duration::from_secs(1));
+        if RENDER_ACTIVE.load(Ordering::Relaxed) {
+            info!("Hooks confirmed active after {i}s");
+            break;
+        }
+        info!("Waiting for first render call... {i}s");
+    }
+    if !RENDER_ACTIVE.load(Ordering::Relaxed) {
+        info!("WARNING: render() not called after 10s -- hooks may not be intercepting Present()");
+    }
+
+    // Health check is deferred until the overlay is first opened (F9).
+    // Starting the tokio runtime here (right after hooks) creates extra
+    // threads during the critical DX12 stabilization window, which crashes
+    // games on NVIDIA (especially Decima engine). By the time the user
+    // presses F9, the game's DX12 pipeline is fully stable.
+}
+
 /// # Safety
 /// Called by the OS loader. `hmodule` must be a valid HINSTANCE for this DLL.
 #[no_mangle]
@@ -418,147 +645,13 @@ pub unsafe extern "system" fn DllMain(
         }
 
         std::thread::spawn(move || {
-            // Set up tracing FIRST so we capture hudhook's internal logs.
-            init_tracing();
-            info!("DllMain: thread started");
-
-            // Wait for DXGI -- required by both DX12 and DX11.
-            info!("Waiting for graphics DLLs...");
-            while !is_module_loaded("dxgi.dll") {
-                std::thread::sleep(Duration::from_millis(100));
-            }
-            info!("dxgi.dll loaded");
-
-            // Determine which graphics API to hook.
-            let api = if let Some(forced) = CONFIG.overlay.graphics_api {
-                info!("Config override: graphics_api = {forced}");
-                forced
-            } else {
-                // Wait for a graphics DLL to appear (up to 15s).
-                info!("Auto-detecting graphics API...");
-                let mut detected = None;
-                for _ in 0..150 {
-                    detected = detect_graphics_api();
-                    if detected.is_some() {
-                        break;
-                    }
-                    std::thread::sleep(Duration::from_millis(100));
-                }
-                match detected {
-                    Some(api) => {
-                        info!("Auto-detected: {api}");
-                        api
-                    }
-                    None => {
-                        info!("ERROR: No supported graphics API detected -- ejecting");
-                        eject();
-                        return;
-                    }
-                }
-            };
-
-            // Give the game time to create its device and swapchain.
-            info!("Waiting for swapchain creation...");
-            std::thread::sleep(Duration::from_secs(2));
-
-            // Detect game name (window title should be set by now).
-            let game_name = game_detect::detect_game_name();
-            if let Some(ref name) = game_name {
-                info!("Game: {name}");
-            }
-            STATE.lock().game_name = game_name.clone();
-
-            // Read proxy.port file (written by the launcher's proxy server).
-            if let Some((port, token)) = read_proxy_port_file() {
-                let mut state = STATE.lock();
-                state.proxy_port = Some(port);
-                state.proxy_token = Some(token.clone());
-                drop(state);
-                info!("Proxy discovered at localhost:{port}");
-
-                // Async health check: discover which CLI providers are available.
-                if let Some(rt) = RUNTIME.as_ref() {
-                    rt.spawn(async move {
-                        let providers = proxy_client::check_health(port, &token).await;
-                        let mut state = STATE.lock();
-                        state.proxy_providers = providers;
-                        // Validate active_provider: fall back if current choice is unavailable.
-                        if !state.is_provider_available(state.active_provider) {
-                            if state.is_provider_available(provider::Provider::Gemini) {
-                                state.active_provider = provider::Provider::Gemini;
-                            } else if state.proxy_providers.contains(&provider::Provider::Claude) {
-                                state.active_provider = provider::Provider::Claude;
-                            } else if state.proxy_providers.contains(&provider::Provider::Openai) {
-                                state.active_provider = provider::Provider::Openai;
-                            }
-                        }
-                        info!("Available providers: {:?}", state.proxy_providers);
-                    });
-                }
-            } else {
-                info!("No proxy.port file found -- CLI providers unavailable");
+            // Canary: write a marker file before anything else to confirm the
+            // DLL loaded and DllMain's thread is running.
+            if let Some(dir) = config::dll_directory() {
+                let _ = std::fs::write(dir.join("dll_loaded.marker"), "ok");
             }
 
-            // Set the active provider from config.
-            {
-                let mut state = STATE.lock();
-                state.active_provider = CONFIG.api.provider;
-            }
-
-            // Initialize session log
-            logging::init_session_log(game_name.as_deref());
-
-            // Build and apply hooks for the detected API.
-            info!("Building {api} hooks...");
-            let result = match api {
-                GraphicsApi::Dx12 => {
-                    let hh = Hudhook::builder()
-                        .with::<ImguiDx12Hooks>(CompanionRenderLoop::new())
-                        .with_hmodule(hmodule)
-                        .build();
-                    hh.apply()
-                }
-                GraphicsApi::Dx11 => {
-                    let hh = Hudhook::builder()
-                        .with::<ImguiDx11Hooks>(CompanionRenderLoop::new())
-                        .with_hmodule(hmodule)
-                        .build();
-                    hh.apply()
-                }
-                GraphicsApi::Dx9 => {
-                    info!("DX9 detected but not yet supported -- ejecting");
-                    eject();
-                    return;
-                }
-                GraphicsApi::Opengl => {
-                    info!("OpenGL detected but not yet supported -- ejecting");
-                    eject();
-                    return;
-                }
-            };
-
-            match result {
-                Ok(()) => info!("apply() succeeded for {api}"),
-                Err(e) => {
-                    info!("apply() failed for {api}: {e:?}");
-                    eject();
-                    return;
-                }
-            }
-
-            // Monitor: check if render() is being called within 10 seconds.
-            info!("Monitoring hook activity...");
-            for i in 1..=10 {
-                std::thread::sleep(Duration::from_secs(1));
-                if RENDER_ACTIVE.load(Ordering::Relaxed) {
-                    info!("Hooks confirmed active after {i}s");
-                    break;
-                }
-                info!("Waiting for first render call... {i}s");
-            }
-            if !RENDER_ACTIVE.load(Ordering::Relaxed) {
-                info!("WARNING: render() not called after 10s -- hooks may not be intercepting Present()");
-            }
+            init_hook_thread(hmodule);
 
             // Park thread indefinitely so nothing gets dropped
             // (destructors can crash the host game).

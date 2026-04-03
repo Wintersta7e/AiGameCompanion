@@ -97,13 +97,23 @@ impl SafetyFilter {
     }
 }
 
-fn default_safety_filter() -> SafetyFilter { SafetyFilter::Off }
+fn default_safety_filter() -> SafetyFilter {
+    SafetyFilter::Off
+}
 
-fn default_provider() -> Provider { Provider::Gemini }
+fn default_provider() -> Provider {
+    Provider::Gemini
+}
 
-fn default_gemini_model() -> String { "gemini-2.5-flash".into() }
-fn default_claude_model() -> String { "haiku".into() }
-fn default_openai_model() -> String { "gpt-4o".into() }
+fn default_gemini_model() -> String {
+    "gemini-2.5-flash".into()
+}
+fn default_claude_model() -> String {
+    "haiku".into()
+}
+fn default_openai_model() -> String {
+    "gpt-4o".into()
+}
 
 #[derive(Deserialize, Clone)]
 pub struct GeminiConfig {
@@ -214,6 +224,10 @@ pub struct OverlayConfig {
     pub font_size: f32,
     #[serde(default = "default_translate_hotkey")]
     pub translate_hotkey: String,
+    /// Extra seconds to wait after game window detected before applying hooks.
+    /// Default 0. Set 15-20 for games with long DX12 init (e.g. Horizon).
+    #[serde(default = "default_hook_delay")]
+    pub hook_delay: u64,
 }
 
 #[derive(Deserialize, Clone)]
@@ -243,7 +257,9 @@ pub enum TranslationProvider {
     Local,
 }
 
-fn default_translation_provider() -> TranslationProvider { TranslationProvider::Gemini }
+fn default_translation_provider() -> TranslationProvider {
+    TranslationProvider::Gemini
+}
 
 #[derive(Deserialize, Clone)]
 pub struct LocalModelConfig {
@@ -253,8 +269,12 @@ pub struct LocalModelConfig {
     pub model: String,
 }
 
-fn default_local_endpoint() -> String { "http://localhost:11434/v1/chat/completions".into() }
-fn default_local_model() -> String { "minicpm-v".into() }
+fn default_local_endpoint() -> String {
+    "http://localhost:11434/v1/chat/completions".into()
+}
+fn default_local_model() -> String {
+    "minicpm-v".into()
+}
 
 impl Default for LocalModelConfig {
     fn default() -> Self {
@@ -277,8 +297,12 @@ pub struct TranslationConfig {
     pub local: LocalModelConfig,
 }
 
-fn default_translation_enabled() -> bool { true }
-fn default_target_language() -> String { "English".into() }
+fn default_translation_enabled() -> bool {
+    true
+}
+fn default_target_language() -> String {
+    "English".into()
+}
 
 impl Default for TranslationConfig {
     fn default() -> Self {
@@ -291,10 +315,16 @@ impl Default for TranslationConfig {
     }
 }
 
-fn default_logging_enabled() -> bool { true }
+fn default_logging_enabled() -> bool {
+    true
+}
 
-fn default_model() -> String { "gemini-2.5-flash".into() }
-fn default_max_tokens() -> u32 { 1024 }
+fn default_model() -> String {
+    "gemini-2.5-flash".into()
+}
+fn default_max_tokens() -> u32 {
+    1024
+}
 fn default_system_prompt() -> String {
     "You are Sage, a sharp and knowledgeable game companion embedded in the player's screen. \
      Keep answers short — 2-3 sentences unless the player asks for detail. \
@@ -305,15 +335,36 @@ fn default_system_prompt() -> String {
      If no question is asked with a screenshot, give the single most useful observation."
         .into()
 }
-fn default_hotkey() -> String { "F9".into() }
-fn default_width() -> f32 { 500.0 }
-fn default_height() -> f32 { 400.0 }
-fn default_opacity() -> f32 { 0.85 }
-fn default_font_size() -> f32 { 16.0 }
-fn default_translate_hotkey() -> String { "F10".into() }
-fn default_capture_enabled() -> bool { true }
-fn default_max_width() -> u32 { 1920 }
-fn default_quality() -> u8 { 85 }
+fn default_hotkey() -> String {
+    "F9".into()
+}
+fn default_width() -> f32 {
+    500.0
+}
+fn default_height() -> f32 {
+    400.0
+}
+fn default_opacity() -> f32 {
+    0.85
+}
+fn default_font_size() -> f32 {
+    16.0
+}
+fn default_translate_hotkey() -> String {
+    "F10".into()
+}
+fn default_hook_delay() -> u64 {
+    0
+}
+fn default_capture_enabled() -> bool {
+    true
+}
+fn default_max_width() -> u32 {
+    1920
+}
+fn default_quality() -> u8 {
+    85
+}
 
 impl Default for ApiConfig {
     fn default() -> Self {
@@ -341,6 +392,7 @@ impl Default for OverlayConfig {
             opacity: default_opacity(),
             font_size: default_font_size(),
             translate_hotkey: default_translate_hotkey(),
+            hook_delay: default_hook_delay(),
         }
     }
 }

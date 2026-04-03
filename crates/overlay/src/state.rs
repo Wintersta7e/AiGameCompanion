@@ -9,6 +9,52 @@ use crate::provider::Provider;
 /// This bounds per-frame clone cost and prevents unbounded memory growth.
 const MAX_STORED_MESSAGES: usize = 100;
 
+/// Replace common Unicode characters with ASCII equivalents so ImGui's
+/// default font (Latin-1 only) can render them. Without this, em dashes,
+/// smart quotes, trademark symbols etc. show as "?" and corrupt nearby glyphs.
+pub fn sanitize_for_imgui(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for ch in s.chars() {
+        match ch {
+            // Dashes
+            '\u{2014}' => out.push_str("--"), // em dash
+            '\u{2013}' => out.push('-'),      // en dash
+            '\u{2015}' => out.push_str("--"), // horizontal bar
+            // Quotes
+            '\u{201C}' | '\u{201D}' => out.push('"'), // left/right double quote
+            '\u{2018}' | '\u{2019}' => out.push('\''), // left/right single quote
+            '\u{201E}' | '\u{201F}' => out.push('"'), // double low-9 / high-reversed-9
+            '\u{00AB}' | '\u{00BB}' => out.push('"'), // guillemets
+            // Symbols
+            '\u{2122}' => out.push_str("(TM)"), // trademark
+            '\u{00A9}' => out.push_str("(C)"),  // copyright
+            '\u{00AE}' => out.push_str("(R)"),  // registered
+            '\u{2026}' => out.push_str("..."),  // ellipsis
+            '\u{2022}' => out.push_str("* "),   // bullet
+            '\u{00B7}' => out.push_str("* "),   // middle dot
+            // Spaces
+            '\u{00A0}' => out.push(' '), // non-breaking space
+            '\u{2009}' => out.push(' '), // thin space
+            '\u{200B}' => {}             // zero-width space (drop)
+            // Arrows
+            '\u{2192}' => out.push_str("->"),  // right arrow
+            '\u{2190}' => out.push_str("<-"),  // left arrow
+            '\u{2194}' => out.push_str("<->"), // left-right arrow
+            // Math
+            '\u{2264}' => out.push_str("<="), // less-than or equal
+            '\u{2265}' => out.push_str(">="), // greater-than or equal
+            '\u{2260}' => out.push_str("!="), // not equal
+            '\u{00D7}' => out.push('x'),      // multiplication sign
+            '\u{00F7}' => out.push('/'),      // division sign
+            // Pass through ASCII and Latin-1 printable range as-is
+            _ if ch.is_ascii() || ('\u{00A1}'..='\u{00FF}').contains(&ch) => out.push(ch),
+            // Everything else outside Latin-1: replace with '?'
+            _ => out.push('?'),
+        }
+    }
+    out
+}
+
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum MessageRole {
     User,
@@ -26,11 +72,19 @@ pub struct ChatMessage {
 
 impl ChatMessage {
     pub fn new(role: MessageRole, content: String) -> Self {
-        Self { role, content, is_translation: false }
+        Self {
+            role,
+            content,
+            is_translation: false,
+        }
     }
 
     pub fn translation(role: MessageRole, content: String) -> Self {
-        Self { role, content, is_translation: true }
+        Self {
+            role,
+            content,
+            is_translation: true,
+        }
     }
 }
 
@@ -68,6 +122,10 @@ pub struct AppState {
     pub proxy_token: Option<String>,
     /// Which CLI providers are available (populated from proxy /health endpoint).
     pub proxy_providers: HashSet<Provider>,
+    /// True if a proxy was discovered but the health check hasn't run yet.
+    /// The check is deferred until the overlay is first opened so the tokio
+    /// runtime doesn't start during the DX12 stabilization window.
+    pub health_check_needed: bool,
 }
 
 impl AppState {
@@ -88,7 +146,11 @@ impl AppState {
             let excess = self.messages.len() - MAX_STORED_MESSAGES;
             self.messages.drain(..excess);
             // Ensure we start with a User message
-            while self.messages.first().is_some_and(|m| m.role == MessageRole::Assistant) {
+            while self
+                .messages
+                .first()
+                .is_some_and(|m| m.role == MessageRole::Assistant)
+            {
                 self.messages.remove(0);
             }
         }

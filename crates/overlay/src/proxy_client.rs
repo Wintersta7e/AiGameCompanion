@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::config::CONFIG;
 use crate::provider::Provider;
-use crate::state::{ChatMessage, MessageRole, STATE};
+use crate::state::{sanitize_for_imgui, ChatMessage, MessageRole, STATE};
 
 /// Maximum total bytes to accumulate from an SSE stream before aborting.
 const MAX_STREAM_BYTES: usize = 2 * 1024 * 1024; // 2 MB
@@ -280,13 +280,14 @@ fn process_proxy_sse_lines(
 
                 if let Some(text) = chunk.text {
                     if !text.is_empty() {
-                        full_text.push_str(&text);
+                        let clean = sanitize_for_imgui(&text);
+                        full_text.push_str(&clean);
 
                         let mut state = STATE.lock();
                         if state.request_generation != generation {
                             return Err("Cancelled".into());
                         }
-                        state.streaming_response.push_str(&text);
+                        state.streaming_response.push_str(&clean);
                     }
                 }
             }
