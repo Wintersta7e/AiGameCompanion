@@ -148,7 +148,8 @@ impl InitializationContext {
                     let raw_addr = command_queue.as_raw() as usize;
                     if let Some(c) = candidates.iter_mut().find(|c| c.raw_addr == raw_addr) {
                         c.seen_count += 1;
-                    } else {
+                    } else if candidates.len() < 64 {
+                        // Cap at 64 entries to bound memory during init.
                         candidates.push(CandidateQueue {
                             queue: command_queue.clone(),
                             raw_addr,
@@ -213,6 +214,7 @@ impl InitializationContext {
     fn done(&mut self) {
         if let InitializationContext::Complete(..) = self {
             *self = InitializationContext::Done;
+            INIT_DONE.store(true, std::sync::atomic::Ordering::Release);
         }
     }
 
@@ -249,6 +251,10 @@ impl InitializationContext {
 
 static INITIALIZATION_CONTEXT: Mutex<InitializationContext> =
     Mutex::new(InitializationContext::Empty);
+/// Set to `true` once the initialization context transitions to `Done`.
+/// Checked lock-free on every `Present` and `ExecuteCommandLists` to skip
+/// the mutex entirely after the pipeline is stable.
+static INIT_DONE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 static mut PIPELINE: OnceCell<Mutex<Pipeline<D3D12RenderEngine>>> = OnceCell::new();
 static mut RENDER_LOOP: OnceCell<Box<dyn ImguiRenderLoop + Send + Sync>> = OnceCell::new();
 
@@ -306,7 +312,7 @@ unsafe extern "system" fn dxgi_swap_chain_present_impl(
     flags: u32,
 ) -> HRESULT {
     let _hook_ejection_guard = HOOK_EJECTION_BARRIER.acquire_ejection_guard();
-    {
+    if !INIT_DONE.load(std::sync::atomic::Ordering::Relaxed) {
         INITIALIZATION_CONTEXT.lock().insert_swap_chain(&swap_chain);
     }
 
@@ -363,7 +369,7 @@ unsafe extern "system" fn d3d12_command_queue_execute_command_lists_impl(
          {command_lists:p}) invoked",
     );
 
-    {
+    if !INIT_DONE.load(std::sync::atomic::Ordering::Relaxed) {
         INITIALIZATION_CONTEXT
             .lock()
             .insert_command_queue(&command_queue);
@@ -534,6 +540,7 @@ impl Hooks for ImguiDx12Hooks {
         PIPELINE.take().map(|p| p.into_inner().take());
         RENDER_LOOP.take(); // should already be null
 
+        INIT_DONE.store(false, std::sync::atomic::Ordering::Release);
         *INITIALIZATION_CONTEXT.lock() = InitializationContext::Empty;
     }
 }

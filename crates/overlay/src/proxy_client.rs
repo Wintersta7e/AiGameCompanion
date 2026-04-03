@@ -2,6 +2,7 @@ use std::collections::{HashMap, HashSet};
 use std::time::Duration;
 
 use futures_util::StreamExt;
+use once_cell::sync::Lazy;
 use serde::{Deserialize, Serialize};
 
 use crate::config::CONFIG;
@@ -13,6 +14,17 @@ const MAX_STREAM_BYTES: usize = 2 * 1024 * 1024; // 2 MB
 
 /// Max number of conversation messages to send to the proxy.
 const MAX_HISTORY_MESSAGES: usize = 50;
+
+/// Shared HTTP client for all proxy requests. Reuses connections to localhost.
+static PROXY_CLIENT: Lazy<reqwest::Client> = Lazy::new(|| {
+    reqwest::Client::builder()
+        .timeout(Duration::from_secs(120))
+        .build()
+        .unwrap_or_else(|e| {
+            tracing::warn!("Proxy HTTP client builder failed: {e}, using default");
+            reqwest::Client::new()
+        })
+});
 
 // --- Proxy request/response types ---
 
@@ -169,15 +181,7 @@ pub async fn send_proxy_message(
 
     let url = format!("http://127.0.0.1:{port}/chat");
 
-    let client = reqwest::Client::builder()
-        .timeout(Duration::from_secs(120))
-        .build()
-        .unwrap_or_else(|e| {
-            tracing::warn!("Proxy HTTP client builder failed: {e}, using default");
-            reqwest::Client::new()
-        });
-
-    let response = client
+    let response = PROXY_CLIENT
         .post(&url)
         .header("Authorization", format!("Bearer {token}"))
         .header("Content-Type", "application/json")
@@ -317,7 +321,7 @@ pub fn send_cancel(generation: u64) {
         let url = format!("http://127.0.0.1:{port}/cancel");
         let body = serde_json::json!({ "request_id": generation });
 
-        let result = reqwest::Client::new()
+        let result = PROXY_CLIENT
             .post(&url)
             .header("Authorization", format!("Bearer {token}"))
             .json(&body)
@@ -335,12 +339,7 @@ pub fn send_cancel(generation: u64) {
 pub async fn check_health(port: u16, token: &str) -> HashSet<Provider> {
     let url = format!("http://127.0.0.1:{port}/health");
 
-    let client = reqwest::Client::builder()
-        .timeout(Duration::from_secs(5))
-        .build()
-        .unwrap_or_else(|_| reqwest::Client::new());
-
-    let response = match client
+    let response = match PROXY_CLIENT
         .get(&url)
         .header("Authorization", format!("Bearer {token}"))
         .send()

@@ -133,7 +133,7 @@ impl Default for GeminiConfig {
 }
 
 #[derive(Deserialize, Clone)]
-#[allow(dead_code)]
+
 pub struct ClaudeConfig {
     #[serde(default = "default_claude_model")]
     pub model: String,
@@ -148,7 +148,7 @@ impl Default for ClaudeConfig {
 }
 
 #[derive(Deserialize, Clone)]
-#[allow(dead_code)]
+
 pub struct OpenaiConfig {
     #[serde(default = "default_openai_model")]
     pub model: String,
@@ -163,7 +163,7 @@ impl Default for OpenaiConfig {
 }
 
 #[derive(Deserialize, Clone)]
-#[allow(dead_code)]
+
 pub struct ApiConfig {
     #[serde(default = "default_provider")]
     pub provider: Provider,
@@ -208,7 +208,7 @@ impl ApiConfig {
 }
 
 #[derive(Deserialize, Clone)]
-#[allow(dead_code)]
+#[allow(dead_code)] // fields used by ui.rs at runtime, not seen by cross-compile check
 pub struct OverlayConfig {
     /// Force a specific graphics API. If omitted, auto-detects from loaded modules.
     pub graphics_api: Option<GraphicsApi>,
@@ -231,7 +231,7 @@ pub struct OverlayConfig {
 }
 
 #[derive(Deserialize, Clone)]
-#[allow(dead_code)]
+#[allow(dead_code)] // enabled + quality reserved for future use
 pub struct CaptureConfig {
     #[serde(default = "default_capture_enabled")]
     pub enabled: bool,

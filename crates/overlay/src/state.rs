@@ -46,7 +46,14 @@ pub fn sanitize_for_imgui(s: &str) -> String {
             '\u{2260}' => out.push_str("!="), // not equal
             '\u{00D7}' => out.push('x'),      // multiplication sign
             '\u{00F7}' => out.push('/'),      // division sign
-            // Pass through ASCII and Latin-1 printable range as-is
+            // Drop C0/C1 control characters (NUL truncates ImGui C strings,
+            // others produce garbled glyphs). Preserve \n and \t which ImGui handles.
+            _ if ch.is_ascii_control() => {
+                if ch == '\n' || ch == '\t' {
+                    out.push(ch);
+                }
+            }
+            // Pass through ASCII printable and Latin-1 printable range as-is
             _ if ch.is_ascii() || ('\u{00A1}'..='\u{00FF}').contains(&ch) => out.push(ch),
             // Everything else outside Latin-1: replace with '?'
             _ => out.push('?'),
@@ -126,6 +133,10 @@ pub struct AppState {
     /// The check is deferred until the overlay is first opened so the tokio
     /// runtime doesn't start during the DX12 stabilization window.
     pub health_check_needed: bool,
+    /// True once the deferred proxy health check has been attempted.
+    /// Co-located with `health_check_needed` so both flags share the same
+    /// lock and survive DX12 hook retries (which recreate CompanionRenderLoop).
+    pub health_check_done: bool,
 }
 
 impl AppState {

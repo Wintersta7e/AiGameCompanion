@@ -189,8 +189,10 @@ struct CompanionRenderLoop {
     saved_clip_rect: Option<hudhook::windows::Win32::Foundation::RECT>,
     /// Whether we previously had the overlay visible (for edge-triggered clip/cursor logic).
     was_visible: bool,
-    /// True once the deferred proxy health check has been attempted.
-    health_check_done: bool,
+    /// Cached toggle hotkey VK code (parsed once from CONFIG at init).
+    toggle_vk: i32,
+    /// Cached translate hotkey VK code (parsed once from CONFIG at init).
+    translate_vk: Option<i32>,
 }
 
 impl CompanionRenderLoop {
@@ -201,7 +203,12 @@ impl CompanionRenderLoop {
             logged_first_render: false,
             saved_clip_rect: None,
             was_visible: false,
-            health_check_done: false,
+            toggle_vk: parse_vk_code(&CONFIG.overlay.hotkey).unwrap_or(VK_F9.0 as i32),
+            translate_vk: if CONFIG.translation.enabled {
+                parse_vk_code(&CONFIG.overlay.translate_hotkey)
+            } else {
+                None
+            },
         }
     }
 }
@@ -238,7 +245,8 @@ impl ImguiRenderLoop for CompanionRenderLoop {
         _render_context: &'a mut dyn hudhook::RenderContext,
     ) {
         let visible = OVERLAY_VISIBLE.load(Ordering::Acquire);
-        let capturing = STATE.lock().capture_pending;
+        // Only lock STATE when visible -- capture_pending is always false when hidden.
+        let capturing = if visible { STATE.lock().capture_pending } else { false };
 
         // ImGui software cursor -- games hide the hardware cursor via
         // SetCursor(NULL) on every WM_SETCURSOR, so we draw our own.
@@ -270,9 +278,7 @@ impl ImguiRenderLoop for CompanionRenderLoop {
         }
 
         // --- Hotkey toggle with rising-edge debounce ---
-        // Use configured hotkey (default F9), fall back to F9 if unparseable.
-        let toggle_vk = parse_vk_code(&CONFIG.overlay.hotkey).unwrap_or(VK_F9.0 as i32);
-        let toggle_pressed = unsafe { GetAsyncKeyState(toggle_vk) } & (1 << 15) != 0;
+        let toggle_pressed = unsafe { GetAsyncKeyState(self.toggle_vk) } & (1 << 15) != 0;
         if toggle_pressed && !self.f9_was_pressed {
             let mut state = STATE.lock();
             state.visible = !state.visible;
@@ -281,32 +287,30 @@ impl ImguiRenderLoop for CompanionRenderLoop {
         self.f9_was_pressed = toggle_pressed;
 
         // --- Translate hotkey (F10 default) with rising-edge debounce ---
-        if CONFIG.translation.enabled {
-            if let Some(vk) = parse_vk_code(&CONFIG.overlay.translate_hotkey) {
-                let translate_pressed = unsafe { GetAsyncKeyState(vk) } & (1 << 15) != 0;
-                if translate_pressed && !self.translate_was_pressed {
-                    let mut state = STATE.lock();
-                    // Only trigger if not already loading and no capture in progress
-                    if !state.is_loading && !state.capture_pending {
-                        state.push_message(ChatMessage::translation(
-                            MessageRole::User,
-                            "[Translate screen]".into(),
-                        ));
-                        state.is_loading = true;
-                        state.error = None;
-                        state.request_generation += 1;
-                        state.streaming_response.clear();
-                        state.capture_pending = true;
-                        state.capture_wait_frames = 2;
-                        state.captured_screenshot = None;
-                        state.send_pending_capture = true;
-                        state.translate_pending = true;
-                        state.visible = true;
-                        OVERLAY_VISIBLE.store(true, Ordering::Release);
-                    }
+        if let Some(vk) = self.translate_vk {
+            let translate_pressed = unsafe { GetAsyncKeyState(vk) } & (1 << 15) != 0;
+            if translate_pressed && !self.translate_was_pressed {
+                let mut state = STATE.lock();
+                // Only trigger if not already loading and no capture in progress
+                if !state.is_loading && !state.capture_pending {
+                    state.push_message(ChatMessage::translation(
+                        MessageRole::User,
+                        "[Translate screen]".into(),
+                    ));
+                    state.is_loading = true;
+                    state.error = None;
+                    state.request_generation += 1;
+                    state.streaming_response.clear();
+                    state.capture_pending = true;
+                    state.capture_wait_frames = 2;
+                    state.captured_screenshot = None;
+                    state.send_pending_capture = true;
+                    state.translate_pending = true;
+                    state.visible = true;
+                    OVERLAY_VISIBLE.store(true, Ordering::Release);
                 }
-                self.translate_was_pressed = translate_pressed;
             }
+            self.translate_was_pressed = translate_pressed;
         }
 
         // --- Hide-capture-show ---
@@ -327,14 +331,19 @@ impl ImguiRenderLoop for CompanionRenderLoop {
                             capture::capture_screenshot()
                         });
                         let mut state = STATE.lock();
-                        state.captured_screenshot = match result {
-                            Ok(screenshot) => screenshot,
-                            Err(_) => {
-                                error!("Screenshot capture panicked");
-                                None
-                            }
-                        };
-                        state.capture_complete = true;
+                        // Guard: if cancel cleared send_pending_capture while
+                        // we were capturing, don't set capture_complete (it
+                        // would trigger a spurious API call with stale data).
+                        if state.send_pending_capture {
+                            state.captured_screenshot = match result {
+                                Ok(screenshot) => screenshot,
+                                Err(_) => {
+                                    error!("Screenshot capture panicked");
+                                    None
+                                }
+                            };
+                            state.capture_complete = true;
+                        }
                     });
                 } else {
                     // No runtime -- reset state so we don't get stuck
@@ -378,11 +387,11 @@ impl ImguiRenderLoop for CompanionRenderLoop {
             // This is where the tokio RUNTIME first initializes (2 worker
             // threads). Doing it here instead of init_hook_thread avoids
             // starting threads during the DX12 stabilization window.
-            if !self.health_check_done {
-                self.health_check_done = true;
+            {
                 let mut state = STATE.lock();
-                if state.health_check_needed {
+                if state.health_check_needed && !state.health_check_done {
                     state.health_check_needed = false;
+                    state.health_check_done = true;
                     let port = state.proxy_port;
                     let token = state.proxy_token.clone();
                     drop(state);

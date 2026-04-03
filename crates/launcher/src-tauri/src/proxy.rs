@@ -126,6 +126,21 @@ fn detect_cli(name: &str) -> CliMode {
     CliMode::Unavailable
 }
 
+/// Validate model name: ASCII alphanumeric + hyphens, dots, underscores, colons.
+/// Mirrors the validation in `api.rs` for Gemini models.
+fn validate_model_name(model: &str) -> Result<(), StatusCode> {
+    if model.is_empty() || model.len() > 128 {
+        return Err(StatusCode::BAD_REQUEST);
+    }
+    if !model
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '.' | '_' | ':'))
+    {
+        return Err(StatusCode::BAD_REQUEST);
+    }
+    Ok(())
+}
+
 fn validate_token(headers: &HeaderMap, expected: &str) -> Result<(), StatusCode> {
     let auth = headers
         .get("authorization")
@@ -237,6 +252,7 @@ async fn handle_claude(
     state: Arc<ProxyState>,
     req: ChatRequest,
 ) -> Result<Response, StatusCode> {
+    validate_model_name(&req.model)?;
     let claude_args = format!(
         "claude -p --input-format stream-json --output-format stream-json \
          --verbose --include-partial-messages --tools '' \
@@ -269,12 +285,27 @@ async fn handle_claude(
         StatusCode::INTERNAL_SERVER_ERROR
     })?;
 
+    // Take pipes before registering -- if any take() fails, kill the child.
+    let stdin = child.stdin.take();
+    let stdout = child.stdout.take();
+    let stderr = child.stderr.take();
+
+    if stdin.is_none() || stdout.is_none() {
+        tracing::error!("Failed to take stdin/stdout from claude process");
+        let _ = child.kill().await;
+        return Err(StatusCode::INTERNAL_SERVER_ERROR);
+    }
+    let mut stdin = stdin.unwrap();
+    let stdout = stdout.unwrap();
+
+    // Register active child for cancellation BEFORE any async work.
+    {
+        let mut guard = state.active_child.lock().await;
+        *guard = Some((req.request_id, child));
+    }
+
     // Build NDJSON input with image embedded in the content array.
     let input = build_claude_input(&req.messages, req.screenshot.as_deref());
-    let mut stdin = child.stdin.take().ok_or_else(|| {
-        tracing::error!("Failed to take stdin from claude process");
-        StatusCode::INTERNAL_SERVER_ERROR
-    })?;
 
     // Write input and close stdin
     tokio::spawn(async move {
@@ -283,13 +314,8 @@ async fn handle_claude(
         drop(stdin);
     });
 
-    let stdout = child.stdout.take().ok_or_else(|| {
-        tracing::error!("Failed to take stdout from claude process");
-        StatusCode::INTERNAL_SERVER_ERROR
-    })?;
-
     // Log stderr in the background so we can diagnose Claude CLI failures.
-    if let Some(stderr) = child.stderr.take() {
+    if let Some(stderr) = stderr {
         tokio::spawn(async move {
             let reader = BufReader::new(stderr);
             let mut lines = LinesStream::new(reader.lines());
@@ -299,12 +325,6 @@ async fn handle_claude(
                 }
             }
         });
-    }
-
-    // Register active child for cancellation
-    {
-        let mut guard = state.active_child.lock().await;
-        *guard = Some((req.request_id, child));
     }
 
     let reader = BufReader::new(stdout);
@@ -346,6 +366,7 @@ async fn handle_codex(
     state: Arc<ProxyState>,
     req: ChatRequest,
 ) -> Result<Response, StatusCode> {
+    validate_model_name(&req.model)?;
     // Codex requires a git directory -- use a temp dir with git init.
     let is_wsl = matches!(state.codex_mode, CliMode::Wsl);
     let work_dir_str = if is_wsl {
@@ -403,12 +424,27 @@ async fn handle_codex(
         StatusCode::INTERNAL_SERVER_ERROR
     })?;
 
+    // Take pipes before registering -- if any take() fails, kill the child.
+    let stdin = child.stdin.take();
+    let stdout = child.stdout.take();
+    let stderr = child.stderr.take();
+
+    if stdin.is_none() || stdout.is_none() {
+        tracing::error!("Failed to take stdin/stdout from codex process");
+        let _ = child.kill().await;
+        return Err(StatusCode::INTERNAL_SERVER_ERROR);
+    }
+    let mut stdin = stdin.unwrap();
+    let stdout = stdout.unwrap();
+
+    // Register active child for cancellation BEFORE any async work.
+    {
+        let mut guard = state.active_child.lock().await;
+        *guard = Some((req.request_id, child));
+    }
+
     // Build plain text input for Codex
     let input = build_codex_input(&req.system_prompt, &req.messages);
-    let mut stdin = child.stdin.take().ok_or_else(|| {
-        tracing::error!("Failed to take stdin from codex process");
-        StatusCode::INTERNAL_SERVER_ERROR
-    })?;
 
     tokio::spawn(async move {
         let _ = stdin.write_all(input.as_bytes()).await;
@@ -416,13 +452,8 @@ async fn handle_codex(
         drop(stdin);
     });
 
-    let stdout = child.stdout.take().ok_or_else(|| {
-        tracing::error!("Failed to take stdout from codex process");
-        StatusCode::INTERNAL_SERVER_ERROR
-    })?;
-
     // Log stderr in the background so we can diagnose Codex CLI failures.
-    if let Some(stderr) = child.stderr.take() {
+    if let Some(stderr) = stderr {
         tokio::spawn(async move {
             let reader = BufReader::new(stderr);
             let mut lines = LinesStream::new(reader.lines());
@@ -432,11 +463,6 @@ async fn handle_codex(
                 }
             }
         });
-    }
-
-    {
-        let mut guard = state.active_child.lock().await;
-        *guard = Some((req.request_id, child));
     }
 
     let reader = BufReader::new(stdout);
@@ -515,7 +541,11 @@ fn build_claude_input(messages: &[ChatMessage], screenshot: Option<&str>) -> Str
         "session_id": null,
     });
 
-    let mut out = serde_json::to_string(&input_msg).unwrap_or_default();
+    let mut out = serde_json::to_string(&input_msg)
+        .unwrap_or_else(|e| {
+            tracing::error!("Failed to serialize Claude input: {e}");
+            String::new()
+        });
     out.push('\n');
     out
 }
@@ -744,10 +774,16 @@ pub async fn start_proxy() -> Result<SocketAddr, Box<dyn std::error::Error>> {
 /// Start the proxy server on a background thread with its own tokio runtime.
 pub fn spawn_proxy_thread() {
     std::thread::spawn(|| {
-        let rt = tokio::runtime::Builder::new_current_thread()
+        let rt = match tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
-            .expect("Failed to create proxy runtime");
+        {
+            Ok(rt) => rt,
+            Err(e) => {
+                tracing::error!("Failed to create proxy runtime: {e}");
+                return;
+            }
+        };
         rt.block_on(async {
             match start_proxy().await {
                 Ok(addr) => {
