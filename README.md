@@ -44,12 +44,14 @@ AI Game Companion is a lightweight DX12/DX11 overlay that hooks into a game's re
 Sage can talk through **Google Gemini**, **Claude**, or **OpenAI** -- switch providers mid-game from a dropdown in the overlay.
 
 - **Gemini** -- direct API with a free API key ([Google AI Studio](https://aistudio.google.com))
-- **Claude** -- uses your existing [Claude Code](https://claude.ai/code) CLI subscription (no separate API key needed)
-- **OpenAI** -- uses your existing [Codex CLI](https://openai.com/codex/) subscription (no separate API key needed)
+- **Claude** -- uses your existing [Claude Code](https://claude.ai/code) subscription (no separate API key needed)
+- **OpenAI** -- uses your existing ChatGPT or OpenAI subscription via [Codex CLI](https://openai.com/codex/) (no separate API key needed)
 
-The launcher runs a local proxy that spawns the official CLI tools as subprocesses -- the same mechanism used by Anthropic's own [Agent SDK](https://platform.claude.com/docs/en/agent-sdk/overview) and documented for [programmatic use](https://code.claude.com/docs/en/headless). No OAuth tokens are extracted or shared. Each user authenticates their own CLI tools independently.
+The launcher runs a local proxy that spawns the official CLI tools as subprocesses -- the same pattern documented for [programmatic use of Claude Code](https://code.claude.com/docs/en/headless). No OAuth tokens are extracted or shared. Each user authenticates their own CLI tools independently.
 
 > **Note:** Screenshots are currently supported for Gemini and Claude only. OpenAI screenshot support depends on an upstream Codex CLI fix.
+>
+> Users are responsible for ensuring their use of each provider complies with that provider's terms of service.
 
 ### Screenshot Capture
 - **Attach screenshots** with one click -- current game frame sent as context to the AI (Gemini and Claude; OpenAI pending upstream fix)
@@ -57,6 +59,9 @@ The launcher runs a local proxy that spawns the official CLI tools as subprocess
 - **Automatic downscaling** -- large screenshots are resized before sending
 
 ### Injector
+
+> This tool injects a UI overlay for AI assistance only. It does not modify game memory, intercept network traffic, or interact with game logic. Some games with kernel-level anti-cheat may block injection.
+
 - **Watch mode** -- configure `[[games]]` in config and the injector auto-injects when a game launches
 - **PID tracking** -- re-injects automatically on game relaunch
 - **Direct mode** -- `--process "Game.exe"` for one-off injection
