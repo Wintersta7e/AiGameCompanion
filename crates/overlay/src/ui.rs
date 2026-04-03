@@ -173,6 +173,7 @@ pub fn draw_panel(ui: &Ui) {
                     state.translate_pending = false;
                     state.captured_screenshot = None;
                     state.error = Some("Cancelled.".into());
+                    crate::CAPTURE_ACTIVE.store(false, std::sync::atomic::Ordering::Release);
                     drop(state);
                     if provider != crate::provider::Provider::Gemini {
                         crate::proxy_client::send_cancel(old_gen);
@@ -218,6 +219,7 @@ pub fn draw_panel(ui: &Ui) {
                             state.capture_wait_frames = 2;
                             state.captured_screenshot = None;
                             state.send_pending_capture = true;
+                            crate::CAPTURE_ACTIVE.store(true, std::sync::atomic::Ordering::Release);
                         } else {
                             if skip_screenshot {
                                 // OpenAI doesn't support screenshot attachment yet

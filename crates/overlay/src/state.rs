@@ -129,14 +129,8 @@ pub struct AppState {
     pub proxy_token: Option<String>,
     /// Which CLI providers are available (populated from proxy /health endpoint).
     pub proxy_providers: HashSet<Provider>,
-    /// True if a proxy was discovered but the health check hasn't run yet.
-    /// The check is deferred until the overlay is first opened so the tokio
-    /// runtime doesn't start during the DX12 stabilization window.
-    pub health_check_needed: bool,
-    /// True once the deferred proxy health check has been attempted.
-    /// Co-located with `health_check_needed` so both flags share the same
-    /// lock and survive DX12 hook retries (which recreate CompanionRenderLoop).
-    pub health_check_done: bool,
+    // health_check_needed/done moved to static AtomicBool (HEALTH_CHECK_NEEDED in lib.rs)
+    // to avoid locking STATE on every visible frame.
 }
 
 impl AppState {

@@ -373,7 +373,7 @@ async fn handle_codex(
         // WSL-side path. Ensure it exists.
         let dir = "/tmp/aigc-codex-workdir";
         let _ = std::process::Command::new("wsl.exe")
-            .args(["--", "bash", "-c", &format!("mkdir -p {dir} && git -C {dir} init")])
+            .args(["--", "bash", "-c", &format!("[ -d {dir}/.git ] || (mkdir -p {dir} && git -C {dir} init)")])
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null())
             .creation_flags(CREATE_NO_WINDOW)

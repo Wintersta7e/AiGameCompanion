@@ -37,6 +37,14 @@ static RENDER_ACTIVE: AtomicBool = AtomicBool::new(false);
 /// read lock-free on every frame to avoid unnecessary mutex contention.
 static OVERLAY_VISIBLE: AtomicBool = AtomicBool::new(false);
 
+/// True when a capture or post-capture send is in progress. Checked
+/// lock-free to skip the capture state machine block when idle.
+static CAPTURE_ACTIVE: AtomicBool = AtomicBool::new(false);
+
+/// True if proxy health check hasn't run yet. Lock-free to avoid
+/// STATE lock on every visible frame after the check fires once.
+static HEALTH_CHECK_NEEDED: AtomicBool = AtomicBool::new(false);
+
 /// Global tokio runtime for async API work. 2 worker threads.
 /// Uses `OnceLock` + explicit error handling instead of `expect()` to avoid
 /// panicking inside the host game process.
@@ -308,13 +316,14 @@ impl ImguiRenderLoop for CompanionRenderLoop {
                     state.translate_pending = true;
                     state.visible = true;
                     OVERLAY_VISIBLE.store(true, Ordering::Release);
+                    CAPTURE_ACTIVE.store(true, Ordering::Release);
                 }
             }
             self.translate_was_pressed = translate_pressed;
         }
 
-        // --- Hide-capture-show ---
-        {
+        // --- Hide-capture-show (skip lock entirely when no capture is active) ---
+        if CAPTURE_ACTIVE.load(Ordering::Acquire) {
             let mut state = STATE.lock();
             if state.capture_pending {
                 if state.capture_wait_frames > 0 {
@@ -352,6 +361,7 @@ impl ImguiRenderLoop for CompanionRenderLoop {
                     state.translate_pending = false;
                     state.is_loading = false;
                     state.error = Some("Screenshot unavailable: tokio runtime not started.".into());
+                    CAPTURE_ACTIVE.store(false, Ordering::Release);
                 }
                 return; // don't draw this frame
             }
@@ -362,7 +372,6 @@ impl ImguiRenderLoop for CompanionRenderLoop {
                 state.capture_complete = false;
                 let is_translate = state.translate_pending;
                 state.translate_pending = false;
-                // Extract data under lock, then drop before cloning messages
                 let gen = state.request_generation;
                 let screenshot = state.captured_screenshot.take();
                 let messages = state.messages.clone();
@@ -371,6 +380,7 @@ impl ImguiRenderLoop for CompanionRenderLoop {
                     state.error = Some("Screenshot capture failed -- sending text only.".into());
                 }
 
+                CAPTURE_ACTIVE.store(false, Ordering::Release);
                 drop(state);
 
                 if is_translate {
@@ -387,41 +397,37 @@ impl ImguiRenderLoop for CompanionRenderLoop {
             // This is where the tokio RUNTIME first initializes (2 worker
             // threads). Doing it here instead of init_hook_thread avoids
             // starting threads during the DX12 stabilization window.
-            {
-                let mut state = STATE.lock();
-                if state.health_check_needed && !state.health_check_done {
-                    state.health_check_needed = false;
-                    state.health_check_done = true;
-                    let port = state.proxy_port;
-                    let token = state.proxy_token.clone();
-                    drop(state);
-                    if let (Some(port), Some(token)) = (port, token) {
-                        if let Some(rt) = RUNTIME.as_ref() {
-                            info!("Running deferred proxy health check...");
-                            rt.spawn(async move {
-                                let providers =
-                                    proxy_client::check_health(port, &token).await;
-                                let mut st = STATE.lock();
-                                st.proxy_providers = providers;
-                                if !st.is_provider_available(st.active_provider) {
-                                    if st.is_provider_available(provider::Provider::Gemini)
-                                    {
-                                        st.active_provider = provider::Provider::Gemini;
-                                    } else if st
-                                        .proxy_providers
-                                        .contains(&provider::Provider::Claude)
-                                    {
-                                        st.active_provider = provider::Provider::Claude;
-                                    } else if st
-                                        .proxy_providers
-                                        .contains(&provider::Provider::Openai)
-                                    {
-                                        st.active_provider = provider::Provider::Openai;
-                                    }
+            if HEALTH_CHECK_NEEDED.load(Ordering::Acquire) {
+                HEALTH_CHECK_NEEDED.store(false, Ordering::Release);
+                let state = STATE.lock();
+                let port = state.proxy_port;
+                let token = state.proxy_token.clone();
+                drop(state);
+                if let (Some(port), Some(token)) = (port, token) {
+                    if let Some(rt) = RUNTIME.as_ref() {
+                        info!("Running deferred proxy health check...");
+                        rt.spawn(async move {
+                            let providers =
+                                proxy_client::check_health(port, &token).await;
+                            let mut st = STATE.lock();
+                            st.proxy_providers = providers;
+                            if !st.is_provider_available(st.active_provider) {
+                                if st.is_provider_available(provider::Provider::Gemini) {
+                                    st.active_provider = provider::Provider::Gemini;
+                                } else if st
+                                    .proxy_providers
+                                    .contains(&provider::Provider::Claude)
+                                {
+                                    st.active_provider = provider::Provider::Claude;
+                                } else if st
+                                    .proxy_providers
+                                    .contains(&provider::Provider::Openai)
+                                {
+                                    st.active_provider = provider::Provider::Openai;
                                 }
-                                info!("Available providers: {:?}", st.proxy_providers);
-                            });
-                        }
+                            }
+                            info!("Available providers: {:?}", st.proxy_providers);
+                        });
                     }
                 }
             }
@@ -571,8 +577,8 @@ fn init_hook_thread(hmodule: HINSTANCE) {
         let mut state = STATE.lock();
         state.proxy_port = Some(port);
         state.proxy_token = Some(token.clone());
-        state.health_check_needed = true;
         drop(state);
+        HEALTH_CHECK_NEEDED.store(true, Ordering::Release);
         info!("Proxy discovered at localhost:{port}");
     } else {
         info!("No proxy.port file found -- CLI providers unavailable");
