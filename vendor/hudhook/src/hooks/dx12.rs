@@ -57,18 +57,42 @@ struct Trampolines {
 
 static mut TRAMPOLINES: OnceLock<Trampolines> = OnceLock::new();
 
+/// Tracks a DIRECT command queue seen during the fallback matching window.
+struct CandidateQueue {
+    queue: ID3D12CommandQueue,
+    /// Raw COM pointer stored as `usize` so the struct is `Send`.
+    raw_addr: usize,
+    seen_count: u32,
+}
+
+// SAFETY: The `raw_addr` field is only used for pointer identity comparison
+// (never dereferenced). The `ID3D12CommandQueue` COM pointer it mirrors is
+// itself ref-counted and safe to move between threads.
+unsafe impl Send for CandidateQueue {}
+
 enum InitializationContext {
     Empty,
-    WithSwapChain(IDXGISwapChain3, u32),
+    WithSwapChain {
+        swap_chain: IDXGISwapChain3,
+        match_failures: u32,
+        /// DIRECT command queues seen during the fallback window, sorted by
+        /// frequency. The most-seen queue is the stable rendering queue.
+        candidates: Vec<CandidateQueue>,
+    },
     Complete(IDXGISwapChain3, ID3D12CommandQueue),
     Done,
 }
 
 /// Maximum number of failed command queue match attempts before accepting
-/// the command queue unconditionally. Some game engines (e.g. Decima) or
-/// middleware (DLSS Frame Generation) wrap the swapchain so the command
-/// queue pointer is not stored inline.
+/// the best candidate. Some game engines (e.g. Decima) or middleware
+/// (DLSS Frame Generation) wrap the swapchain so the command queue pointer
+/// is not stored inline.
 const MAX_CQ_MATCH_FAILURES: u32 = 100;
+
+/// Minimum number of times a DIRECT queue must be seen before it can be
+/// accepted as a fallback. Transient queues used during loading are seen
+/// only a few times; the real rendering queue fires on every frame.
+const MIN_CQ_SEEN_FOR_FALLBACK: u32 = 10;
 
 /// Number of pointer-sized slots to scan in the swapchain struct when
 /// looking for the command queue pointer. Larger values handle games
@@ -79,38 +103,100 @@ impl InitializationContext {
     // Transition to a state where the swap chain is set. Ignore other mutations.
     fn insert_swap_chain(&mut self, swap_chain: &IDXGISwapChain3) {
         *self = match mem::replace(self, InitializationContext::Empty) {
-            InitializationContext::Empty => {
-                InitializationContext::WithSwapChain(swap_chain.clone(), 0)
+            InitializationContext::Empty => InitializationContext::WithSwapChain {
+                swap_chain: swap_chain.clone(),
+                match_failures: 0,
+                candidates: Vec::new(),
             },
             s => s,
         }
     }
 
     // Transition to a complete state if the swap chain is set and the command queue
-    // is associated with it.
+    // is associated with it. Only considers DIRECT queues for both matching and
+    // fallback to avoid capturing transient COMPUTE/COPY queues.
     fn insert_command_queue(&mut self, command_queue: &ID3D12CommandQueue) {
         *self = match mem::replace(self, InitializationContext::Empty) {
-            InitializationContext::WithSwapChain(swap_chain, failures) => {
-                if unsafe { Self::check_command_queue(&swap_chain, command_queue) } {
+            InitializationContext::WithSwapChain {
+                swap_chain,
+                mut match_failures,
+                mut candidates,
+            } => {
+                // Only consider DIRECT queues -- COMPUTE and COPY queues are
+                // used for asset loading and will crash if used for rendering.
+                let desc = unsafe { command_queue.GetDesc() };
+                if desc.Type != D3D12_COMMAND_LIST_TYPE_DIRECT {
+                    trace!(
+                        "Skipping non-DIRECT command queue {command_queue:?} (type {:?})",
+                        desc.Type
+                    );
+                    InitializationContext::WithSwapChain {
+                        swap_chain,
+                        match_failures,
+                        candidates,
+                    }
+                } else if unsafe { Self::check_command_queue(&swap_chain, command_queue) } {
                     trace!(
                         "Found command queue matching swap chain {swap_chain:?} at \
                          {command_queue:?}"
                     );
                     InitializationContext::Complete(swap_chain, command_queue.clone())
-                } else if failures >= MAX_CQ_MATCH_FAILURES {
-                    // Fallback: accept the command queue after too many failures.
-                    // This handles games where the swapchain doesn't embed the
-                    // command queue pointer inline (wrapper/middleware layers).
-                    warn!(
-                        "Command queue match failed {} times, accepting command queue \
-                         {command_queue:?} for swap chain {swap_chain:?} as fallback",
-                        failures + 1
-                    );
-                    InitializationContext::Complete(swap_chain, command_queue.clone())
                 } else {
-                    InitializationContext::WithSwapChain(swap_chain, failures + 1)
+                    match_failures += 1;
+
+                    // Track this DIRECT queue as a candidate.
+                    let raw_addr = command_queue.as_raw() as usize;
+                    if let Some(c) = candidates.iter_mut().find(|c| c.raw_addr == raw_addr) {
+                        c.seen_count += 1;
+                    } else if candidates.len() < 64 {
+                        // Cap at 64 entries to bound memory during init.
+                        candidates.push(CandidateQueue {
+                            queue: command_queue.clone(),
+                            raw_addr,
+                            seen_count: 1,
+                        });
+                    }
+
+                    if match_failures >= MAX_CQ_MATCH_FAILURES {
+                        // Pick the most-seen DIRECT queue that meets the minimum threshold.
+                        let best = candidates
+                            .iter()
+                            .filter(|c| c.seen_count >= MIN_CQ_SEEN_FOR_FALLBACK)
+                            .max_by_key(|c| c.seen_count);
+
+                        if let Some(best) = best {
+                            warn!(
+                                "Command queue match failed {match_failures} times. \
+                                 Accepting best DIRECT candidate {command_queue:?} \
+                                 (seen {} times, {} candidates tracked) for swap chain \
+                                 {swap_chain:?}",
+                                best.seen_count,
+                                candidates.len(),
+                            );
+                            InitializationContext::Complete(swap_chain, best.queue.clone())
+                        } else {
+                            // No candidate meets threshold yet -- keep waiting.
+                            trace!(
+                                "Fallback threshold reached but no candidate seen >= \
+                                 {MIN_CQ_SEEN_FOR_FALLBACK} times ({} candidates, best: {})",
+                                candidates.len(),
+                                candidates.iter().map(|c| c.seen_count).max().unwrap_or(0),
+                            );
+                            InitializationContext::WithSwapChain {
+                                swap_chain,
+                                match_failures,
+                                candidates,
+                            }
+                        }
+                    } else {
+                        InitializationContext::WithSwapChain {
+                            swap_chain,
+                            match_failures,
+                            candidates,
+                        }
+                    }
                 }
-            },
+            }
             s => s,
         }
     }
@@ -128,6 +214,7 @@ impl InitializationContext {
     fn done(&mut self) {
         if let InitializationContext::Complete(..) = self {
             *self = InitializationContext::Done;
+            INIT_DONE.store(true, std::sync::atomic::Ordering::Release);
         }
     }
 
@@ -138,14 +225,17 @@ impl InitializationContext {
         let swap_chain_ptr = swap_chain.as_raw() as *mut *mut c_void;
         let readable_ptrs = util::readable_region(swap_chain_ptr, CQ_SCAN_SLOTS);
 
-        match readable_ptrs.iter().position(|&ptr| std::ptr::eq(ptr, command_queue.as_raw())) {
+        match readable_ptrs
+            .iter()
+            .position(|&ptr| std::ptr::eq(ptr, command_queue.as_raw()))
+        {
             Some(idx) => {
                 debug!(
                     "Found command queue pointer in swap chain struct at offset +0x{:x}",
                     idx * mem::size_of::<usize>(),
                 );
                 true
-            },
+            }
             None => {
                 warn!(
                     "Couldn't find command queue pointer in swap chain struct ({} out of {} \
@@ -154,13 +244,17 @@ impl InitializationContext {
                     CQ_SCAN_SLOTS,
                 );
                 false
-            },
+            }
         }
     }
 }
 
 static INITIALIZATION_CONTEXT: Mutex<InitializationContext> =
     Mutex::new(InitializationContext::Empty);
+/// Set to `true` once the initialization context transitions to `Done`.
+/// Checked lock-free on every `Present` and `ExecuteCommandLists` to skip
+/// the mutex entirely after the pipeline is stable.
+static INIT_DONE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 static mut PIPELINE: OnceCell<Mutex<Pipeline<D3D12RenderEngine>>> = OnceCell::new();
 static mut RENDER_LOOP: OnceCell<Box<dyn ImguiRenderLoop + Send + Sync>> = OnceCell::new();
 
@@ -218,12 +312,16 @@ unsafe extern "system" fn dxgi_swap_chain_present_impl(
     flags: u32,
 ) -> HRESULT {
     let _hook_ejection_guard = HOOK_EJECTION_BARRIER.acquire_ejection_guard();
-    {
+    if !INIT_DONE.load(std::sync::atomic::Ordering::Relaxed) {
         INITIALIZATION_CONTEXT.lock().insert_swap_chain(&swap_chain);
     }
 
-    let Trampolines { dxgi_swap_chain_present, .. } =
-        TRAMPOLINES.get().expect("DirectX 12 trampolines uninitialized");
+    let Trampolines {
+        dxgi_swap_chain_present,
+        ..
+    } = TRAMPOLINES
+        .get()
+        .expect("DirectX 12 trampolines uninitialized");
 
     if let Err(e) = render(&swap_chain) {
         util::print_dxgi_debug_messages();
@@ -249,8 +347,12 @@ unsafe extern "system" fn dxgi_swap_chain_resize_buffers_impl(
     flags: u32,
 ) -> HRESULT {
     let _hook_ejection_guard = HOOK_EJECTION_BARRIER.acquire_ejection_guard();
-    let Trampolines { dxgi_swap_chain_resize_buffers, .. } =
-        TRAMPOLINES.get().expect("DirectX 12 trampolines uninitialized");
+    let Trampolines {
+        dxgi_swap_chain_resize_buffers,
+        ..
+    } = TRAMPOLINES
+        .get()
+        .expect("DirectX 12 trampolines uninitialized");
 
     trace!("Call IDXGISwapChain::ResizeBuffers trampoline");
     dxgi_swap_chain_resize_buffers(p_this, buffer_count, width, height, new_format, flags)
@@ -267,12 +369,18 @@ unsafe extern "system" fn d3d12_command_queue_execute_command_lists_impl(
          {command_lists:p}) invoked",
     );
 
-    {
-        INITIALIZATION_CONTEXT.lock().insert_command_queue(&command_queue);
+    if !INIT_DONE.load(std::sync::atomic::Ordering::Relaxed) {
+        INITIALIZATION_CONTEXT
+            .lock()
+            .insert_command_queue(&command_queue);
     }
 
-    let Trampolines { d3d12_command_queue_execute_command_lists, .. } =
-        TRAMPOLINES.get().expect("DirectX 12 trampolines uninitialized");
+    let Trampolines {
+        d3d12_command_queue_execute_command_lists,
+        ..
+    } = TRAMPOLINES
+        .get()
+        .expect("DirectX 12 trampolines uninitialized");
 
     d3d12_command_queue_execute_command_lists(command_queue, num_command_lists, command_lists);
 }
@@ -312,14 +420,20 @@ fn get_target_addrs() -> (
                         Scaling: DXGI_MODE_SCALING_UNSPECIFIED,
                         Width: 640,
                         Height: 480,
-                        RefreshRate: DXGI_RATIONAL { Numerator: 60, Denominator: 1 },
+                        RefreshRate: DXGI_RATIONAL {
+                            Numerator: 60,
+                            Denominator: 1,
+                        },
                     },
                     BufferUsage: DXGI_USAGE_RENDER_TARGET_OUTPUT,
                     BufferCount: 2,
                     OutputWindow: dummy_hwnd.hwnd(),
                     Windowed: BOOL(1),
                     SwapEffect: DXGI_SWAP_EFFECT_FLIP_DISCARD,
-                    SampleDesc: DXGI_SAMPLE_DESC { Count: 1, Quality: 0 },
+                    SampleDesc: DXGI_SAMPLE_DESC {
+                        Count: 1,
+                        Quality: 0,
+                    },
                     Flags: DXGI_SWAP_CHAIN_FLAG_ALLOW_MODE_SWITCH.0 as _,
                 },
                 v,
@@ -330,7 +444,7 @@ fn get_target_addrs() -> (
         Err(e) => {
             util::print_dxgi_debug_messages();
             panic!("{e:?}");
-        },
+        }
     };
 
     let present_ptr: DXGISwapChainPresentType =
@@ -368,7 +482,10 @@ impl ImguiDx12Hooks {
             d3d12_command_queue_execute_command_lists_addr,
         ) = get_target_addrs();
 
-        trace!("IDXGISwapChain::Present = {:p}", dxgi_swap_chain_present_addr as *const c_void);
+        trace!(
+            "IDXGISwapChain::Present = {:p}",
+            dxgi_swap_chain_present_addr as *const c_void
+        );
         let hook_present = MhHook::new(
             dxgi_swap_chain_present_addr as *mut _,
             dxgi_swap_chain_present_impl as *mut _,
@@ -423,6 +540,7 @@ impl Hooks for ImguiDx12Hooks {
         PIPELINE.take().map(|p| p.into_inner().take());
         RENDER_LOOP.take(); // should already be null
 
+        INIT_DONE.store(false, std::sync::atomic::Ordering::Release);
         *INITIALIZATION_CONTEXT.lock() = InitializationContext::Empty;
     }
 }

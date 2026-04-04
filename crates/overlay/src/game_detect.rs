@@ -1,11 +1,110 @@
+use std::time::{Duration, Instant};
+
 use tracing::info;
-use windows::Win32::Foundation::{BOOL, HWND, LPARAM};
+use windows::Win32::Foundation::{BOOL, HWND, LPARAM, RECT};
 use windows::Win32::System::Threading::GetCurrentProcessId;
 use windows::Win32::UI::WindowsAndMessaging::{
-    EnumWindows, GetWindowTextW, GetWindowThreadProcessId, IsWindowVisible,
+    EnumWindows, GetWindowRect, GetWindowTextW, GetWindowThreadProcessId, IsWindowVisible,
 };
 
 use crate::config::CONFIG;
+
+/// Minimum window dimensions to consider "real" (filters splash screens).
+const MIN_WINDOW_WIDTH: i32 = 640;
+const MIN_WINDOW_HEIGHT: i32 = 480;
+
+/// Wait until the current process has a visible, sizeable top-level window
+/// with a title set. Games create the HWND early for the DX12 swapchain but
+/// only set the window title once initialization is further along, making the
+/// title a stronger signal that the rendering pipeline is ready.
+///
+/// Strategy:
+///   1. Wait up to `timeout` for a titled window (best signal).
+///   2. If no title appears, fall back to any visible sizeable window.
+///   3. If nothing at all, return false.
+pub fn wait_for_game_window(timeout: Duration) -> bool {
+    let pid = unsafe { GetCurrentProcessId() };
+    let start = Instant::now();
+
+    // Phase 1: wait for a titled window (strong signal).
+    while start.elapsed() < timeout {
+        if has_visible_game_window(pid, true) {
+            info!("Game window found (with title)");
+            return true;
+        }
+        std::thread::sleep(Duration::from_millis(250));
+    }
+
+    // Phase 2: title never appeared -- accept any visible window.
+    if has_visible_game_window(pid, false) {
+        info!("Game window found (no title, fallback)");
+        return true;
+    }
+
+    false
+}
+
+/// Check if a process has at least one visible top-level window larger than
+/// the splash-screen threshold, optionally requiring a non-empty window title.
+fn has_visible_game_window(pid: u32, require_title: bool) -> bool {
+    #[repr(C)]
+    struct FindData {
+        target_pid: u32,
+        require_title: bool,
+        found: bool,
+    }
+
+    let mut data = FindData {
+        target_pid: pid,
+        require_title,
+        found: false,
+    };
+
+    unsafe extern "system" fn callback(hwnd: HWND, lparam: LPARAM) -> BOOL {
+        let data = &mut *(lparam.0 as *mut FindData);
+
+        let mut window_pid: u32 = 0;
+        GetWindowThreadProcessId(hwnd, Some(&mut window_pid));
+        if window_pid != data.target_pid {
+            return BOOL(1);
+        }
+
+        if !IsWindowVisible(hwnd).as_bool() {
+            return BOOL(1);
+        }
+
+        let mut rect = RECT::default();
+        if GetWindowRect(hwnd, &mut rect).is_err() {
+            return BOOL(1);
+        }
+
+        let w = rect.right - rect.left;
+        let h = rect.bottom - rect.top;
+        if w < MIN_WINDOW_WIDTH || h < MIN_WINDOW_HEIGHT {
+            return BOOL(1);
+        }
+
+        if data.require_title {
+            let mut buf = [0u16; 512];
+            let len = GetWindowTextW(hwnd, &mut buf) as usize;
+            if len == 0 {
+                return BOOL(1); // no title yet
+            }
+        }
+
+        data.found = true;
+        BOOL(0) // stop enumeration
+    }
+
+    unsafe {
+        let _ = EnumWindows(
+            Some(callback),
+            LPARAM(&mut data as *mut FindData as isize),
+        );
+    }
+
+    data.found
+}
 
 /// Detect the game name using a 3-tier priority:
 ///   1. `[[games]]` name override (if configured and matches current process)

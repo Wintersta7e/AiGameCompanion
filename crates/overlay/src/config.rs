@@ -7,6 +7,8 @@ use once_cell::sync::Lazy;
 use serde::Deserialize;
 use tracing::warn;
 
+use crate::provider::Provider;
+
 /// Which graphics API to hook into.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -95,14 +97,92 @@ impl SafetyFilter {
     }
 }
 
-fn default_safety_filter() -> SafetyFilter { SafetyFilter::Off }
+fn default_safety_filter() -> SafetyFilter {
+    SafetyFilter::Off
+}
+
+fn default_provider() -> Provider {
+    Provider::Gemini
+}
+
+fn default_gemini_model() -> String {
+    "gemini-2.5-flash".into()
+}
+fn default_claude_model() -> String {
+    "haiku".into()
+}
+fn default_openai_model() -> String {
+    "gpt-4o".into()
+}
 
 #[derive(Deserialize, Clone)]
-pub struct ApiConfig {
+pub struct GeminiConfig {
     #[serde(default)]
     pub key: String,
-    #[serde(default = "default_model")]
+    #[serde(default = "default_gemini_model")]
     pub model: String,
+}
+
+impl Default for GeminiConfig {
+    fn default() -> Self {
+        Self {
+            key: String::new(),
+            model: default_gemini_model(),
+        }
+    }
+}
+
+#[derive(Deserialize, Clone)]
+
+pub struct ClaudeConfig {
+    #[serde(default = "default_claude_model")]
+    pub model: String,
+}
+
+impl Default for ClaudeConfig {
+    fn default() -> Self {
+        Self {
+            model: default_claude_model(),
+        }
+    }
+}
+
+#[derive(Deserialize, Clone)]
+
+pub struct OpenaiConfig {
+    #[serde(default = "default_openai_model")]
+    pub model: String,
+}
+
+impl Default for OpenaiConfig {
+    fn default() -> Self {
+        Self {
+            model: default_openai_model(),
+        }
+    }
+}
+
+#[derive(Deserialize, Clone)]
+
+pub struct ApiConfig {
+    #[serde(default = "default_provider")]
+    pub provider: Provider,
+
+    // Legacy top-level fields for backward compatibility.
+    // After deserialization, `migrate_legacy()` copies these into the
+    // appropriate nested provider config if the nested fields are empty/default.
+    #[serde(default)]
+    key: String,
+    #[serde(default = "default_model")]
+    model: String,
+
+    #[serde(default)]
+    pub gemini: GeminiConfig,
+    #[serde(default)]
+    pub claude: ClaudeConfig,
+    #[serde(default)]
+    pub openai: OpenaiConfig,
+
     #[serde(default = "default_max_tokens")]
     pub max_tokens: u32,
     #[serde(default = "default_system_prompt")]
@@ -111,8 +191,24 @@ pub struct ApiConfig {
     pub safety_filter: SafetyFilter,
 }
 
+impl ApiConfig {
+    /// Migrate legacy top-level `key` and `model` into `gemini.*` if the nested
+    /// fields are still at their defaults. This lets existing config.toml files
+    /// (with `[api] key = "..."`) keep working without changes.
+    pub fn migrate_legacy(&mut self) {
+        if !self.key.is_empty() && self.gemini.key.is_empty() {
+            self.gemini.key = self.key.clone();
+        }
+        // If the user set a non-default legacy model and hasn't set gemini.model,
+        // carry the legacy value forward.
+        if self.model != default_model() && self.gemini.model == default_gemini_model() {
+            self.gemini.model = self.model.clone();
+        }
+    }
+}
+
 #[derive(Deserialize, Clone)]
-#[allow(dead_code)]
+#[allow(dead_code)] // fields used by ui.rs at runtime, not seen by cross-compile check
 pub struct OverlayConfig {
     /// Force a specific graphics API. If omitted, auto-detects from loaded modules.
     pub graphics_api: Option<GraphicsApi>,
@@ -128,10 +224,14 @@ pub struct OverlayConfig {
     pub font_size: f32,
     #[serde(default = "default_translate_hotkey")]
     pub translate_hotkey: String,
+    /// Extra seconds to wait after game window detected before applying hooks.
+    /// Default 0. Set 15-20 for games with long DX12 init (e.g. Horizon).
+    #[serde(default = "default_hook_delay")]
+    pub hook_delay: u64,
 }
 
 #[derive(Deserialize, Clone)]
-#[allow(dead_code)]
+#[allow(dead_code)] // enabled + quality reserved for future use
 pub struct CaptureConfig {
     #[serde(default = "default_capture_enabled")]
     pub enabled: bool,
@@ -157,7 +257,9 @@ pub enum TranslationProvider {
     Local,
 }
 
-fn default_translation_provider() -> TranslationProvider { TranslationProvider::Gemini }
+fn default_translation_provider() -> TranslationProvider {
+    TranslationProvider::Gemini
+}
 
 #[derive(Deserialize, Clone)]
 pub struct LocalModelConfig {
@@ -167,8 +269,12 @@ pub struct LocalModelConfig {
     pub model: String,
 }
 
-fn default_local_endpoint() -> String { "http://localhost:11434/v1/chat/completions".into() }
-fn default_local_model() -> String { "minicpm-v".into() }
+fn default_local_endpoint() -> String {
+    "http://localhost:11434/v1/chat/completions".into()
+}
+fn default_local_model() -> String {
+    "minicpm-v".into()
+}
 
 impl Default for LocalModelConfig {
     fn default() -> Self {
@@ -191,8 +297,12 @@ pub struct TranslationConfig {
     pub local: LocalModelConfig,
 }
 
-fn default_translation_enabled() -> bool { true }
-fn default_target_language() -> String { "English".into() }
+fn default_translation_enabled() -> bool {
+    false
+}
+fn default_target_language() -> String {
+    "English".into()
+}
 
 impl Default for TranslationConfig {
     fn default() -> Self {
@@ -205,10 +315,16 @@ impl Default for TranslationConfig {
     }
 }
 
-fn default_logging_enabled() -> bool { true }
+fn default_logging_enabled() -> bool {
+    true
+}
 
-fn default_model() -> String { "gemini-2.5-flash".into() }
-fn default_max_tokens() -> u32 { 1024 }
+fn default_model() -> String {
+    "gemini-2.5-flash".into()
+}
+fn default_max_tokens() -> u32 {
+    1024
+}
 fn default_system_prompt() -> String {
     "You are Sage, a sharp and knowledgeable game companion embedded in the player's screen. \
      Keep answers short — 2-3 sentences unless the player asks for detail. \
@@ -219,21 +335,46 @@ fn default_system_prompt() -> String {
      If no question is asked with a screenshot, give the single most useful observation."
         .into()
 }
-fn default_hotkey() -> String { "F9".into() }
-fn default_width() -> f32 { 500.0 }
-fn default_height() -> f32 { 400.0 }
-fn default_opacity() -> f32 { 0.85 }
-fn default_font_size() -> f32 { 16.0 }
-fn default_translate_hotkey() -> String { "F10".into() }
-fn default_capture_enabled() -> bool { true }
-fn default_max_width() -> u32 { 1920 }
-fn default_quality() -> u8 { 85 }
+fn default_hotkey() -> String {
+    "F9".into()
+}
+fn default_width() -> f32 {
+    500.0
+}
+fn default_height() -> f32 {
+    400.0
+}
+fn default_opacity() -> f32 {
+    0.85
+}
+fn default_font_size() -> f32 {
+    16.0
+}
+fn default_translate_hotkey() -> String {
+    "F10".into()
+}
+fn default_hook_delay() -> u64 {
+    0
+}
+fn default_capture_enabled() -> bool {
+    true
+}
+fn default_max_width() -> u32 {
+    1920
+}
+fn default_quality() -> u8 {
+    85
+}
 
 impl Default for ApiConfig {
     fn default() -> Self {
         Self {
+            provider: default_provider(),
             key: String::new(),
             model: default_model(),
+            gemini: GeminiConfig::default(),
+            claude: ClaudeConfig::default(),
+            openai: OpenaiConfig::default(),
             max_tokens: default_max_tokens(),
             system_prompt: default_system_prompt(),
             safety_filter: default_safety_filter(),
@@ -251,6 +392,7 @@ impl Default for OverlayConfig {
             opacity: default_opacity(),
             font_size: default_font_size(),
             translate_hotkey: default_translate_hotkey(),
+            hook_delay: default_hook_delay(),
         }
     }
 }
@@ -301,8 +443,11 @@ pub static CONFIG: Lazy<Config> = Lazy::new(|| {
 
     let config_path = dir.join("config.toml");
     match std::fs::read_to_string(&config_path) {
-        Ok(contents) => match toml::from_str(&contents) {
-            Ok(config) => config,
+        Ok(contents) => match toml::from_str::<Config>(&contents) {
+            Ok(mut config) => {
+                config.api.migrate_legacy();
+                config
+            }
             Err(e) => {
                 warn!("Failed to parse config.toml: {e}");
                 Config::default()
