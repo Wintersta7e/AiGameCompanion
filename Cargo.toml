@@ -7,8 +7,10 @@ resolver = "2"
 [profile.release]
 lto = true
 strip = true
-panic = "abort"
 codegen-units = 1
+# NOTE: panic = "abort" removed from workspace level because the overlay DLL
+# is injected into game processes -- panics must unwind (not kill the host).
+# The injector and launcher set panic = "abort" in their own Cargo.toml.
 
 [patch.crates-io]
 hudhook = { path = "vendor/hudhook" }

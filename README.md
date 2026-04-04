@@ -5,17 +5,19 @@ Ask an AI questions while playing any game in fullscreen -- without alt-tabbing.
 ![Rust](https://img.shields.io/badge/Rust-2021-DEA584?logo=rust)
 ![Windows](https://img.shields.io/badge/Windows-x86__64-0078D4?logo=windows)
 ![Gemini](https://img.shields.io/badge/Google_Gemini-free_tier-4285F4?logo=googlegemini)
+![Claude](https://img.shields.io/badge/Claude-subscription-D97757?logo=anthropic)
+![OpenAI](https://img.shields.io/badge/OpenAI-subscription-412991?logo=openai)
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](./LICENSE)
 
 ## Overview
 
-AI Game Companion is a lightweight DX12/DX11 overlay that hooks into a game's rendering pipeline via Dear ImGui. It talks to Google Gemini (free tier -- no credit card needed) and can search the web for walkthroughs, guides, and current info on your behalf.
+AI Game Companion is a lightweight DX12/DX11 overlay that hooks into a game's rendering pipeline via Dear ImGui. It talks to **Google Gemini** (free tier), **Claude**, or **OpenAI** -- switch providers mid-game. It can search the web for walkthroughs, guides, and current info on your behalf.
 
 - **Zero alt-tab** -- the overlay renders inside the game
-- **Screenshot vision** -- attach the current game frame and Sage will analyze it
+- **Screenshot vision** -- attach the current game frame and Sage will analyze it (Gemini + Claude)
 - **Streaming responses** -- answers appear word-by-word as they're generated
 - **Screen translation** -- press F10 to translate foreign text in JRPGs, untranslated games, etc.
-- **Completely free** -- Gemini free tier (~250 requests/day)
+- **Free or subscription** -- Gemini free tier, or use your Claude/OpenAI subscriptions
 
 ## Features
 
@@ -35,13 +37,31 @@ AI Game Companion is a lightweight DX12/DX11 overlay that hooks into a game's re
 - **Real-time translation** -- press F10 to capture the screen and translate all foreign text (configurable hotkey and target language)
 - **Local/offline translation** -- use a local vision model (Ollama, LM Studio) instead of Gemini for fully private, unrestricted translation
 - **Configurable safety filter** -- adjust Gemini's content filtering level to suit your needs
+- **Multi-provider AI** -- switch between Google Gemini, Claude, and OpenAI mid-game from a dropdown in the overlay
+
+### Multi-Provider AI
+
+Sage can talk through **Google Gemini**, **Claude**, or **OpenAI** -- switch providers mid-game from a dropdown in the overlay.
+
+- **Gemini** -- direct API with a free API key ([Google AI Studio](https://aistudio.google.com))
+- **Claude** -- uses your existing [Claude Code](https://claude.ai/code) subscription (no separate API key needed)
+- **OpenAI** -- uses your existing ChatGPT or OpenAI subscription via [Codex CLI](https://openai.com/codex/) (no separate API key needed)
+
+The launcher runs a local proxy that spawns the official CLI tools as subprocesses -- the same pattern documented for [programmatic use of Claude Code](https://code.claude.com/docs/en/headless). No OAuth tokens are extracted or shared. Each user authenticates their own CLI tools independently.
+
+> **Note:** Screenshots are currently supported for Gemini and Claude only. OpenAI screenshot support depends on an upstream Codex CLI fix.
+>
+> Users are responsible for ensuring their use of each provider complies with that provider's terms of service.
 
 ### Screenshot Capture
-- **Attach screenshots** with one click -- current game frame sent as context to Gemini
+- **Attach screenshots** with one click -- current game frame sent as context to the AI (Gemini and Claude; OpenAI pending upstream fix)
 - **Hide-capture-show** -- overlay hides for 2 frames during capture so it doesn't appear in the screenshot
 - **Automatic downscaling** -- large screenshots are resized before sending
 
 ### Injector
+
+> This tool injects a UI overlay for AI assistance only. It does not modify game memory, intercept network traffic, or interact with game logic. Some games with kernel-level anti-cheat may block injection.
+
 - **Watch mode** -- configure `[[games]]` in config and the injector auto-injects when a game launches
 - **PID tracking** -- re-injects automatically on game relaunch
 - **Direct mode** -- `--process "Game.exe"` for one-off injection
@@ -53,7 +73,7 @@ AI Game Companion is a lightweight DX12/DX11 overlay that hooks into a game's re
 
 2. **Configure** -- Copy `config.example.toml` to `config.toml` next to `overlay.dll` and add your key:
    ```toml
-   [api]
+   [api.gemini]
    key = "your-gemini-api-key-here"
    ```
 
@@ -70,15 +90,24 @@ AI Game Companion is a lightweight DX12/DX11 overlay that hooks into a game's re
 
 ## Configuration Reference
 
-All fields have sensible defaults. Only `api.key` is required.
+All fields have sensible defaults. Only `api.gemini.key` is required for the default Gemini provider.
 
 ```toml
 [api]
-key = ""                    # Gemini API key (required, free from aistudio.google.com)
-model = "gemini-2.5-flash"  # Model to use
+provider = "gemini"         # "gemini", "claude", or "openai"
 max_tokens = 1024           # Max response length
 system_prompt = "You are a helpful game companion. Be concise and direct."
-safety_filter = "off"       # off, block_high, block_medium, block_low
+safety_filter = "off"       # off, block_high, block_medium, block_low (gemini-only)
+
+[api.gemini]
+key = ""                    # Gemini API key (free from aistudio.google.com)
+model = "gemini-2.5-flash"  # Gemini model
+
+[api.claude]
+model = "haiku"             # haiku, sonnet, or opus (uses Claude Code CLI subscription)
+
+[api.openai]
+model = "gpt-4o"            # gpt-4o, o3, etc. (uses Codex CLI subscription)
 
 [overlay]
 # graphics_api = "dx11"     # Force a specific API (auto-detects if omitted)
@@ -88,6 +117,7 @@ height = 400                # Initial panel height (scales with display)
 opacity = 0.85              # Panel background opacity
 font_size = 16              # Base font size in pixels (scales with display)
 translate_hotkey = "F10"    # Hotkey for screen translation
+# hook_delay = 15           # Extra seconds before hooking (for games with long DX12 init)
 
 [capture]
 enabled = true              # Allow screenshot capture
@@ -99,7 +129,7 @@ enabled = true              # Save conversation transcripts
 # directory = "C:\\custom\\log\\path"  # Defaults to logs/ next to the DLL
 
 [translation]
-enabled = true              # Enable screen translation hotkey
+enabled = false             # Enable screen translation hotkey (off by default)
 target_language = "English" # Translate foreign text to this language
 provider = "gemini"         # "gemini" (cloud) or "local" (Ollama/LM Studio)
 
@@ -173,15 +203,17 @@ The `custom-protocol` feature is required for release builds -- it embeds the fr
 │   │   ├── api.rs                 # Gemini SSE streaming client, Google Search grounding
 │   │   ├── capture.rs             # Screen DC screenshot -> PNG -> base64
 │   │   ├── config.rs              # TOML config, GraphicsApi, GameEntry, TranslationConfig
+│   │   ├── provider.rs            # Provider enum (Gemini/Claude/Openai), ApiConfig
+│   │   ├── proxy_client.rs        # HTTP client for localhost CLI proxy (Claude/OpenAI)
 │   │   ├── translation.rs         # Translation dispatch (Gemini or local vision model)
-│   │   ├── game_detect.rs         # 3-tier game name detection
+│   │   ├── game_detect.rs         # 3-tier game name detection, window-wait for hook timing
 │   │   ├── logging.rs             # Session transcript logging
-│   │   └── state.rs               # AppState (parking_lot::Mutex), streaming/capture flags
+│   │   └── state.rs               # AppState (parking_lot::Mutex), Unicode sanitizer
 │   ├── injector/src/
 │   │   └── main.rs                # CLI, watch mode, DLL injection, process finding
 │   └── launcher/                  # Desktop launcher (Tauri v2 + Svelte 5)
 │       ├── src/                   # Svelte frontend
-│       └── src-tauri/             # Rust backend (Steam discovery, settings, sidecar)
+│       └── src-tauri/             # Rust backend (Steam discovery, settings, sidecar, CLI proxy)
 ├── vendor/
 │   └── hudhook/                   # Vendored hudhook 0.8.3 (patched for DX12 compatibility)
 ├── config.example.toml            # Config template (no real API key)
@@ -196,7 +228,8 @@ The `custom-protocol` feature is required for release builds -- it embeds the fr
 | [Rust](https://www.rust-lang.org) | Systems language for both DLL and injector |
 | [hudhook](https://github.com/veeenu/hudhook) | DX12/DX11 render hooking (vendored + patched) |
 | [Dear ImGui](https://github.com/ocornut/imgui) | Immediate-mode game UI |
-| [reqwest](https://docs.rs/reqwest) | HTTP client for Gemini API |
+| [reqwest](https://docs.rs/reqwest) | HTTP client for Gemini API and localhost proxy |
+| [axum](https://docs.rs/axum) | Localhost HTTP proxy for CLI-based providers |
 | [tokio](https://tokio.rs) | Async runtime for non-blocking API calls |
 | [parking_lot](https://docs.rs/parking_lot) | Fast mutex for render thread shared state |
 | [tracing](https://docs.rs/tracing) | Structured logging to `companion.log` |
@@ -244,7 +277,7 @@ cargo xwin build --target x86_64-pc-windows-msvc
 - Try borderless windowed mode if exclusive fullscreen doesn't work
 
 **API errors**
-- "Invalid API key" -- verify `api.key` in config.toml (get yours at [Google AI Studio](https://aistudio.google.com))
+- "Invalid API key" -- verify `api.gemini.key` in config.toml (get yours at [Google AI Studio](https://aistudio.google.com))
 - "Rate limited" -- free tier allows ~250 requests/day; wait and retry
 - "Bad request" -- try a shorter message or remove the screenshot
 - "Network error" -- check internet connection
@@ -252,6 +285,8 @@ cargo xwin build --target x86_64-pc-windows-msvc
 **Game crashes on injection**
 - Anti-cheat software may cause crashes -- try a single-player game first
 - Borderless windowed mode is more stable than exclusive fullscreen
+- For games with long DX12 init (e.g. Horizon Forbidden West), add `hook_delay = 15` to `[overlay]` in config.toml
+- If the game crashes once but works on retry, the DX12 pipeline timing was borderline -- `hook_delay` fixes this
 
 ## Local Translation Setup
 

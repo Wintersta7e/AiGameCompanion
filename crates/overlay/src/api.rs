@@ -5,7 +5,7 @@ use once_cell::sync::Lazy;
 use serde::{Deserialize, Serialize};
 
 use crate::config::CONFIG;
-use crate::state::{ChatMessage, MessageRole, STATE};
+use crate::state::{sanitize_for_imgui, ChatMessage, MessageRole, STATE};
 
 /// Maximum total bytes to accumulate from an SSE stream before aborting.
 const MAX_STREAM_BYTES: usize = 2 * 1024 * 1024; // 2 MB
@@ -18,7 +18,10 @@ static CLIENT: Lazy<reqwest::Client> = Lazy::new(|| {
     reqwest::Client::builder()
         .timeout(Duration::from_secs(120))
         .build()
-        .unwrap_or_else(|_| reqwest::Client::new())
+        .unwrap_or_else(|e| {
+            tracing::warn!("HTTP client builder failed: {e}, using default (no timeout)");
+            reqwest::Client::new()
+        })
 });
 
 // --- Gemini API request structs ---
@@ -116,7 +119,7 @@ pub async fn send_message(
 ) -> Result<String, String> {
     let config = &CONFIG.api;
 
-    if config.key.is_empty() {
+    if config.gemini.key.is_empty() {
         return Err("No API key configured. Add your key to config.toml.".into());
     }
 
@@ -140,9 +143,10 @@ pub async fn send_message(
         messages
     };
 
-    // Build contents array
+    // Build contents array. Take screenshot out of Option to avoid cloning ~2.7MB.
     let mut contents: Vec<Content> = Vec::with_capacity(messages.len());
     let last_user_idx = messages.iter().rposition(|m| m.role == MessageRole::User);
+    let mut screenshot = screenshot;
 
     for (i, msg) in messages.iter().enumerate() {
         let role = match msg.role {
@@ -153,7 +157,7 @@ pub async fn send_message(
         let is_last_user = Some(i) == last_user_idx;
 
         let parts = if is_last_user {
-            if let Some(ref screenshot_data) = screenshot {
+            if let Some(screenshot_data) = screenshot.take() {
                 vec![
                     Part::Text {
                         text: msg.content.clone(),
@@ -161,7 +165,7 @@ pub async fn send_message(
                     Part::InlineData {
                         inline_data: InlineData {
                             mime_type: "image/png".into(),
-                            data: screenshot_data.clone(),
+                            data: screenshot_data,
                         },
                     },
                 ]
@@ -221,19 +225,19 @@ pub async fn send_message(
         safety_settings,
     };
 
-    // Validate model name to prevent URL path traversal
-    if !config.model.chars().all(|c| c.is_alphanumeric() || c == '-' || c == '.' || c == '_') {
-        return Err("Invalid model name in config.toml. Use alphanumeric, hyphens, dots only.".into());
+    // Validate model name to prevent URL path traversal (ASCII only)
+    if !config.gemini.model.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '.' || c == '_') {
+        return Err("Invalid model name in config.toml. Use ASCII alphanumeric, hyphens, dots, underscores only.".into());
     }
 
     let url = format!(
         "https://generativelanguage.googleapis.com/v1beta/models/{}:streamGenerateContent?alt=sse",
-        config.model
+        config.gemini.model
     );
 
     let response = CLIENT
         .post(&url)
-        .header("x-goog-api-key", &config.key)
+        .header("x-goog-api-key", &config.gemini.key)
         .header("content-type", "application/json")
         .json(&request)
         .send()
@@ -313,23 +317,38 @@ fn process_sse_lines(
         }
 
         if let Some(json_str) = line.strip_prefix("data: ") {
-            if let Ok(resp) = serde_json::from_str::<GeminiResponse>(json_str) {
-                let chunk_text: String = resp
-                    .candidates
-                    .into_iter()
-                    .flat_map(|c| c.content.parts)
-                    .filter_map(|p| p.text)
-                    .collect::<Vec<_>>()
-                    .join("");
+            match serde_json::from_str::<GeminiResponse>(json_str) {
+                Ok(resp) => {
+                    let chunk_text: String = resp
+                        .candidates
+                        .into_iter()
+                        .flat_map(|c| c.content.parts)
+                        .filter_map(|p| p.text)
+                        .collect::<Vec<_>>()
+                        .join("");
 
-                if !chunk_text.is_empty() {
-                    full_text.push_str(&chunk_text);
+                    if !chunk_text.is_empty() {
+                        let clean = sanitize_for_imgui(&chunk_text);
+                        full_text.push_str(&clean);
 
-                    let mut state = STATE.lock();
-                    if state.request_generation != generation {
-                        return Err("Cancelled".into());
+                        let mut state = STATE.lock();
+                        if state.request_generation != generation {
+                            return Err("Cancelled".into());
+                        }
+                        state.streaming_response.push_str(&clean);
                     }
-                    state.streaming_response.push_str(&chunk_text);
+                }
+                Err(_) => {
+                    // Check if the API returned an error object in the stream
+                    if let Ok(val) = serde_json::from_str::<serde_json::Value>(json_str) {
+                        if let Some(msg) = val.get("error")
+                            .and_then(|e| e.get("message"))
+                            .and_then(|m| m.as_str())
+                        {
+                            return Err(format!("API error: {msg}"));
+                        }
+                    }
+                    tracing::debug!("SSE: skipping unparseable JSON chunk");
                 }
             }
         }

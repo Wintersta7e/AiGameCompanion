@@ -6,7 +6,7 @@ use tauri_plugin_shell::ShellExt;
 
 use crate::discovery;
 use crate::models::{Game, GameSource};
-use crate::state::AppState;
+use crate::state::{ActiveSession, AppState};
 
 #[tauri::command]
 #[allow(clippy::needless_pass_by_value)]
@@ -44,12 +44,13 @@ pub async fn scan_games(state: State<'_, AppState>) -> Result<Vec<Game>, String>
 }
 
 #[tauri::command]
+#[allow(clippy::too_many_lines)]
 pub async fn launch_game(game_id: String, app: tauri::AppHandle) -> Result<String, String> {
     let state = app.state::<AppState>();
 
     // Guard: prevent duplicate injection for the same game
     if state.active_injectors.lock().contains_key(&game_id) {
-        return Err(format!("Injector already active for this game"));
+        return Err("Injector already active for this game".to_string());
     }
 
     // Get game from state
@@ -65,13 +66,13 @@ pub async fn launch_game(game_id: String, app: tauri::AppHandle) -> Result<Strin
 
     // Launch via Steam protocol URL for Steam games
     if game.source == GameSource::Steam {
-        if let Some(source_id) = &game.source_id {
-            if source_id.chars().all(|c| c.is_ascii_digit()) && !source_id.is_empty() {
-                let url = format!("steam://rungameid/{source_id}");
-                app.opener().open_url(&url, None::<&str>).map_err(|e| format!("Failed to launch: {e}"))?;
-            } else {
-                return Err(format!("Invalid source_id: {source_id}"));
-            }
+        let source_id = game.source_id.as_ref()
+            .ok_or_else(|| format!("Missing Steam app ID for game: {}", game.name))?;
+        if source_id.chars().all(|c| c.is_ascii_digit()) && !source_id.is_empty() {
+            let url = format!("steam://rungameid/{source_id}");
+            app.opener().open_url(&url, None::<&str>).map_err(|e| format!("Failed to launch: {e}"))?;
+        } else {
+            return Err(format!("Invalid source_id: {source_id}"));
         }
     } else {
         // For non-Steam games, launch via exe_path directly
@@ -104,13 +105,20 @@ pub async fn launch_game(game_id: String, app: tauri::AppHandle) -> Result<Strin
                 g.exe_path = resolved_path;
             }
             drop(launcher);
-            let _ = state.save();
+            if let Err(e) = state.save() {
+                tracing::warn!("Failed to cache resolved exe: {e}");
+            }
         }
     }
 
-    // Validate exe_name before passing to sidecar
+    // Validate exe_name before passing to sidecar (must match capability regex: ^[\w.-]+\.exe$)
     if !exe_name.is_empty() {
-        if exe_name.contains("--") || exe_name.contains('/') || exe_name.contains('\\') {
+        let has_exe_ext = std::path::Path::new(&exe_name)
+            .extension()
+            .is_some_and(|ext| ext.eq_ignore_ascii_case("exe"));
+        let is_valid = has_exe_ext
+            && exe_name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '.' || c == '-');
+        if !is_valid {
             return Err(format!("Invalid exe name: {exe_name}"));
         }
 
@@ -123,9 +131,12 @@ pub async fn launch_game(game_id: String, app: tauri::AppHandle) -> Result<Strin
         let (mut rx, child) = sidecar
             .spawn()
             .map_err(|e| format!("Failed to spawn injector: {e}"))?;
-        state.active_injectors.lock().insert(game_id.clone(), child);
+        state.active_injectors.lock().insert(game_id.clone(), ActiveSession {
+            child,
+            started_at: std::time::Instant::now(),
+        });
 
-        // Listen for sidecar exit and emit event to frontend
+        // Listen for sidecar exit, track play time, and emit event to frontend
         let app_handle = app.clone();
         let gid = game_id.clone();
         tauri::async_runtime::spawn(async move {
@@ -135,7 +146,25 @@ pub async fn launch_game(game_id: String, app: tauri::AppHandle) -> Result<Strin
                     CommandEvent::Terminated(_) | CommandEvent::Error(_) => {
                         let _ = app_handle.emit("injector-finished", &gid);
                         let s = app_handle.state::<AppState>();
-                        s.active_injectors.lock().remove(&gid);
+                        // Remove session and compute play time
+                        let session = s.active_injectors.lock().remove(&gid);
+                        if let Some(session) = session {
+                            let elapsed_mins = session.started_at.elapsed().as_secs() / 60;
+                            if elapsed_mins > 0 {
+                                let mut launcher = s.launcher.lock();
+                                if let Some(g) = launcher.games.iter_mut().find(|g| g.id == gid) {
+                                    g.play_time_minutes += elapsed_mins;
+                                    tracing::info!(
+                                        "Session ended for {}: +{}min (total: {}min)",
+                                        g.name, elapsed_mins, g.play_time_minutes
+                                    );
+                                }
+                                drop(launcher);
+                                if let Err(e) = s.save() {
+                                    tracing::error!("Failed to save play time: {e}");
+                                }
+                            }
+                        }
                         break;
                     }
                     _ => {}
@@ -171,11 +200,12 @@ fn overlay_dir(app: &tauri::AppHandle) -> Result<std::path::PathBuf, String> {
     // Default: same directory as the launcher exe
     std::env::current_exe()
         .ok()
-        .and_then(|p| p.parent().map(|d| d.to_path_buf()))
+        .and_then(|p| p.parent().map(std::path::Path::to_path_buf))
         .ok_or_else(|| "Cannot determine overlay directory".to_string())
 }
 
 #[tauri::command]
+#[allow(clippy::needless_pass_by_value)]
 pub fn open_game_config(app: tauri::AppHandle) -> Result<(), String> {
     let dir = overlay_dir(&app)?;
     let config_path = dir.join("config.toml");
@@ -189,6 +219,7 @@ pub fn open_game_config(app: tauri::AppHandle) -> Result<(), String> {
 }
 
 #[tauri::command]
+#[allow(clippy::needless_pass_by_value)]
 pub fn open_game_logs(app: tauri::AppHandle) -> Result<(), String> {
     let dir = overlay_dir(&app)?;
     let log_path = dir.join("companion.log");
