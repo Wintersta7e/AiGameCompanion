@@ -19,7 +19,7 @@ parking_lot = "0.12"
 tokio = { version = "1", features = ["rt", "sync", "net", "process", "io-util", "macros"] }
 tokio-stream = { version = "0.1", features = ["io-util"] }
 axum = { version = "0.8", features = ["json"] }
-rand = "0.9"
+rand = "0.10"
 futures-util = "0.3"
 hex = "0.4"
 tracing = "0.1"
