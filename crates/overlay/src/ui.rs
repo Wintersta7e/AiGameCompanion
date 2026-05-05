@@ -93,17 +93,11 @@ pub fn draw_panel(ui: &Ui) {
                         let label = format!("{p}");
                         let selected = p == current_provider;
                         if ui.selectable_config(&label).selected(selected).build() && !selected {
-                            // Switching providers must cancel any in-flight request:
+                            // Switching providers must cancel any in-flight request,
                             // otherwise the old provider's stream keeps appending to
                             // streaming_response while the user starts a new turn.
                             let mut state = STATE.lock();
-                            let old_provider = state.active_provider;
-                            let old_gen = state.request_generation;
-                            state.request_generation += 1;
-                            state.is_loading = false;
-                            state.streaming_response.clear();
-                            state.capture_pending = false;
-                            state.capture_complete = false;
+                            let (old_provider, old_gen) = state.cancel_in_flight();
                             state.active_provider = p;
                             drop(state);
                             if old_provider != crate::provider::Provider::Gemini {
@@ -170,25 +164,13 @@ pub fn draw_panel(ui: &Ui) {
                 // Show Cancel button instead of Send when loading
                 if ui.button_with_size("Cancel", [btn_w, input_h]) {
                     let mut state = STATE.lock();
-                    // Save partial response if any
-                    if !state.streaming_response.is_empty() {
-                        let partial = format!("{} [cancelled]", state.streaming_response);
-                        state.streaming_response.clear();
-                        state.push_message(ChatMessage::new(MessageRole::Assistant, partial));
+                    let partial = (!state.streaming_response.is_empty())
+                        .then(|| format!("{} [cancelled]", state.streaming_response));
+                    let (provider, old_gen) = state.cancel_in_flight();
+                    if let Some(p) = partial {
+                        state.push_message(ChatMessage::new(MessageRole::Assistant, p));
                     }
-                    state.is_loading = false;
-                    // Read the in-flight generation BEFORE incrementing so the
-                    // proxy cancels the correct subprocess.
-                    let provider = state.active_provider;
-                    let old_gen = state.request_generation;
-                    state.request_generation += 1; // invalidate in-flight request
-                    state.capture_pending = false;
-                    state.capture_complete = false;
-                    state.send_pending_capture = false;
-                    state.translate_pending = false;
-                    state.captured_screenshot = None;
                     state.error = Some("Cancelled.".into());
-                    crate::CAPTURE_ACTIVE.store(false, std::sync::atomic::Ordering::Release);
                     drop(state);
                     if provider != crate::provider::Provider::Gemini {
                         crate::proxy_client::send_cancel(old_gen);
@@ -260,11 +242,7 @@ pub fn draw_panel(ui: &Ui) {
                 let mut state = STATE.lock();
                 state.messages.clear();
                 state.error = None;
-                state.is_loading = false;
-                state.streaming_response.clear();
-                let provider = state.active_provider;
-                let old_gen = state.request_generation;
-                state.request_generation += 1; // cancel any in-flight request
+                let (provider, old_gen) = state.cancel_in_flight();
                 drop(state);
                 if provider != crate::provider::Provider::Gemini {
                     crate::proxy_client::send_cancel(old_gen);

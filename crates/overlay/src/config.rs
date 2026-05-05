@@ -198,24 +198,30 @@ impl ApiConfig {
     /// fields are still at their defaults. This lets existing config.toml files
     /// (with `[api] key = "..."`) keep working without changes.
     pub fn migrate_legacy(&mut self) {
-        if !self.key.is_empty() {
-            if self.gemini.key.is_empty() {
-                self.gemini.key = self.key.clone();
-            } else {
-                tracing::warn!(
-                    "config.toml: both legacy [api].key and [api.gemini].key are set; using [api.gemini].key and ignoring legacy value"
-                );
-            }
-        }
-        if self.model != default_model() {
-            if self.gemini.model == default_gemini_model() {
-                self.gemini.model = self.model.clone();
-            } else {
-                tracing::warn!(
-                    "config.toml: both legacy [api].model and [api.gemini].model are set; using [api.gemini].model and ignoring legacy value"
-                );
-            }
-        }
+        migrate_one("key", &self.key, &mut self.gemini.key, "");
+        migrate_one(
+            "model",
+            &self.model,
+            &mut self.gemini.model,
+            &default_gemini_model(),
+        );
+    }
+}
+
+/// Carries a legacy `[api].<field>` value forward into the corresponding
+/// `[api.gemini].<field>` if it's still at its default; otherwise warns about
+/// the conflict. `default_value` is the default for both legacy and nested
+/// (they share the same default by construction in this config).
+fn migrate_one(field: &str, legacy: &str, nested: &mut String, default_value: &str) {
+    if legacy == default_value {
+        return;
+    }
+    if nested == default_value {
+        *nested = legacy.to_owned();
+    } else {
+        tracing::warn!(
+            "config.toml: both legacy [api].{field} and [api.gemini].{field} are set; using [api.gemini].{field} and ignoring legacy value"
+        );
     }
 }
 

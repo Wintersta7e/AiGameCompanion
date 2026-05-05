@@ -91,17 +91,20 @@ const CODEX_WORKDIR: &str = "aigc-codex-workdir";
 /// Configure a `std::process::Command` to run silently (no console popup on
 /// Windows, stdout/stderr discarded everywhere). Used for fire-and-forget
 /// subprocesses where we only care about the exit status.
-#[cfg(windows)]
 fn silent(cmd: &mut std::process::Command) -> &mut std::process::Command {
     cmd.stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .creation_flags(CREATE_NO_WINDOW)
+        .stderr(std::process::Stdio::null());
+    #[cfg(windows)]
+    cmd.creation_flags(CREATE_NO_WINDOW);
+    cmd
 }
 
-#[cfg(not(windows))]
-fn silent(cmd: &mut std::process::Command) -> &mut std::process::Command {
-    cmd.stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
+/// Apply the Windows no-window flag to a tokio `Command`. No-op on non-Windows
+/// so the launcher crate compiles for the Linux test runner.
+#[allow(unused_variables, clippy::needless_pass_by_ref_mut)]
+fn no_window(cmd: &mut tokio::process::Command) {
+    #[cfg(windows)]
+    cmd.creation_flags(CREATE_NO_WINDOW);
 }
 
 /// Escape a string for use in a bash -c / -ic command.
@@ -291,8 +294,7 @@ async fn handle_claude(
     cmd.stdin(std::process::Stdio::piped());
     cmd.stdout(std::process::Stdio::piped());
     cmd.stderr(std::process::Stdio::piped());
-    #[cfg(windows)]
-    cmd.creation_flags(CREATE_NO_WINDOW);
+    no_window(&mut cmd);
 
     let mut child = cmd.spawn().map_err(|e| {
         tracing::error!("Failed to spawn claude CLI: {e}");
@@ -429,8 +431,7 @@ async fn handle_codex(
     cmd.stdin(std::process::Stdio::piped());
     cmd.stdout(std::process::Stdio::piped());
     cmd.stderr(std::process::Stdio::piped());
-    #[cfg(windows)]
-    cmd.creation_flags(CREATE_NO_WINDOW);
+    no_window(&mut cmd);
 
     let mut child = cmd.spawn().map_err(|e| {
         tracing::error!("Failed to spawn codex CLI: {e}");
