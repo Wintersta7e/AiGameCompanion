@@ -8,9 +8,9 @@ use tauri_plugin_shell::process::CommandChild;
 use crate::models::LauncherState;
 
 /// Tracks an active injection session for play time accounting.
-/// The `CommandChild` is held alive so the sidecar process isn't killed on drop.
-#[allow(dead_code)]
 pub struct ActiveSession {
+    /// Held alive so the sidecar process isn't killed on drop. Never read directly.
+    #[allow(dead_code)]
     pub child: CommandChild,
     pub started_at: Instant,
 }

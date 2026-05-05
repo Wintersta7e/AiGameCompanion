@@ -42,9 +42,8 @@ translate_hotkey = "F10"
 # hook_delay = 15  # Extra seconds to wait before hooking. Set 15-20 for games with long DX12 init (e.g. Horizon).
 
 [capture]
-enabled = true
+# Screenshot longest side is downscaled to this many pixels before sending.
 max_width = 1920
-quality = 85
 
 [logging]
 enabled = true

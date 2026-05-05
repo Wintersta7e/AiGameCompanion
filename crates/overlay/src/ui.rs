@@ -92,8 +92,23 @@ pub fn draw_panel(ui: &Ui) {
                     for &p in &available_providers {
                         let label = format!("{p}");
                         let selected = p == current_provider;
-                        if ui.selectable_config(&label).selected(selected).build() {
-                            STATE.lock().active_provider = p;
+                        if ui.selectable_config(&label).selected(selected).build() && !selected {
+                            // Switching providers must cancel any in-flight request:
+                            // otherwise the old provider's stream keeps appending to
+                            // streaming_response while the user starts a new turn.
+                            let mut state = STATE.lock();
+                            let old_provider = state.active_provider;
+                            let old_gen = state.request_generation;
+                            state.request_generation += 1;
+                            state.is_loading = false;
+                            state.streaming_response.clear();
+                            state.capture_pending = false;
+                            state.capture_complete = false;
+                            state.active_provider = p;
+                            drop(state);
+                            if old_provider != crate::provider::Provider::Gemini {
+                                crate::proxy_client::send_cancel(old_gen);
+                            }
                         }
                     }
                 }
