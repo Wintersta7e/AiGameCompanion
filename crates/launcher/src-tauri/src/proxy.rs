@@ -44,6 +44,7 @@ struct ProxyState {
     active_child: Mutex<Option<(u64, Child)>>,
     claude_mode: CliMode,
     codex_mode: CliMode,
+    codex_workdir: String,
 }
 
 #[derive(Deserialize)]
@@ -83,6 +84,19 @@ struct HealthResponse {
 /// `wsl.exe` and other console subsystem processes.
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 
+/// Name of the Codex working directory (used as both the WSL `/tmp/<name>` path
+/// and the Windows `temp_dir().join(<name>)` path).
+const CODEX_WORKDIR: &str = "aigc-codex-workdir";
+
+/// Configure a `std::process::Command` to run silently (no console popup,
+/// stdout/stderr discarded). Used for fire-and-forget subprocesses where we
+/// only care about the exit status.
+fn silent(cmd: &mut std::process::Command) -> &mut std::process::Command {
+    cmd.stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .creation_flags(CREATE_NO_WINDOW)
+}
+
 /// Escape a string for use in a bash -c / -ic command.
 fn shell_escape(s: &str) -> String {
     format!("'{}'", s.replace('\'', "'\\''"))
@@ -97,11 +111,7 @@ fn generate_token() -> String {
 /// then inside WSL (using `bash -ic` to pick up nvm/profile PATH).
 fn detect_cli(name: &str) -> CliMode {
     // Try native Windows first.
-    let native = std::process::Command::new(name)
-        .arg("--version")
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .creation_flags(CREATE_NO_WINDOW)
+    let native = silent(std::process::Command::new(name).arg("--version"))
         .status()
         .is_ok_and(|s| s.success());
     if native {
@@ -110,13 +120,11 @@ fn detect_cli(name: &str) -> CliMode {
 
     // Try via WSL with interactive shell so .bashrc (nvm, etc.) is sourced.
     let version_cmd = format!("{name} --version");
-    let wsl = std::process::Command::new("wsl.exe")
-        .args(["--", "bash", "-ic", &version_cmd])
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .creation_flags(CREATE_NO_WINDOW)
-        .status()
-        .is_ok_and(|s| s.success());
+    let wsl = silent(
+        std::process::Command::new("wsl.exe").args(["--", "bash", "-ic", &version_cmd]),
+    )
+    .status()
+    .is_ok_and(|s| s.success());
     if wsl {
         return CliMode::Wsl;
     }
@@ -360,37 +368,27 @@ async fn handle_claude(
     Ok(sse_response(stream))
 }
 
-/// Codex requires a git directory -- ensure a temp workdir with `git init` exists
-/// and return its path (Windows or WSL-side, depending on the CLI mode).
-fn ensure_codex_workdir(is_wsl: bool) -> String {
-    if is_wsl {
-        let dir = "/tmp/aigc-codex-workdir";
-        let _ = std::process::Command::new("wsl.exe")
-            .args([
-                "--",
-                "bash",
-                "-c",
-                &format!("[ -d {dir}/.git ] || (mkdir -p {dir} && git -C {dir} init)"),
-            ])
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .creation_flags(CREATE_NO_WINDOW)
-            .status();
-        dir.to_string()
-    } else {
-        let dir = std::env::temp_dir().join("aigc-codex-workdir");
-        if !dir.exists() {
-            let _ = std::fs::create_dir_all(&dir);
-            let _ = std::process::Command::new("git")
-                .args(["init"])
-                .current_dir(&dir)
-                .stdout(std::process::Stdio::null())
-                .stderr(std::process::Stdio::null())
-                .creation_flags(CREATE_NO_WINDOW)
-                .status();
-        }
-        dir.to_string_lossy().to_string()
+/// Codex requires a git directory -- ensure a temp workdir with `git init` exists.
+fn ensure_codex_workdir(mode: CliMode) -> String {
+    if let CliMode::Wsl = mode {
+        let dir = format!("/tmp/{CODEX_WORKDIR}");
+        let _ = silent(std::process::Command::new("wsl.exe").args([
+            "--",
+            "bash",
+            "-c",
+            &format!("[ -d {dir}/.git ] || (mkdir -p {dir} && git -C {dir} init)"),
+        ]))
+        .status();
+        return dir;
     }
+
+    let dir = std::env::temp_dir().join(CODEX_WORKDIR);
+    if !dir.exists() {
+        let _ = std::fs::create_dir_all(&dir);
+        let _ = silent(std::process::Command::new("git").args(["init"]).current_dir(&dir))
+            .status();
+    }
+    dir.to_string_lossy().into_owned()
 }
 
 async fn handle_codex(
@@ -398,16 +396,15 @@ async fn handle_codex(
     req: ChatRequest,
 ) -> Result<Response, StatusCode> {
     validate_model_name(&req.model)?;
-    let is_wsl = matches!(state.codex_mode, CliMode::Wsl);
-    let work_dir_str = ensure_codex_workdir(is_wsl);
+    let work_dir_str = state.codex_workdir.as_str();
 
     // Let Codex use its own default model (gpt-5.3-codex) unless the user
     // explicitly configured a codex-compatible model. The overlay's
     // openai.model (gpt-4o) is for direct API use, not Codex CLI.
-    let mut cmd = if is_wsl {
+    let mut cmd = if let CliMode::Wsl = state.codex_mode {
         let codex_cmd = format!(
             "codex -a never -s read-only -C {} exec --skip-git-repo-check",
-            shell_escape(&work_dir_str),
+            shell_escape(work_dir_str),
         );
         let mut c = Command::new("wsl.exe");
         c.args(["--", "bash", "-ic", &codex_cmd]);
@@ -416,7 +413,7 @@ async fn handle_codex(
         let mut c = Command::new("codex");
         c.args([
             "-a", "never",
-            "-s", "read-only", "-C", &work_dir_str,
+            "-s", "read-only", "-C", work_dir_str,
             "exec", "--skip-git-repo-check",
         ]);
         c
@@ -743,11 +740,14 @@ pub async fn start_proxy() -> Result<SocketAddr, Box<dyn std::error::Error>> {
         "CLI availability -- claude: {claude_mode:?}, codex: {codex_mode:?}"
     );
 
+    let codex_workdir = ensure_codex_workdir(codex_mode);
+
     let state = Arc::new(ProxyState {
         token: token.clone(),
         active_child: Mutex::new(None),
         claude_mode,
         codex_mode,
+        codex_workdir,
     });
 
     let router = Router::new()
