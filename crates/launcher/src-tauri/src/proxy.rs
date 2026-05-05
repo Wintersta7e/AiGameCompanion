@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 use std::fmt::Write as _;
 use std::net::SocketAddr;
+#[cfg(windows)]
 use std::os::windows::process::CommandExt as _;
 use std::sync::Arc;
 
@@ -44,6 +45,7 @@ struct ProxyState {
     active_child: Mutex<Option<(u64, Child)>>,
     claude_mode: CliMode,
     codex_mode: CliMode,
+    codex_workdir: String,
 }
 
 #[derive(Deserialize)]
@@ -54,8 +56,6 @@ struct ChatRequest {
     system_prompt: String,
     provider: String,
     model: String,
-    #[allow(dead_code)]
-    max_tokens: u32,
 }
 
 #[derive(Deserialize)]
@@ -81,7 +81,31 @@ struct HealthResponse {
 
 /// Windows `CREATE_NO_WINDOW` flag -- prevents console popups from
 /// `wsl.exe` and other console subsystem processes.
+#[cfg(windows)]
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+
+/// Name of the Codex working directory (used as both the WSL `/tmp/<name>` path
+/// and the Windows `temp_dir().join(<name>)` path).
+const CODEX_WORKDIR: &str = "aigc-codex-workdir";
+
+/// Configure a `std::process::Command` to run silently (no console popup on
+/// Windows, stdout/stderr discarded everywhere). Used for fire-and-forget
+/// subprocesses where we only care about the exit status.
+fn silent(cmd: &mut std::process::Command) -> &mut std::process::Command {
+    cmd.stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null());
+    #[cfg(windows)]
+    cmd.creation_flags(CREATE_NO_WINDOW);
+    cmd
+}
+
+/// Apply the Windows no-window flag to a tokio `Command`. No-op on non-Windows
+/// so the launcher crate compiles for the Linux test runner.
+#[allow(unused_variables, clippy::needless_pass_by_ref_mut)]
+fn no_window(cmd: &mut tokio::process::Command) {
+    #[cfg(windows)]
+    cmd.creation_flags(CREATE_NO_WINDOW);
+}
 
 /// Escape a string for use in a bash -c / -ic command.
 fn shell_escape(s: &str) -> String {
@@ -97,28 +121,20 @@ fn generate_token() -> String {
 /// then inside WSL (using `bash -ic` to pick up nvm/profile PATH).
 fn detect_cli(name: &str) -> CliMode {
     // Try native Windows first.
-    let native = std::process::Command::new(name)
-        .arg("--version")
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .creation_flags(CREATE_NO_WINDOW)
+    let native = silent(std::process::Command::new(name).arg("--version"))
         .status()
-        .map(|s| s.success())
-        .unwrap_or(false);
+        .is_ok_and(|s| s.success());
     if native {
         return CliMode::Native;
     }
 
     // Try via WSL with interactive shell so .bashrc (nvm, etc.) is sourced.
     let version_cmd = format!("{name} --version");
-    let wsl = std::process::Command::new("wsl.exe")
-        .args(["--", "bash", "-ic", &version_cmd])
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .creation_flags(CREATE_NO_WINDOW)
-        .status()
-        .map(|s| s.success())
-        .unwrap_or(false);
+    let wsl = silent(
+        std::process::Command::new("wsl.exe").args(["--", "bash", "-ic", &version_cmd]),
+    )
+    .status()
+    .is_ok_and(|s| s.success());
     if wsl {
         return CliMode::Wsl;
     }
@@ -126,7 +142,7 @@ fn detect_cli(name: &str) -> CliMode {
     CliMode::Unavailable
 }
 
-/// Validate model name: ASCII alphanumeric + hyphens, dots, underscores, colons.
+/// Validate model name: ASCII alphanumeric + hyphens, dots, underscores.
 /// Mirrors the validation in `api.rs` for Gemini models.
 fn validate_model_name(model: &str) -> Result<(), StatusCode> {
     if model.is_empty() || model.len() > 128 {
@@ -213,7 +229,7 @@ async fn chat(
             }
             handle_claude(state, req).await
         }
-        "openai" | "codex" => {
+        "openai" => {
             if !state.codex_mode.is_available() {
                 return Ok(error_stream_response("Codex CLI is not available on this system"));
             }
@@ -278,7 +294,7 @@ async fn handle_claude(
     cmd.stdin(std::process::Stdio::piped());
     cmd.stdout(std::process::Stdio::piped());
     cmd.stderr(std::process::Stdio::piped());
-    cmd.creation_flags(CREATE_NO_WINDOW);
+    no_window(&mut cmd);
 
     let mut child = cmd.spawn().map_err(|e| {
         tracing::error!("Failed to spawn claude CLI: {e}");
@@ -362,45 +378,43 @@ async fn handle_claude(
     Ok(sse_response(stream))
 }
 
+/// Codex requires a git directory -- ensure a temp workdir with `git init` exists.
+fn ensure_codex_workdir(mode: CliMode) -> String {
+    if let CliMode::Wsl = mode {
+        let dir = format!("/tmp/{CODEX_WORKDIR}");
+        let _ = silent(std::process::Command::new("wsl.exe").args([
+            "--",
+            "bash",
+            "-c",
+            &format!("[ -d {dir}/.git ] || (mkdir -p {dir} && git -C {dir} init)"),
+        ]))
+        .status();
+        return dir;
+    }
+
+    let dir = std::env::temp_dir().join(CODEX_WORKDIR);
+    if !dir.exists() {
+        let _ = std::fs::create_dir_all(&dir);
+        let _ = silent(std::process::Command::new("git").args(["init"]).current_dir(&dir))
+            .status();
+    }
+    dir.to_string_lossy().into_owned()
+}
+
 async fn handle_codex(
     state: Arc<ProxyState>,
     req: ChatRequest,
 ) -> Result<Response, StatusCode> {
     validate_model_name(&req.model)?;
-    // Codex requires a git directory -- use a temp dir with git init.
-    let is_wsl = matches!(state.codex_mode, CliMode::Wsl);
-    let work_dir_str = if is_wsl {
-        // WSL-side path. Ensure it exists.
-        let dir = "/tmp/aigc-codex-workdir";
-        let _ = std::process::Command::new("wsl.exe")
-            .args(["--", "bash", "-c", &format!("[ -d {dir}/.git ] || (mkdir -p {dir} && git -C {dir} init)")])
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .creation_flags(CREATE_NO_WINDOW)
-            .status();
-        dir.to_string()
-    } else {
-        let dir = std::env::temp_dir().join("aigc-codex-workdir");
-        if !dir.exists() {
-            let _ = std::fs::create_dir_all(&dir);
-            let _ = std::process::Command::new("git")
-                .args(["init"])
-                .current_dir(&dir)
-                .stdout(std::process::Stdio::null())
-                .stderr(std::process::Stdio::null())
-                .creation_flags(CREATE_NO_WINDOW)
-                .status();
-        }
-        dir.to_string_lossy().to_string()
-    };
+    let work_dir_str = state.codex_workdir.as_str();
 
     // Let Codex use its own default model (gpt-5.3-codex) unless the user
     // explicitly configured a codex-compatible model. The overlay's
     // openai.model (gpt-4o) is for direct API use, not Codex CLI.
-    let mut cmd = if is_wsl {
+    let mut cmd = if let CliMode::Wsl = state.codex_mode {
         let codex_cmd = format!(
             "codex -a never -s read-only -C {} exec --skip-git-repo-check",
-            shell_escape(&work_dir_str),
+            shell_escape(work_dir_str),
         );
         let mut c = Command::new("wsl.exe");
         c.args(["--", "bash", "-ic", &codex_cmd]);
@@ -409,7 +423,7 @@ async fn handle_codex(
         let mut c = Command::new("codex");
         c.args([
             "-a", "never",
-            "-s", "read-only", "-C", &work_dir_str,
+            "-s", "read-only", "-C", work_dir_str,
             "exec", "--skip-git-repo-check",
         ]);
         c
@@ -417,7 +431,7 @@ async fn handle_codex(
     cmd.stdin(std::process::Stdio::piped());
     cmd.stdout(std::process::Stdio::piped());
     cmd.stderr(std::process::Stdio::piped());
-    cmd.creation_flags(CREATE_NO_WINDOW);
+    no_window(&mut cmd);
 
     let mut child = cmd.spawn().map_err(|e| {
         tracing::error!("Failed to spawn codex CLI: {e}");
@@ -668,12 +682,7 @@ fn sse_response(stream: impl futures_util::Stream<Item = String> + Send + 'stati
         .header("cache-control", "no-cache")
         .header("connection", "keep-alive")
         .body(body)
-        .unwrap_or_else(|_| {
-            Response::builder()
-                .status(StatusCode::INTERNAL_SERVER_ERROR)
-                .body(Body::empty())
-                .expect("fallback response must build")
-        })
+        .unwrap_or_else(|_| Response::new(Body::empty()))
 }
 
 fn error_stream_response(msg: &str) -> Response {
@@ -687,12 +696,7 @@ fn error_stream_response(msg: &str) -> Response {
         .header("cache-control", "no-cache")
         .header("connection", "keep-alive")
         .body(body)
-        .unwrap_or_else(|_| {
-            Response::builder()
-                .status(StatusCode::INTERNAL_SERVER_ERROR)
-                .body(Body::empty())
-                .expect("fallback response must build")
-        })
+        .unwrap_or_else(|_| Response::new(Body::empty()))
 }
 
 async fn kill_active_child(state: &ProxyState) {
@@ -736,11 +740,14 @@ pub async fn start_proxy() -> Result<SocketAddr, Box<dyn std::error::Error>> {
         "CLI availability -- claude: {claude_mode:?}, codex: {codex_mode:?}"
     );
 
+    let codex_workdir = ensure_codex_workdir(codex_mode);
+
     let state = Arc::new(ProxyState {
         token: token.clone(),
         active_child: Mutex::new(None),
         claude_mode,
         codex_mode,
+        codex_workdir,
     });
 
     let router = Router::new()
@@ -805,5 +812,147 @@ pub fn cleanup_port_file() {
         } else {
             tracing::info!("Cleaned up proxy.port");
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn msg(role: &str, content: &str) -> ChatMessage {
+        ChatMessage {
+            role: role.to_owned(),
+            content: content.to_owned(),
+        }
+    }
+
+    // ---------------- shell_escape ----------------
+
+    #[test]
+    fn shell_escape_wraps_in_single_quotes() {
+        assert_eq!(shell_escape("plain"), "'plain'");
+    }
+
+    #[test]
+    fn shell_escape_preserves_spaces_and_special_chars() {
+        assert_eq!(shell_escape("a b $c & d"), "'a b $c & d'");
+    }
+
+    #[test]
+    fn shell_escape_escapes_inner_single_quote() {
+        // 'it'\''s' -- standard close/escape/reopen pattern
+        assert_eq!(shell_escape("it's"), "'it'\\''s'");
+    }
+
+    #[test]
+    fn shell_escape_handles_empty_string() {
+        assert_eq!(shell_escape(""), "''");
+    }
+
+    // ---------------- validate_model_name ----------------
+
+    #[test]
+    fn validate_model_name_accepts_typical_ids() {
+        for ok in [
+            "gemini-2.5-flash",
+            "claude-haiku-4-5",
+            "gpt-4o",
+            "model_v2",
+            "Some.Model.With.Dots",
+            "a",
+        ] {
+            assert!(validate_model_name(ok).is_ok(), "should accept: {ok}");
+        }
+    }
+
+    #[test]
+    fn validate_model_name_rejects_empty_and_oversize() {
+        assert!(validate_model_name("").is_err());
+        let oversize = "a".repeat(129);
+        assert!(validate_model_name(&oversize).is_err());
+    }
+
+    #[test]
+    fn validate_model_name_rejects_path_traversal() {
+        for bad in ["../foo", "foo/bar", "foo\\bar", "foo bar", "foo:bar", "foo$"] {
+            assert!(validate_model_name(bad).is_err(), "should reject: {bad}");
+        }
+    }
+
+    #[test]
+    fn validate_model_name_rejects_non_ascii() {
+        assert!(validate_model_name("modèle").is_err());
+        assert!(validate_model_name("モデル").is_err());
+    }
+
+    // ---------------- build_codex_input ----------------
+
+    #[test]
+    fn codex_input_omits_system_prompt_when_empty() {
+        let out = build_codex_input("", &[msg("user", "hello")]);
+        assert_eq!(out, "[user]: hello\n");
+    }
+
+    #[test]
+    fn codex_input_includes_system_prompt_with_blank_line() {
+        let out = build_codex_input("Be terse.", &[msg("user", "hi")]);
+        assert_eq!(out, "Be terse.\n\n[user]: hi\n");
+    }
+
+    #[test]
+    fn codex_input_concatenates_messages_in_order() {
+        let out = build_codex_input(
+            "",
+            &[msg("user", "q1"), msg("assistant", "a1"), msg("user", "q2")],
+        );
+        assert_eq!(out, "[user]: q1\n[assistant]: a1\n[user]: q2\n");
+    }
+
+    // ---------------- build_claude_input ----------------
+
+    #[test]
+    fn claude_input_emits_one_ndjson_line_terminated_by_newline() {
+        let out = build_claude_input(&[msg("user", "hello")], None);
+        assert!(out.ends_with('\n'));
+        // exactly one newline at the very end
+        assert_eq!(out.matches('\n').count(), 1);
+    }
+
+    #[test]
+    fn claude_input_concatenates_history_as_single_user_turn() {
+        let out = build_claude_input(
+            &[msg("user", "q1"), msg("assistant", "a1"), msg("user", "q2")],
+            None,
+        );
+        let v: serde_json::Value = serde_json::from_str(out.trim_end()).unwrap();
+        assert_eq!(v["type"], "user");
+        assert_eq!(v["message"]["role"], "user");
+        let parts = v["message"]["content"].as_array().unwrap();
+        assert_eq!(parts.len(), 1);
+        assert_eq!(parts[0]["type"], "text");
+        assert_eq!(
+            parts[0]["text"].as_str().unwrap(),
+            "[user]: q1\n[assistant]: a1\n[user]: q2"
+        );
+    }
+
+    #[test]
+    fn claude_input_appends_image_part_when_screenshot_present() {
+        let out = build_claude_input(&[msg("user", "look")], Some("AAAAFAKE=="));
+        let v: serde_json::Value = serde_json::from_str(out.trim_end()).unwrap();
+        let parts = v["message"]["content"].as_array().unwrap();
+        assert_eq!(parts.len(), 2);
+        assert_eq!(parts[1]["type"], "image");
+        assert_eq!(parts[1]["source"]["type"], "base64");
+        assert_eq!(parts[1]["source"]["media_type"], "image/png");
+        assert_eq!(parts[1]["source"]["data"], "AAAAFAKE==");
+    }
+
+    #[test]
+    fn claude_input_omits_image_when_no_screenshot() {
+        let out = build_claude_input(&[msg("user", "hi")], None);
+        let v: serde_json::Value = serde_json::from_str(out.trim_end()).unwrap();
+        let parts = v["message"]["content"].as_array().unwrap();
+        assert_eq!(parts.len(), 1);
     }
 }

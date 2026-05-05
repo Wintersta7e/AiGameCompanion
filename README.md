@@ -104,7 +104,7 @@ key = ""                    # Gemini API key (free from aistudio.google.com)
 model = "gemini-2.5-flash"  # Gemini model
 
 [api.claude]
-model = "haiku"             # haiku, sonnet, or opus (uses Claude Code CLI subscription)
+model = "claude-haiku-4-5"  # qualified model id (uses Claude Code CLI subscription)
 
 [api.openai]
 model = "gpt-4o"            # gpt-4o, o3, etc. (uses Codex CLI subscription)
@@ -120,9 +120,7 @@ translate_hotkey = "F10"    # Hotkey for screen translation
 # hook_delay = 15           # Extra seconds before hooking (for games with long DX12 init)
 
 [capture]
-enabled = true              # Allow screenshot capture
 max_width = 1920            # Downscale screenshots wider than this
-quality = 85                # PNG compression quality
 
 [logging]
 enabled = true              # Save conversation transcripts
@@ -363,7 +361,9 @@ Contributions are welcome! Please:
 1. Fork the repository
 2. Create a feature branch
 3. Make your changes
-4. Run `cargo xwin clippy --target x86_64-pc-windows-msvc -- -D warnings`
+4. Run the lint + test gates:
+   - `cargo xwin clippy --workspace --target x86_64-pc-windows-msvc -- -D warnings`
+   - `cargo test -p launcher` (proxy helpers; runs on the host, no Windows toolchain needed)
 5. Submit a pull request
 
 ## License

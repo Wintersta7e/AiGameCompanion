@@ -146,6 +146,26 @@ impl AppState {
         }
     }
 
+    /// Invalidates any in-flight request: bumps `request_generation` so async
+    /// results are dropped, and resets every "in-flight" flag (loading state,
+    /// streaming buffer, capture state machine, CAPTURE_ACTIVE atomic).
+    /// Returns `(provider, old_generation)` so the caller can fire
+    /// `proxy_client::send_cancel` after dropping the lock. Does NOT touch
+    /// `messages`, `input_buffer`, or `error` -- callers customize those.
+    pub fn cancel_in_flight(&mut self) -> (Provider, u64) {
+        let snapshot = (self.active_provider, self.request_generation);
+        self.request_generation += 1;
+        self.is_loading = false;
+        self.streaming_response.clear();
+        self.capture_pending = false;
+        self.capture_complete = false;
+        self.send_pending_capture = false;
+        self.translate_pending = false;
+        self.captured_screenshot = None;
+        crate::CAPTURE_ACTIVE.store(false, std::sync::atomic::Ordering::Release);
+        snapshot
+    }
+
     /// Push a message, evicting the oldest if the cap is exceeded.
     /// Always ensures the first message is a User message after eviction.
     pub fn push_message(&mut self, msg: ChatMessage) {

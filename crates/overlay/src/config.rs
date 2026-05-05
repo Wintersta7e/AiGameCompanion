@@ -109,7 +109,9 @@ fn default_gemini_model() -> String {
     "gemini-2.5-flash".into()
 }
 fn default_claude_model() -> String {
-    "haiku".into()
+    // Use a fully qualified id rather than the bare "haiku" alias -- the alias
+    // resolves differently across CLI versions, the qualified id is stable.
+    "claude-haiku-4-5".into()
 }
 fn default_openai_model() -> String {
     "gpt-4o".into()
@@ -196,14 +198,30 @@ impl ApiConfig {
     /// fields are still at their defaults. This lets existing config.toml files
     /// (with `[api] key = "..."`) keep working without changes.
     pub fn migrate_legacy(&mut self) {
-        if !self.key.is_empty() && self.gemini.key.is_empty() {
-            self.gemini.key = self.key.clone();
-        }
-        // If the user set a non-default legacy model and hasn't set gemini.model,
-        // carry the legacy value forward.
-        if self.model != default_model() && self.gemini.model == default_gemini_model() {
-            self.gemini.model = self.model.clone();
-        }
+        migrate_one("key", &self.key, &mut self.gemini.key, "");
+        migrate_one(
+            "model",
+            &self.model,
+            &mut self.gemini.model,
+            &default_gemini_model(),
+        );
+    }
+}
+
+/// Carries a legacy `[api].<field>` value forward into the corresponding
+/// `[api.gemini].<field>` if it's still at its default; otherwise warns about
+/// the conflict. `default_value` is the default for both legacy and nested
+/// (they share the same default by construction in this config).
+fn migrate_one(field: &str, legacy: &str, nested: &mut String, default_value: &str) {
+    if legacy == default_value {
+        return;
+    }
+    if nested == default_value {
+        *nested = legacy.to_owned();
+    } else {
+        tracing::warn!(
+            "config.toml: both legacy [api].{field} and [api.gemini].{field} are set; using [api.gemini].{field} and ignoring legacy value"
+        );
     }
 }
 
@@ -231,14 +249,9 @@ pub struct OverlayConfig {
 }
 
 #[derive(Deserialize, Clone)]
-#[allow(dead_code)] // enabled + quality reserved for future use
 pub struct CaptureConfig {
-    #[serde(default = "default_capture_enabled")]
-    pub enabled: bool,
     #[serde(default = "default_max_width")]
     pub max_width: u32,
-    #[serde(default = "default_quality")]
-    pub quality: u8,
 }
 
 #[derive(Deserialize, Clone)]
@@ -356,14 +369,8 @@ fn default_translate_hotkey() -> String {
 fn default_hook_delay() -> u64 {
     0
 }
-fn default_capture_enabled() -> bool {
-    true
-}
 fn default_max_width() -> u32 {
     1920
-}
-fn default_quality() -> u8 {
-    85
 }
 
 impl Default for ApiConfig {
@@ -400,9 +407,7 @@ impl Default for OverlayConfig {
 impl Default for CaptureConfig {
     fn default() -> Self {
         Self {
-            enabled: default_capture_enabled(),
             max_width: default_max_width(),
-            quality: default_quality(),
         }
     }
 }

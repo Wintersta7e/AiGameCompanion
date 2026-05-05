@@ -30,15 +30,7 @@ struct ChatCompletionRequest {
 #[derive(Serialize)]
 struct OaiMessage {
     role: &'static str,
-    content: OaiContent,
-}
-
-#[derive(Serialize)]
-#[serde(untagged)]
-#[allow(dead_code)]
-enum OaiContent {
-    Text(String),
-    Parts(Vec<OaiContentPart>),
+    content: Vec<OaiContentPart>,
 }
 
 #[derive(Serialize)]
@@ -94,14 +86,12 @@ async fn send_local_translation(screenshot: String) -> Result<String, String> {
         model: config.model.clone(),
         messages: vec![OaiMessage {
             role: "user",
-            content: OaiContent::Parts(vec![
+            content: vec![
                 OaiContentPart::Text { text: prompt },
                 OaiContentPart::ImageUrl {
-                    image_url: ImageUrl {
-                        url: data_uri,
-                    },
+                    image_url: ImageUrl { url: data_uri },
                 },
-            ]),
+            ],
         }],
         max_tokens: CONFIG.api.max_tokens,
         stream: false,
