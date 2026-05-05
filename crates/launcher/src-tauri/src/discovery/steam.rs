@@ -105,7 +105,7 @@ pub fn discover_steam_games() -> Vec<Game> {
     }
 
     tracing::info!("Discovery complete: {} games found", games.len());
-    games.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+    games.sort_by_key(|g| g.name.to_lowercase());
     games
 }
 
@@ -113,7 +113,6 @@ pub fn discover_steam_games() -> Vec<Game> {
 pub fn resolve_game_exe(install_dir: &Path) -> (String, Option<String>) {
     find_main_exe(install_dir)
 }
-
 
 /// Find the main executable in a game's install directory.
 ///
@@ -125,7 +124,7 @@ fn find_main_exe(install_dir: &Path) -> (String, Option<String>) {
     collect_exes(install_dir, &mut candidates, 0);
 
     // Sort by size descending -- largest exe is most likely the game
-    candidates.sort_by(|a, b| b.1.cmp(&a.1));
+    candidates.sort_by_key(|c| std::cmp::Reverse(c.1));
 
     if let Some((path, _)) = candidates.first() {
         let exe_name = path
@@ -149,7 +148,9 @@ fn collect_exes(dir: &Path, out: &mut Vec<(PathBuf, u64)>, depth: u32) {
         return;
     }
 
-    let Ok(entries) = std::fs::read_dir(dir) else { return };
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
 
     for entry in entries.flatten() {
         if out.len() >= MAX_EXE_CANDIDATES {
@@ -170,7 +171,7 @@ fn collect_exes(dir: &Path, out: &mut Vec<(PathBuf, u64)>, depth: u32) {
                     .any(|pat| file_name_lower.contains(pat));
 
                 if !is_skip {
-                    let size = entry.metadata().map(|m| m.len()).unwrap_or(0);
+                    let size = entry.metadata().map_or(0, |m| m.len());
                     out.push((path, size));
                 }
             }

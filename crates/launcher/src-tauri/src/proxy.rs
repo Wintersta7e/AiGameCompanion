@@ -103,8 +103,7 @@ fn detect_cli(name: &str) -> CliMode {
         .stderr(std::process::Stdio::null())
         .creation_flags(CREATE_NO_WINDOW)
         .status()
-        .map(|s| s.success())
-        .unwrap_or(false);
+        .is_ok_and(|s| s.success());
     if native {
         return CliMode::Native;
     }
@@ -117,8 +116,7 @@ fn detect_cli(name: &str) -> CliMode {
         .stderr(std::process::Stdio::null())
         .creation_flags(CREATE_NO_WINDOW)
         .status()
-        .map(|s| s.success())
-        .unwrap_or(false);
+        .is_ok_and(|s| s.success());
     if wsl {
         return CliMode::Wsl;
     }
@@ -362,18 +360,18 @@ async fn handle_claude(
     Ok(sse_response(stream))
 }
 
-async fn handle_codex(
-    state: Arc<ProxyState>,
-    req: ChatRequest,
-) -> Result<Response, StatusCode> {
-    validate_model_name(&req.model)?;
-    // Codex requires a git directory -- use a temp dir with git init.
-    let is_wsl = matches!(state.codex_mode, CliMode::Wsl);
-    let work_dir_str = if is_wsl {
-        // WSL-side path. Ensure it exists.
+/// Codex requires a git directory -- ensure a temp workdir with `git init` exists
+/// and return its path (Windows or WSL-side, depending on the CLI mode).
+fn ensure_codex_workdir(is_wsl: bool) -> String {
+    if is_wsl {
         let dir = "/tmp/aigc-codex-workdir";
         let _ = std::process::Command::new("wsl.exe")
-            .args(["--", "bash", "-c", &format!("[ -d {dir}/.git ] || (mkdir -p {dir} && git -C {dir} init)")])
+            .args([
+                "--",
+                "bash",
+                "-c",
+                &format!("[ -d {dir}/.git ] || (mkdir -p {dir} && git -C {dir} init)"),
+            ])
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null())
             .creation_flags(CREATE_NO_WINDOW)
@@ -392,7 +390,16 @@ async fn handle_codex(
                 .status();
         }
         dir.to_string_lossy().to_string()
-    };
+    }
+}
+
+async fn handle_codex(
+    state: Arc<ProxyState>,
+    req: ChatRequest,
+) -> Result<Response, StatusCode> {
+    validate_model_name(&req.model)?;
+    let is_wsl = matches!(state.codex_mode, CliMode::Wsl);
+    let work_dir_str = ensure_codex_workdir(is_wsl);
 
     // Let Codex use its own default model (gpt-5.3-codex) unless the user
     // explicitly configured a codex-compatible model. The overlay's
