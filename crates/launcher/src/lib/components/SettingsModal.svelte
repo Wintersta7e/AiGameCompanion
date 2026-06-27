@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { invoke } from "@tauri-apps/api/core";
+  import { invoke } from '@tauri-apps/api/core';
 
   interface Settings {
     overlay_dll_path: string | null;
@@ -21,9 +21,9 @@
 
   async function load(): Promise<void> {
     try {
-      settings = await invoke<Settings>("get_settings");
+      settings = await invoke<Settings>('get_settings');
     } catch (e) {
-      console.error("Failed to load settings:", e);
+      console.error('Failed to load settings:', e);
     }
   }
 
@@ -31,10 +31,10 @@
     saving = true;
     saveError = null;
     try {
-      await invoke("update_settings", { settings });
+      await invoke('update_settings', { settings });
       open = false;
     } catch (e) {
-      console.error("Failed to save settings:", e);
+      console.error('Failed to save settings:', e);
       saveError = String(e);
     } finally {
       saving = false;
@@ -54,14 +54,13 @@
   }
 
   function onKeydown(e: KeyboardEvent): void {
-    if (e.key === "Escape") {
+    if (e.key === 'Escape') {
       open = false;
     }
   }
 </script>
 
 {#if open}
-  <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
   <!-- svelte-ignore a11y_interactive_supports_focus -->
   <div
     role="dialog"
@@ -78,15 +77,33 @@
     >
       <!-- Header -->
       <div class="flex items-center justify-between px-6 py-4 border-b border-border-subtle">
-        <h2 class="font-display text-lg font-semibold text-text-primary tracking-wide uppercase">Settings</h2>
+        <h2 class="font-display text-lg font-semibold text-text-primary tracking-wide uppercase">
+          Settings
+        </h2>
         <button
           class="w-8 h-8 flex items-center justify-center rounded-md text-text-secondary hover:text-white hover:bg-[rgba(255,60,60,0.7)] transition-all duration-150"
           onclick={() => (open = false)}
           aria-label="Close settings"
         >
           <svg width="12" height="12" viewBox="0 0 12 12" fill="none">
-            <line x1="2" y1="2" x2="10" y2="10" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" />
-            <line x1="10" y1="2" x2="2" y2="10" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" />
+            <line
+              x1="2"
+              y1="2"
+              x2="10"
+              y2="10"
+              stroke="currentColor"
+              stroke-width="1.5"
+              stroke-linecap="round"
+            />
+            <line
+              x1="10"
+              y1="2"
+              x2="2"
+              y2="10"
+              stroke="currentColor"
+              stroke-width="1.5"
+              stroke-linecap="round"
+            />
           </svg>
         </button>
       </div>
@@ -95,12 +112,14 @@
       <div class="px-6 py-5 flex flex-col gap-4">
         <!-- Overlay DLL Path -->
         <div class="flex flex-col gap-1.5">
-          <label for="dll-path" class="font-body text-sm text-text-secondary">Overlay DLL Path</label>
+          <label for="dll-path" class="font-body text-sm text-text-secondary"
+            >Overlay DLL Path</label
+          >
           <input
             id="dll-path"
             type="text"
             placeholder="Auto-detect (default)"
-            value={settings.overlay_dll_path ?? ""}
+            value={settings.overlay_dll_path ?? ''}
             oninput={(e) => {
               const v = (e.target as HTMLInputElement).value;
               settings.overlay_dll_path = v || null;
@@ -111,14 +130,19 @@
 
         <!-- Toggle: Scan on Startup -->
         <label class="flex items-center justify-between cursor-pointer group">
-          <span class="font-body text-sm text-text-secondary group-hover:text-text-primary transition-colors">Scan games on startup</span>
+          <span
+            class="font-body text-sm text-text-secondary group-hover:text-text-primary transition-colors"
+            >Scan games on startup</span
+          >
           <button
             role="switch"
             aria-label="Scan games on startup"
             aria-checked={settings.scan_on_startup}
             onclick={() => (settings.scan_on_startup = !settings.scan_on_startup)}
             class="w-10 h-[22px] rounded-full relative transition-colors duration-200"
-            style="background: {settings.scan_on_startup ? 'var(--color-accent)' : 'rgba(255,255,255,0.1)'};"
+            style="background: {settings.scan_on_startup
+              ? 'var(--color-accent)'
+              : 'rgba(255,255,255,0.1)'};"
           >
             <span
               class="absolute top-[3px] w-4 h-4 rounded-full bg-white transition-transform duration-200"
@@ -129,14 +153,19 @@
 
         <!-- Toggle: Minimize to Tray -->
         <label class="flex items-center justify-between cursor-pointer group">
-          <span class="font-body text-sm text-text-secondary group-hover:text-text-primary transition-colors">Minimize to tray</span>
+          <span
+            class="font-body text-sm text-text-secondary group-hover:text-text-primary transition-colors"
+            >Minimize to tray</span
+          >
           <button
             role="switch"
             aria-label="Minimize to tray"
             aria-checked={settings.minimize_to_tray}
             onclick={() => (settings.minimize_to_tray = !settings.minimize_to_tray)}
             class="w-10 h-[22px] rounded-full relative transition-colors duration-200"
-            style="background: {settings.minimize_to_tray ? 'var(--color-accent)' : 'rgba(255,255,255,0.1)'};"
+            style="background: {settings.minimize_to_tray
+              ? 'var(--color-accent)'
+              : 'rgba(255,255,255,0.1)'};"
           >
             <span
               class="absolute top-[3px] w-4 h-4 rounded-full bg-white transition-transform duration-200"
@@ -147,14 +176,19 @@
 
         <!-- Toggle: Launch on Startup -->
         <label class="flex items-center justify-between cursor-pointer group">
-          <span class="font-body text-sm text-text-secondary group-hover:text-text-primary transition-colors">Launch on system startup</span>
+          <span
+            class="font-body text-sm text-text-secondary group-hover:text-text-primary transition-colors"
+            >Launch on system startup</span
+          >
           <button
             role="switch"
             aria-label="Launch on system startup"
             aria-checked={settings.launch_on_startup}
             onclick={() => (settings.launch_on_startup = !settings.launch_on_startup)}
             class="w-10 h-[22px] rounded-full relative transition-colors duration-200"
-            style="background: {settings.launch_on_startup ? 'var(--color-accent)' : 'rgba(255,255,255,0.1)'};"
+            style="background: {settings.launch_on_startup
+              ? 'var(--color-accent)'
+              : 'rgba(255,255,255,0.1)'};"
           >
             <span
               class="absolute top-[3px] w-4 h-4 rounded-full bg-white transition-transform duration-200"
@@ -181,7 +215,7 @@
           onclick={save}
           disabled={saving}
         >
-          {saving ? "Saving..." : "Save"}
+          {saving ? 'Saving...' : 'Save'}
         </button>
       </div>
     </div>
