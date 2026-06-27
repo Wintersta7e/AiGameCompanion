@@ -3,7 +3,7 @@ use std::path::PathBuf;
 use std::thread;
 use std::time::{Duration, Instant};
 
-use anyhow::{Context, Result, bail};
+use anyhow::{bail, Context, Result};
 use clap::Parser;
 use hudhook::inject::Process;
 use serde::Deserialize;
@@ -126,10 +126,7 @@ fn enumerate_processes() -> Result<Vec<ProcessInfo>> {
 }
 
 fn list_process_names() -> Result<Vec<String>> {
-    let mut names: Vec<String> = enumerate_processes()?
-        .into_iter()
-        .map(|p| p.name)
-        .collect();
+    let mut names: Vec<String> = enumerate_processes()?.into_iter().map(|p| p.name).collect();
     names.sort();
     names.dedup();
     Ok(names)
@@ -199,9 +196,7 @@ fn inject_one_shot(process_name: &str, dll_path: PathBuf, timeout_secs: u64) -> 
     println!();
     println!("Injecting {} into {}...", dll_path.display(), process_name);
 
-    process
-        .inject(dll_path)
-        .context("Failed to inject DLL")?;
+    process.inject(dll_path).context("Failed to inject DLL")?;
 
     println!("Injection successful!");
     Ok(())
@@ -243,14 +238,22 @@ fn watch_mode(games: Vec<GameEntry>, dll_path: PathBuf) -> Result<()> {
 
         // Check for exited games
         for (proc_lower, pids) in &mut active_injections {
-            let exited: Vec<u32> = pids.iter().filter(|pid| !current_pids.contains(pid)).copied().collect();
+            let exited: Vec<u32> = pids
+                .iter()
+                .filter(|pid| !current_pids.contains(pid))
+                .copied()
+                .collect();
             for pid in &exited {
                 pids.remove(pid);
                 injected_pids.remove(pid);
             }
             if !exited.is_empty() {
                 if let Some(game) = game_map.get(proc_lower.as_str()) {
-                    println!("{} {} exited -- will re-inject on next launch", timestamp(), game.display_name());
+                    println!(
+                        "{} {} exited -- will re-inject on next launch",
+                        timestamp(),
+                        game.display_name()
+                    );
                 }
             }
         }
@@ -268,21 +271,42 @@ fn watch_mode(games: Vec<GameEntry>, dll_path: PathBuf) -> Result<()> {
             }
 
             let game = game_map[&proc_lower];
-            println!("{} Found {} (PID {}) -- injecting...", timestamp(), game.display_name(), proc_info.pid);
+            println!(
+                "{} Found {} (PID {}) -- injecting...",
+                timestamp(),
+                game.display_name(),
+                proc_info.pid
+            );
 
             match Process::by_name(&game.process) {
                 Ok(process) => match process.inject(dll_path.clone()) {
                     Ok(()) => {
-                        println!("{} Injected into {} (PID {})", timestamp(), game.display_name(), proc_info.pid);
+                        println!(
+                            "{} Injected into {} (PID {})",
+                            timestamp(),
+                            game.display_name(),
+                            proc_info.pid
+                        );
                         injected_pids.insert(proc_info.pid);
-                        active_injections.entry(proc_lower).or_default().insert(proc_info.pid);
+                        active_injections
+                            .entry(proc_lower)
+                            .or_default()
+                            .insert(proc_info.pid);
                     }
                     Err(e) => {
-                        eprintln!("{} Failed to inject into {}: {e}", timestamp(), game.display_name());
+                        eprintln!(
+                            "{} Failed to inject into {}: {e}",
+                            timestamp(),
+                            game.display_name()
+                        );
                     }
                 },
                 Err(e) => {
-                    eprintln!("{} Failed to open {}: {e}", timestamp(), game.display_name());
+                    eprintln!(
+                        "{} Failed to open {}: {e}",
+                        timestamp(),
+                        game.display_name()
+                    );
                 }
             }
         }

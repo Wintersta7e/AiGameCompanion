@@ -66,11 +66,15 @@ pub async fn launch_game(game_id: String, app: tauri::AppHandle) -> Result<Strin
 
     // Launch via Steam protocol URL for Steam games
     if game.source == GameSource::Steam {
-        let source_id = game.source_id.as_ref()
+        let source_id = game
+            .source_id
+            .as_ref()
             .ok_or_else(|| format!("Missing Steam app ID for game: {}", game.name))?;
         if source_id.chars().all(|c| c.is_ascii_digit()) && !source_id.is_empty() {
             let url = format!("steam://rungameid/{source_id}");
-            app.opener().open_url(&url, None::<&str>).map_err(|e| format!("Failed to launch: {e}"))?;
+            app.opener()
+                .open_url(&url, None::<&str>)
+                .map_err(|e| format!("Failed to launch: {e}"))?;
         } else {
             return Err(format!("Invalid source_id: {source_id}"));
         }
@@ -85,7 +89,9 @@ pub async fn launch_game(game_id: String, app: tauri::AppHandle) -> Result<Strin
             if path.extension().and_then(|e| e.to_str()) != Some("exe") {
                 return Err(format!("Invalid executable: {exe_path}"));
             }
-            app.opener().open_path(exe_path, None::<&str>).map_err(|e| format!("Failed to launch: {e}"))?;
+            app.opener()
+                .open_path(exe_path, None::<&str>)
+                .map_err(|e| format!("Failed to launch: {e}"))?;
         } else {
             return Err(format!("No executable path for game: {}", game.name));
         }
@@ -117,7 +123,9 @@ pub async fn launch_game(game_id: String, app: tauri::AppHandle) -> Result<Strin
             .extension()
             .is_some_and(|ext| ext.eq_ignore_ascii_case("exe"));
         let is_valid = has_exe_ext
-            && exe_name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '.' || c == '-');
+            && exe_name
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '.' || c == '-');
         if !is_valid {
             return Err(format!("Invalid exe name: {exe_name}"));
         }
@@ -131,10 +139,13 @@ pub async fn launch_game(game_id: String, app: tauri::AppHandle) -> Result<Strin
         let (mut rx, child) = sidecar
             .spawn()
             .map_err(|e| format!("Failed to spawn injector: {e}"))?;
-        state.active_injectors.lock().insert(game_id.clone(), ActiveSession {
-            child,
-            started_at: std::time::Instant::now(),
-        });
+        state.active_injectors.lock().insert(
+            game_id.clone(),
+            ActiveSession {
+                child,
+                started_at: std::time::Instant::now(),
+            },
+        );
 
         // Listen for sidecar exit, track play time, and emit event to frontend
         let app_handle = app.clone();
@@ -156,7 +167,9 @@ pub async fn launch_game(game_id: String, app: tauri::AppHandle) -> Result<Strin
                                     g.play_time_minutes += elapsed_mins;
                                     tracing::info!(
                                         "Session ended for {}: +{}min (total: {}min)",
-                                        g.name, elapsed_mins, g.play_time_minutes
+                                        g.name,
+                                        elapsed_mins,
+                                        g.play_time_minutes
                                     );
                                 }
                                 drop(launcher);

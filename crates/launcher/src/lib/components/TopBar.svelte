@@ -1,7 +1,7 @@
 <script lang="ts">
-  import { getCurrentWindow } from "@tauri-apps/api/window";
-  import { getSearchQuery, setSearchQuery } from "../stores/games.svelte";
-  import appIcon from "../assets/icon-128.png";
+  import { getCurrentWindow } from '@tauri-apps/api/window';
+  import { getSearchQuery, setSearchQuery } from '../stores/games.svelte';
+  import appIcon from '../assets/icon-128.png';
 
   let { onOpenSettings }: { onOpenSettings: () => void } = $props();
 
@@ -21,15 +21,27 @@
   }
 
   async function minimize(): Promise<void> {
-    try { await appWindow.minimize(); } catch (e) { console.error("Minimize failed:", e); }
+    try {
+      await appWindow.minimize();
+    } catch (e) {
+      console.error('Minimize failed:', e);
+    }
   }
 
   async function toggleMaximize(): Promise<void> {
-    try { await appWindow.toggleMaximize(); } catch (e) { console.error("Maximize failed:", e); }
+    try {
+      await appWindow.toggleMaximize();
+    } catch (e) {
+      console.error('Maximize failed:', e);
+    }
   }
 
   async function close(): Promise<void> {
-    try { await appWindow.close(); } catch (e) { console.error("Close failed:", e); }
+    try {
+      await appWindow.close();
+    } catch (e) {
+      console.error('Close failed:', e);
+    }
   }
 </script>
 
@@ -66,7 +78,13 @@
       class="flex items-center gap-2 py-[7px] px-3.5 rounded-[10px] border transition-all duration-300"
       class:w-[220px]={!searchFocused}
       class:w-[280px]={searchFocused}
-      style="background: {searchFocused ? 'rgba(255, 255, 255, 0.06)' : 'rgba(255, 255, 255, 0.04)'}; border-color: {searchFocused ? 'rgba(99, 140, 255, 0.25)' : 'rgba(99, 140, 255, 0.08)'}; box-shadow: {searchFocused ? '0 0 16px rgba(99, 140, 255, 0.08)' : 'none'};"
+      style="background: {searchFocused
+        ? 'rgba(255, 255, 255, 0.06)'
+        : 'rgba(255, 255, 255, 0.04)'}; border-color: {searchFocused
+        ? 'rgba(99, 140, 255, 0.25)'
+        : 'rgba(99, 140, 255, 0.08)'}; box-shadow: {searchFocused
+        ? '0 0 16px rgba(99, 140, 255, 0.08)'
+        : 'none'};"
     >
       <svg
         width="14"
@@ -127,7 +145,15 @@
       aria-label="Minimize"
     >
       <svg width="12" height="12" viewBox="0 0 12 12" fill="none">
-        <line x1="2" y1="6" x2="10" y2="6" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" />
+        <line
+          x1="2"
+          y1="6"
+          x2="10"
+          y2="6"
+          stroke="currentColor"
+          stroke-width="1.5"
+          stroke-linecap="round"
+        />
       </svg>
     </button>
 
@@ -138,7 +164,16 @@
       aria-label="Maximize"
     >
       <svg width="12" height="12" viewBox="0 0 12 12" fill="none">
-        <rect x="2" y="2" width="8" height="8" rx="1" stroke="currentColor" stroke-width="1.5" fill="none" />
+        <rect
+          x="2"
+          y="2"
+          width="8"
+          height="8"
+          rx="1"
+          stroke="currentColor"
+          stroke-width="1.5"
+          fill="none"
+        />
       </svg>
     </button>
 
@@ -149,8 +184,24 @@
       aria-label="Close"
     >
       <svg width="12" height="12" viewBox="0 0 12 12" fill="none">
-        <line x1="2" y1="2" x2="10" y2="10" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" />
-        <line x1="10" y1="2" x2="2" y2="10" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" />
+        <line
+          x1="2"
+          y1="2"
+          x2="10"
+          y2="10"
+          stroke="currentColor"
+          stroke-width="1.5"
+          stroke-linecap="round"
+        />
+        <line
+          x1="10"
+          y1="2"
+          x2="2"
+          y2="10"
+          stroke="currentColor"
+          stroke-width="1.5"
+          stroke-linecap="round"
+        />
       </svg>
     </button>
   </div>

@@ -19,15 +19,14 @@ use hudhook::windows::Win32::System::LibraryLoader::GetModuleHandleA;
 use hudhook::windows::Win32::System::SystemServices::DLL_PROCESS_ATTACH;
 use hudhook::windows::Win32::UI::Input::KeyboardAndMouse::{GetAsyncKeyState, VK_F9};
 use hudhook::windows::Win32::UI::WindowsAndMessaging::{
-    ClipCursor, GetClipCursor, SetCursor, LoadCursorW, IDC_ARROW,
-    WM_SETCURSOR, HTCLIENT,
+    ClipCursor, GetClipCursor, LoadCursorW, SetCursor, HTCLIENT, IDC_ARROW, WM_SETCURSOR,
 };
 use hudhook::*;
 use once_cell::sync::Lazy;
 use tokio::runtime::Runtime;
 use tracing::{error, info};
 
-use crate::config::{GraphicsApi, DLL_HINSTANCE, CONFIG, parse_vk_code};
+use crate::config::{parse_vk_code, GraphicsApi, CONFIG, DLL_HINSTANCE};
 use crate::state::{ChatMessage, MessageRole, STATE};
 
 /// Set to true once render() is called, confirming hooks are active.
@@ -64,11 +63,7 @@ static RUNTIME: Lazy<Option<Runtime>> = Lazy::new(|| {
 
 /// Spawn an async API request on the tokio runtime.
 /// Used by both ui.rs (no-screenshot path) and lib.rs (post-capture path).
-pub(crate) fn spawn_api_request(
-    gen: u64,
-    messages: Vec<ChatMessage>,
-    screenshot: Option<String>,
-) {
+pub(crate) fn spawn_api_request(gen: u64, messages: Vec<ChatMessage>, screenshot: Option<String>) {
     let Some(rt) = RUNTIME.as_ref() else {
         let mut state = STATE.lock();
         state.error = Some("API unavailable: tokio runtime failed to start.".into());
@@ -90,9 +85,7 @@ pub(crate) fn spawn_api_request(
 
     rt.spawn(async move {
         let result = match active_provider {
-            provider::Provider::Gemini => {
-                api::send_message(messages, screenshot, gen).await
-            }
+            provider::Provider::Gemini => api::send_message(messages, screenshot, gen).await,
             provider::Provider::Claude | provider::Provider::Openai => {
                 proxy_client::send_proxy_message(active_provider, messages, screenshot, gen).await
             }
@@ -101,10 +94,7 @@ pub(crate) fn spawn_api_request(
         if state.request_generation == gen {
             match result {
                 Ok(response) => {
-                    state.push_message(ChatMessage::new(
-                        MessageRole::Assistant,
-                        response.clone(),
-                    ));
+                    state.push_message(ChatMessage::new(MessageRole::Assistant, response.clone()));
                     state.streaming_response.clear();
                     state.is_loading = false;
                     // Drop the lock BEFORE file I/O
@@ -115,10 +105,7 @@ pub(crate) fn spawn_api_request(
                     if !state.streaming_response.is_empty() {
                         let partial = state.streaming_response.clone();
                         state.streaming_response.clear();
-                        state.push_message(ChatMessage::new(
-                            MessageRole::Assistant,
-                            partial,
-                        ));
+                        state.push_message(ChatMessage::new(MessageRole::Assistant, partial));
                     }
                     state.error = Some(err);
                     state.is_loading = false;
@@ -132,7 +119,9 @@ pub(crate) fn spawn_api_request(
 /// Captures both our logs and hudhook's internal tracing (Present hook,
 /// pipeline init, command queue matching, etc.).
 fn init_tracing() {
-    let Some(dir) = config::dll_directory() else { return };
+    let Some(dir) = config::dll_directory() else {
+        return;
+    };
     let file_appender = tracing_appender::rolling::never(dir, "companion.log");
     let subscriber = tracing_subscriber::fmt()
         .with_writer(file_appender)
@@ -160,11 +149,10 @@ fn read_proxy_port_file() -> Option<(u16, String)> {
 
 /// Check if a module (DLL) is loaded in the current process.
 fn is_module_loaded(name: &str) -> bool {
-    let Ok(cname) = std::ffi::CString::new(name) else { return false };
-    unsafe {
-        GetModuleHandleA(hudhook::windows::core::PCSTR(cname.as_ptr() as *const u8))
-            .is_ok()
-    }
+    let Ok(cname) = std::ffi::CString::new(name) else {
+        return false;
+    };
+    unsafe { GetModuleHandleA(hudhook::windows::core::PCSTR(cname.as_ptr() as *const u8)).is_ok() }
 }
 
 /// Auto-detect the graphics API by probing loaded DLLs.
@@ -254,7 +242,11 @@ impl ImguiRenderLoop for CompanionRenderLoop {
     ) {
         let visible = OVERLAY_VISIBLE.load(Ordering::Acquire);
         // Only lock STATE when visible -- capture_pending is always false when hidden.
-        let capturing = if visible { STATE.lock().capture_pending } else { false };
+        let capturing = if visible {
+            STATE.lock().capture_pending
+        } else {
+            false
+        };
 
         // ImGui software cursor -- games hide the hardware cursor via
         // SetCursor(NULL) on every WM_SETCURSOR, so we draw our own.
@@ -268,11 +260,15 @@ impl ImguiRenderLoop for CompanionRenderLoop {
             if unsafe { GetClipCursor(&mut rect) }.is_ok() {
                 self.saved_clip_rect = Some(rect);
             }
-            unsafe { let _ = ClipCursor(None); }
+            unsafe {
+                let _ = ClipCursor(None);
+            }
         } else if !visible && self.was_visible {
             // Overlay just closed -- restore game's cursor clip.
             if let Some(ref rect) = self.saved_clip_rect.take() {
-                unsafe { let _ = ClipCursor(Some(rect)); }
+                unsafe {
+                    let _ = ClipCursor(Some(rect));
+                }
             }
         }
         self.was_visible = visible;
@@ -338,15 +334,11 @@ impl ImguiRenderLoop for CompanionRenderLoop {
 
                 if let Some(rt) = RUNTIME.as_ref() {
                     rt.spawn_blocking(move || {
-                        let result = std::panic::catch_unwind(|| {
-                            capture::capture_screenshot()
-                        });
+                        let result = std::panic::catch_unwind(capture::capture_screenshot);
                         let mut state = STATE.lock();
                         // Guard: reject stale captures from a previous request
                         // (cancel+resend race) by comparing generation.
-                        if state.send_pending_capture
-                            && state.capture_generation == cap_gen
-                        {
+                        if state.send_pending_capture && state.capture_generation == cap_gen {
                             state.captured_screenshot = match result {
                                 Ok(screenshot) => screenshot,
                                 Err(_) => {
@@ -410,22 +402,15 @@ impl ImguiRenderLoop for CompanionRenderLoop {
                     if let Some(rt) = RUNTIME.as_ref() {
                         info!("Running deferred proxy health check...");
                         rt.spawn(async move {
-                            let providers =
-                                proxy_client::check_health(port, &token).await;
+                            let providers = proxy_client::check_health(port, &token).await;
                             let mut st = STATE.lock();
                             st.proxy_providers = providers;
                             if !st.is_provider_available(st.active_provider) {
                                 if st.is_provider_available(provider::Provider::Gemini) {
                                     st.active_provider = provider::Provider::Gemini;
-                                } else if st
-                                    .proxy_providers
-                                    .contains(&provider::Provider::Claude)
-                                {
+                                } else if st.proxy_providers.contains(&provider::Provider::Claude) {
                                     st.active_provider = provider::Provider::Claude;
-                                } else if st
-                                    .proxy_providers
-                                    .contains(&provider::Provider::Openai)
-                                {
+                                } else if st.proxy_providers.contains(&provider::Provider::Openai) {
                                     st.active_provider = provider::Provider::Openai;
                                 }
                             }
@@ -459,7 +444,9 @@ impl ImguiRenderLoop for CompanionRenderLoop {
             && (lparam.0 as u32 & 0xFFFF) == HTCLIENT
         {
             if let Ok(arrow) = unsafe { LoadCursorW(None, IDC_ARROW) } {
-                unsafe { SetCursor(arrow); }
+                unsafe {
+                    SetCursor(arrow);
+                }
             }
         }
     }
@@ -650,11 +637,7 @@ fn init_hook_thread(hmodule: HINSTANCE) {
 /// Called by the OS loader. `hmodule` must be a valid HINSTANCE for this DLL.
 #[no_mangle]
 #[allow(non_snake_case)]
-pub unsafe extern "system" fn DllMain(
-    hmodule: HINSTANCE,
-    reason: u32,
-    _: *mut std::ffi::c_void,
-) {
+pub unsafe extern "system" fn DllMain(hmodule: HINSTANCE, reason: u32, _: *mut std::ffi::c_void) {
     if reason == DLL_PROCESS_ATTACH {
         // Save HINSTANCE before spawning -- needed by config.rs to find config.toml.
         // If already set, this is a duplicate DLL_PROCESS_ATTACH -- bail.

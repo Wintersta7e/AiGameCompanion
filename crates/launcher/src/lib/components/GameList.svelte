@@ -1,5 +1,5 @@
 <script lang="ts">
-  import GameListItem from "./GameListItem.svelte";
+  import GameListItem from './GameListItem.svelte';
   import {
     getFilteredGames,
     getFilterSource,
@@ -9,14 +9,14 @@
     getError,
     scanGames,
     setFilterSource,
-  } from "../stores/games.svelte";
-  import type { FilterSource } from "../stores/games.svelte";
+  } from '../stores/games.svelte';
+  import type { FilterSource } from '../stores/games.svelte';
 
   const filters: readonly { label: string; value: FilterSource }[] = [
-    { label: "All", value: "all" },
-    { label: "Steam", value: "steam" },
-    { label: "Epic", value: "epic" },
-    { label: "GOG", value: "gog" },
+    { label: 'All', value: 'all' },
+    { label: 'Steam', value: 'steam' },
+    { label: 'Epic', value: 'epic' },
+    { label: 'GOG', value: 'gog' },
   ] as const;
 
   let filteredGames = $derived(getFilteredGames());
@@ -38,7 +38,7 @@
   <!-- Filter tabs -->
   <div class="p-4 shrink-0 border-b border-border-subtle">
     <div class="flex gap-0.5 rounded-md p-0.5" style="background: rgba(255, 255, 255, 0.03);">
-      {#each filters as filter}
+      {#each filters as filter (filter.value)}
         <button
           class="flex-1 py-1.5 px-1 font-display text-[0.72rem] font-semibold tracking-wide uppercase text-center border-none rounded cursor-pointer transition-all duration-150"
           class:text-accent={activeFilter === filter.value}
@@ -77,7 +77,7 @@
         <div class="text-center px-4">
           {#if currentSearch}
             <div class="text-text-muted text-sm font-display">No games match your search</div>
-          {:else if activeFilter !== "all"}
+          {:else if activeFilter !== 'all'}
             <div class="text-text-muted text-sm font-display">No {activeFilter} games found</div>
           {:else}
             <div class="text-text-muted text-sm font-display mb-3">No games found</div>
@@ -101,6 +101,6 @@
     class:opacity-50={isLoading}
     class:cursor-not-allowed={isLoading}
   >
-    {isLoading ? "Scanning..." : "Rescan Games"}
+    {isLoading ? 'Scanning...' : 'Rescan Games'}
   </button>
 </aside>

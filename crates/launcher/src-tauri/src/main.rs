@@ -1,6 +1,10 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 #![deny(clippy::all, clippy::pedantic)]
-#![allow(clippy::module_name_repetitions, clippy::missing_errors_doc, clippy::missing_panics_doc)]
+#![allow(
+    clippy::module_name_repetitions,
+    clippy::missing_errors_doc,
+    clippy::missing_panics_doc
+)]
 
 mod commands;
 mod discovery;
@@ -10,9 +14,9 @@ mod state;
 
 use state::AppState;
 use tauri::{
-    Manager,
     menu::{MenuBuilder, MenuItemBuilder},
     tray::TrayIconBuilder,
+    Manager,
 };
 use tauri_plugin_autostart::{MacosLauncher, ManagerExt};
 
@@ -25,11 +29,14 @@ fn main() {
             None,
         ))
         .setup(|app| {
-            let app_dir = app.path().app_data_dir().expect("Failed to get app data dir");
+            let app_dir = app
+                .path()
+                .app_data_dir()
+                .expect("Failed to get app data dir");
             std::fs::create_dir_all(&app_dir).expect("Failed to create app data directory");
 
-            let log_file =
-                std::fs::File::create(app_dir.join("launcher.log")).expect("Failed to create log file");
+            let log_file = std::fs::File::create(app_dir.join("launcher.log"))
+                .expect("Failed to create log file");
             tracing_subscriber::fmt()
                 .with_writer(std::sync::Mutex::new(log_file))
                 .with_ansi(false)

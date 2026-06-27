@@ -1,7 +1,7 @@
 <script lang="ts">
-  import type { Game } from "../stores/games.svelte";
-  import { setSelectedGameId, getGameStatus } from "../stores/games.svelte";
-  import { formatPlayTime } from "../utils/format";
+  import type { Game } from '../stores/games.svelte';
+  import { setSelectedGameId, getGameStatus } from '../stores/games.svelte';
+  import { formatPlayTime } from '../utils/format';
 
   interface Props {
     game: Game;
@@ -12,10 +12,10 @@
   let { game, selected, index }: Props = $props();
 
   const sourceColors: Record<string, string> = {
-    steam: "#1b9aff",
-    epic: "#ccc",
-    gog: "#b035e8",
-    manual: "#06d6a0",
+    steam: '#1b9aff',
+    epic: '#ccc',
+    gog: '#b035e8',
+    manual: '#06d6a0',
   };
 
   let coverSrc = $derived(game.cover_art_path ?? null);
@@ -30,23 +30,23 @@
   let status = $derived(getGameStatus(game.id));
 
   let statusDotColor = $derived(
-    status === "launching"
-      ? "#ffc107"
-      : status === "injecting"
-        ? "#638cff"
-        : status === "error"
-          ? "#ff6b6b"
-          : "#06d6a0",
+    status === 'launching'
+      ? '#ffc107'
+      : status === 'injecting'
+        ? '#638cff'
+        : status === 'error'
+          ? '#ff6b6b'
+          : '#06d6a0',
   );
 
   let statusDotShadow = $derived(
-    status === "launching"
-      ? "0 0 6px rgba(255, 193, 7, 0.4)"
-      : status === "injecting"
-        ? "0 0 6px rgba(99, 140, 255, 0.4)"
-        : status === "error"
-          ? "0 0 6px rgba(255, 107, 107, 0.4)"
-          : "0 0 6px rgba(6, 214, 160, 0.4)",
+    status === 'launching'
+      ? '0 0 6px rgba(255, 193, 7, 0.4)'
+      : status === 'injecting'
+        ? '0 0 6px rgba(99, 140, 255, 0.4)'
+        : status === 'error'
+          ? '0 0 6px rgba(255, 107, 107, 0.4)'
+          : '0 0 6px rgba(6, 214, 160, 0.4)',
   );
 
   function handleClick(): void {
@@ -75,12 +75,15 @@
         alt={game.name}
         class="w-full h-full object-cover"
         loading="lazy"
-        onerror={() => { imgError = true; }}
+        onerror={() => {
+          imgError = true;
+        }}
       />
     {:else}
       <div
         class="w-full h-full flex items-center justify-center font-display font-bold text-[0.9rem] text-white/70"
-        style="background: linear-gradient(135deg, {sourceColors[game.source] ?? '#638cff'}33 0%, {sourceColors[game.source] ?? '#a855f7'}33 100%);"
+        style="background: linear-gradient(135deg, {sourceColors[game.source] ??
+          '#638cff'}33 0%, {sourceColors[game.source] ?? '#a855f7'}33 100%);"
       >
         {game.name.charAt(0).toUpperCase()}
       </div>
