@@ -1,0 +1,47 @@
+# cargo-deny configuration -- supply-chain, advisory, and license gate.
+# Docs: https://embarkstudios.github.io/cargo-deny/
+
+[graph]
+# We ship Windows binaries only; scope the check to the shipped target so
+# linux-only test/GUI dependencies don't skew the license/advisory surface.
+targets = ["x86_64-pc-windows-msvc"]
+
+[advisories]
+version = 2
+yanked = "deny"
+# Vulnerabilities and yanked crates always fail. Unmaintained advisories
+# are scoped to first-party crates -- we can't fix deep transitive deps
+# (e.g. fxhash, unic-*) pulled in by tauri/url until upstream moves.
+unmaintained = "workspace"
+ignore = []
+
+[licenses]
+version = 2
+confidence-threshold = 0.8
+allow = [
+    "MIT",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "MPL-2.0",
+    "Unicode-3.0",
+    "Unicode-DFS-2016",
+    "Zlib",
+    "BSL-1.0",
+    "CC0-1.0",
+    "OpenSSL",
+    # Mozilla root-cert data shipped via webpki-roots (rustls).
+    "CDLA-Permissive-2.0",
+]
+exceptions = []
+
+[bans]
+multiple-versions = "warn"
+wildcards = "deny"
+allow-wildcard-paths = true
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
