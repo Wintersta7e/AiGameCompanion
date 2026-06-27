@@ -125,10 +125,7 @@ pub async fn send_message(
 
     // Trim conversation history to avoid huge payloads and token costs.
     // Exclude translation messages and ensure the slice starts with a User message.
-    let messages: Vec<ChatMessage> = messages
-        .into_iter()
-        .filter(|m| !m.is_translation)
-        .collect();
+    let messages: Vec<ChatMessage> = messages.into_iter().filter(|m| !m.is_translation).collect();
     let messages = if messages.len() > MAX_HISTORY_MESSAGES {
         let mut start = messages.len() - MAX_HISTORY_MESSAGES;
         // Skip leading Assistant messages (API requires User first)
@@ -186,7 +183,10 @@ pub async fn send_message(
     // Prepend game name to system prompt if detected.
     let game_name = STATE.lock().game_name.clone();
     let system_text = match game_name {
-        Some(name) => format!("The user is currently playing {name}. {}", config.system_prompt),
+        Some(name) => format!(
+            "The user is currently playing {name}. {}",
+            config.system_prompt
+        ),
         None => config.system_prompt.clone(),
     };
 
@@ -203,10 +203,22 @@ pub async fn send_message(
     let safety_settings = if config.safety_filter != SafetyFilter::BlockMedium {
         let threshold = config.safety_filter.as_api_str();
         vec![
-            SafetySetting { category: "HARM_CATEGORY_HARASSMENT", threshold },
-            SafetySetting { category: "HARM_CATEGORY_HATE_SPEECH", threshold },
-            SafetySetting { category: "HARM_CATEGORY_SEXUALLY_EXPLICIT", threshold },
-            SafetySetting { category: "HARM_CATEGORY_DANGEROUS_CONTENT", threshold },
+            SafetySetting {
+                category: "HARM_CATEGORY_HARASSMENT",
+                threshold,
+            },
+            SafetySetting {
+                category: "HARM_CATEGORY_HATE_SPEECH",
+                threshold,
+            },
+            SafetySetting {
+                category: "HARM_CATEGORY_SEXUALLY_EXPLICIT",
+                threshold,
+            },
+            SafetySetting {
+                category: "HARM_CATEGORY_DANGEROUS_CONTENT",
+                threshold,
+            },
         ]
     } else {
         // BlockMedium is the API default -- omit to reduce payload
@@ -226,7 +238,12 @@ pub async fn send_message(
     };
 
     // Validate model name to prevent URL path traversal (ASCII only)
-    if !config.gemini.model.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '.' || c == '_') {
+    if !config
+        .gemini
+        .model
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '.' || c == '_')
+    {
         return Err("Invalid model name in config.toml. Use ASCII alphanumeric, hyphens, dots, underscores only.".into());
     }
 
@@ -341,7 +358,8 @@ fn process_sse_lines(
                 Err(_) => {
                     // Check if the API returned an error object in the stream
                     if let Ok(val) = serde_json::from_str::<serde_json::Value>(json_str) {
-                        if let Some(msg) = val.get("error")
+                        if let Some(msg) = val
+                            .get("error")
                             .and_then(|e| e.get("message"))
                             .and_then(|m| m.as_str())
                         {

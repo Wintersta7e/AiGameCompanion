@@ -130,11 +130,10 @@ fn detect_cli(name: &str) -> CliMode {
 
     // Try via WSL with interactive shell so .bashrc (nvm, etc.) is sourced.
     let version_cmd = format!("{name} --version");
-    let wsl = silent(
-        std::process::Command::new("wsl.exe").args(["--", "bash", "-ic", &version_cmd]),
-    )
-    .status()
-    .is_ok_and(|s| s.success());
+    let wsl =
+        silent(std::process::Command::new("wsl.exe").args(["--", "bash", "-ic", &version_cmd]))
+            .status()
+            .is_ok_and(|s| s.success());
     if wsl {
         return CliMode::Wsl;
     }
@@ -163,7 +162,9 @@ fn validate_token(headers: &HeaderMap, expected: &str) -> Result<(), StatusCode>
         .and_then(|v| v.to_str().ok())
         .ok_or(StatusCode::UNAUTHORIZED)?;
 
-    let token = auth.strip_prefix("Bearer ").ok_or(StatusCode::UNAUTHORIZED)?;
+    let token = auth
+        .strip_prefix("Bearer ")
+        .ok_or(StatusCode::UNAUTHORIZED)?;
 
     if token == expected {
         Ok(())
@@ -225,13 +226,17 @@ async fn chat(
     match req.provider.as_str() {
         "claude" => {
             if !state.claude_mode.is_available() {
-                return Ok(error_stream_response("Claude CLI is not available on this system"));
+                return Ok(error_stream_response(
+                    "Claude CLI is not available on this system",
+                ));
             }
             handle_claude(state, req).await
         }
         "openai" => {
             if !state.codex_mode.is_available() {
-                return Ok(error_stream_response("Codex CLI is not available on this system"));
+                return Ok(error_stream_response(
+                    "Codex CLI is not available on this system",
+                ));
             }
             handle_codex(state, req).await
         }
@@ -264,10 +269,7 @@ async fn cancel(
 // Provider handlers
 // ---------------------------------------------------------------------------
 
-async fn handle_claude(
-    state: Arc<ProxyState>,
-    req: ChatRequest,
-) -> Result<Response, StatusCode> {
+async fn handle_claude(state: Arc<ProxyState>, req: ChatRequest) -> Result<Response, StatusCode> {
     validate_model_name(&req.model)?;
     let claude_args = format!(
         "claude -p --input-format stream-json --output-format stream-json \
@@ -283,11 +285,20 @@ async fn handle_claude(
     } else {
         let mut c = Command::new("claude");
         c.args([
-            "-p", "--input-format", "stream-json",
-            "--output-format", "stream-json", "--verbose",
-            "--include-partial-messages", "--tools", "",
-            "--no-session-persistence", "--model", &req.model,
-            "--system-prompt", &req.system_prompt,
+            "-p",
+            "--input-format",
+            "stream-json",
+            "--output-format",
+            "stream-json",
+            "--verbose",
+            "--include-partial-messages",
+            "--tools",
+            "",
+            "--no-session-persistence",
+            "--model",
+            &req.model,
+            "--system-prompt",
+            &req.system_prompt,
         ]);
         c
     };
@@ -395,16 +406,17 @@ fn ensure_codex_workdir(mode: CliMode) -> String {
     let dir = std::env::temp_dir().join(CODEX_WORKDIR);
     if !dir.exists() {
         let _ = std::fs::create_dir_all(&dir);
-        let _ = silent(std::process::Command::new("git").args(["init"]).current_dir(&dir))
-            .status();
+        let _ = silent(
+            std::process::Command::new("git")
+                .args(["init"])
+                .current_dir(&dir),
+        )
+        .status();
     }
     dir.to_string_lossy().into_owned()
 }
 
-async fn handle_codex(
-    state: Arc<ProxyState>,
-    req: ChatRequest,
-) -> Result<Response, StatusCode> {
+async fn handle_codex(state: Arc<ProxyState>, req: ChatRequest) -> Result<Response, StatusCode> {
     validate_model_name(&req.model)?;
     let work_dir_str = state.codex_workdir.as_str();
 
@@ -422,9 +434,14 @@ async fn handle_codex(
     } else {
         let mut c = Command::new("codex");
         c.args([
-            "-a", "never",
-            "-s", "read-only", "-C", work_dir_str,
-            "exec", "--skip-git-repo-check",
+            "-a",
+            "never",
+            "-s",
+            "read-only",
+            "-C",
+            work_dir_str,
+            "exec",
+            "--skip-git-repo-check",
         ]);
         c
     };
@@ -555,11 +572,10 @@ fn build_claude_input(messages: &[ChatMessage], screenshot: Option<&str>) -> Str
         "session_id": null,
     });
 
-    let mut out = serde_json::to_string(&input_msg)
-        .unwrap_or_else(|e| {
-            tracing::error!("Failed to serialize Claude input: {e}");
-            String::new()
-        });
+    let mut out = serde_json::to_string(&input_msg).unwrap_or_else(|e| {
+        tracing::error!("Failed to serialize Claude input: {e}");
+        String::new()
+    });
     out.push('\n');
     out
 }
@@ -602,7 +618,10 @@ fn parse_claude_line(line: &str) -> Option<String> {
             }
         }
         "result" => {
-            let is_error = v.get("is_error").and_then(serde_json::Value::as_bool).unwrap_or(false);
+            let is_error = v
+                .get("is_error")
+                .and_then(serde_json::Value::as_bool)
+                .unwrap_or(false);
             if is_error {
                 let error_msg = v
                     .get("error")
@@ -687,7 +706,8 @@ fn sse_response(stream: impl futures_util::Stream<Item = String> + Send + 'stati
 
 fn error_stream_response(msg: &str) -> Response {
     let frame = format!("{}{SSE_DONE}", sse_error(msg));
-    let stream = futures_util::stream::once(async move { Ok::<_, std::convert::Infallible>(frame) });
+    let stream =
+        futures_util::stream::once(async move { Ok::<_, std::convert::Infallible>(frame) });
     let body = Body::from_stream(stream);
 
     Response::builder()
@@ -716,7 +736,10 @@ fn port_file_path() -> std::path::PathBuf {
     std::env::current_exe()
         .unwrap_or_else(|_| std::path::PathBuf::from("."))
         .parent()
-        .map_or_else(|| std::path::PathBuf::from("."), std::path::Path::to_path_buf)
+        .map_or_else(
+            || std::path::PathBuf::from("."),
+            std::path::Path::to_path_buf,
+        )
         .join("proxy.port")
 }
 
@@ -736,9 +759,7 @@ pub async fn start_proxy() -> Result<SocketAddr, Box<dyn std::error::Error>> {
     let claude_mode = detect_cli("claude");
     let codex_mode = detect_cli("codex");
 
-    tracing::info!(
-        "CLI availability -- claude: {claude_mode:?}, codex: {codex_mode:?}"
-    );
+    tracing::info!("CLI availability -- claude: {claude_mode:?}, codex: {codex_mode:?}");
 
     let codex_workdir = ensure_codex_workdir(codex_mode);
 
@@ -874,7 +895,9 @@ mod tests {
 
     #[test]
     fn validate_model_name_rejects_path_traversal() {
-        for bad in ["../foo", "foo/bar", "foo\\bar", "foo bar", "foo:bar", "foo$"] {
+        for bad in [
+            "../foo", "foo/bar", "foo\\bar", "foo bar", "foo:bar", "foo$",
+        ] {
             assert!(validate_model_name(bad).is_err(), "should reject: {bad}");
         }
     }

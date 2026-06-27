@@ -136,11 +136,7 @@ async fn send_local_translation(screenshot: String) -> Result<String, String> {
 
 /// Spawn a translation request on the tokio runtime.
 /// Dispatches to Gemini or local model based on config.
-pub fn spawn_translate_request(
-    gen: u64,
-    messages: Vec<ChatMessage>,
-    screenshot: Option<String>,
-) {
+pub fn spawn_translate_request(gen: u64, messages: Vec<ChatMessage>, screenshot: Option<String>) {
     match CONFIG.translation.provider {
         TranslationProvider::Gemini => {
             // Gemini path: inject translation prompt into the last user message,

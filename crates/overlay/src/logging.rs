@@ -72,7 +72,9 @@ fn log_directory() -> Option<PathBuf> {
 /// Append a user+assistant message pair to the session log.
 /// Call after each successful API response.
 pub fn log_exchange(user_msg: &str, assistant_msg: &str) {
-    let Some(Some(path)) = LOG_PATH.get() else { return };
+    let Some(Some(path)) = LOG_PATH.get() else {
+        return;
+    };
 
     let mut file = match OpenOptions::new().append(true).open(path) {
         Ok(f) => f,
@@ -83,9 +85,7 @@ pub fn log_exchange(user_msg: &str, assistant_msg: &str) {
     };
 
     let now = Local::now().format("%H:%M:%S");
-    let entry = format!(
-        "[{now}] You:\n{user_msg}\n\n[{now}] Sage:\n{assistant_msg}\n\n"
-    );
+    let entry = format!("[{now}] You:\n{user_msg}\n\n[{now}] Sage:\n{assistant_msg}\n\n");
 
     if let Err(e) = file.write_all(entry.as_bytes()) {
         warn!("Failed to write session log entry: {e}");
