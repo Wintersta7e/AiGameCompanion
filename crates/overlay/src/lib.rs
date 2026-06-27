@@ -334,7 +334,7 @@ impl ImguiRenderLoop for CompanionRenderLoop {
 
                 if let Some(rt) = RUNTIME.as_ref() {
                     rt.spawn_blocking(move || {
-                        let result = std::panic::catch_unwind(|| capture::capture_screenshot());
+                        let result = std::panic::catch_unwind(capture::capture_screenshot);
                         let mut state = STATE.lock();
                         // Guard: reject stale captures from a previous request
                         // (cancel+resend race) by comparing generation.

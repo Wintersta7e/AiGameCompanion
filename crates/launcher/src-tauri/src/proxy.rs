@@ -269,6 +269,9 @@ async fn cancel(
 // Provider handlers
 // ---------------------------------------------------------------------------
 
+// Cohesive Claude CLI spawn + SSE streaming handler; splitting it would
+// fragment the stream loop. Sits a few lines over the pedantic threshold.
+#[allow(clippy::too_many_lines)]
 async fn handle_claude(state: Arc<ProxyState>, req: ChatRequest) -> Result<Response, StatusCode> {
     validate_model_name(&req.model)?;
     let claude_args = format!(
