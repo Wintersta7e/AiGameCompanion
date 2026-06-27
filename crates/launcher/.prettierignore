@@ -1,0 +1,6 @@
+dist/
+node_modules/
+src-tauri/
+package.json
+package-lock.json
+*.png

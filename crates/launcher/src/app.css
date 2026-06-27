@@ -1,5 +1,5 @@
-@import url("https://fonts.googleapis.com/css2?family=Rajdhani:wght@400;500;600;700&family=Exo+2:ital,wght@0,300;0,400;0,500;0,600;0,700;1,400&family=JetBrains+Mono:wght@400;500;600&display=swap");
-@import "tailwindcss";
+@import url('https://fonts.googleapis.com/css2?family=Rajdhani:wght@400;500;600;700&family=Exo+2:ital,wght@0,300;0,400;0,500;0,600;0,700;1,400&family=JetBrains+Mono:wght@400;500;600&display=swap');
+@import 'tailwindcss';
 
 @theme {
   /* ── Background palette ── */
@@ -24,9 +24,9 @@
   --color-text-muted: #4a5578;
 
   /* ── Font families ── */
-  --font-display: "Rajdhani", sans-serif;
-  --font-body: "Exo 2", sans-serif;
-  --font-mono: "JetBrains Mono", monospace;
+  --font-display: 'Rajdhani', sans-serif;
+  --font-body: 'Exo 2', sans-serif;
+  --font-mono: 'JetBrains Mono', monospace;
 
   /* ── Accent opacity variants ── */
   --color-accent-8: rgba(99, 140, 255, 0.08);
@@ -125,7 +125,9 @@ h6 {
 
 /* ── Reduced motion -- respect user preference ── */
 @media (prefers-reduced-motion: reduce) {
-  *, *::before, *::after {
+  *,
+  *::before,
+  *::after {
     animation-duration: 0.01ms !important;
     animation-iteration-count: 1 !important;
     transition-duration: 0.01ms !important;
@@ -133,7 +135,9 @@ h6 {
 }
 
 /* ── Custom scrollbar -- thin, accent-colored ── */
-body, .overflow-y-auto, .overflow-auto {
+body,
+.overflow-y-auto,
+.overflow-auto {
   scrollbar-width: thin;
   scrollbar-color: var(--color-accent) transparent;
 }

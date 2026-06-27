@@ -1,15 +1,15 @@
 <script lang="ts">
-  import { invoke } from "@tauri-apps/api/core";
-  import { getSelectedGame, launchGame, getGameStatus } from "../stores/games.svelte";
-  import type { Game } from "../stores/games.svelte";
-  import { formatPlayTime, formatLastPlayed } from "../utils/format";
+  import { invoke } from '@tauri-apps/api/core';
+  import { getSelectedGame, launchGame, getGameStatus } from '../stores/games.svelte';
+  import type { Game } from '../stores/games.svelte';
+  import { formatPlayTime, formatLastPlayed } from '../utils/format';
 
   let fileError = $state<string | null>(null);
 
   async function openConfig(): Promise<void> {
     fileError = null;
     try {
-      await invoke("open_game_config");
+      await invoke('open_game_config');
     } catch (e) {
       fileError = String(e);
     }
@@ -18,7 +18,7 @@
   async function openLogs(): Promise<void> {
     fileError = null;
     try {
-      await invoke("open_game_logs");
+      await invoke('open_game_logs');
     } catch (e) {
       fileError = String(e);
     }
@@ -35,44 +35,42 @@
     }
   });
 
-  let coverSrc = $derived(
-    game?.cover_art_path && !coverError ? game.cover_art_path : null,
-  );
+  let coverSrc = $derived(game?.cover_art_path && !coverError ? game.cover_art_path : null);
 
   let playTimeFormatted = $derived(formatPlayTime(game?.play_time_minutes ?? 0, true));
   let lastPlayedFormatted = $derived(formatLastPlayed(game?.last_played ?? null));
 
-  let currentStatus = $derived(game ? getGameStatus(game.id) : "idle");
+  let currentStatus = $derived(game ? getGameStatus(game.id) : 'idle');
   let launchButtonText = $derived(
-    currentStatus === "launching"
-      ? "Launching..."
-      : currentStatus === "injecting"
-        ? "Injecting..."
-        : "Launch + Inject",
+    currentStatus === 'launching'
+      ? 'Launching...'
+      : currentStatus === 'injecting'
+        ? 'Injecting...'
+        : 'Launch + Inject',
   );
-  let launchDisabled = $derived(currentStatus === "launching" || currentStatus === "injecting");
+  let launchDisabled = $derived(currentStatus === 'launching' || currentStatus === 'injecting');
 
   let statusLabel = $derived(
-    currentStatus === "launching"
-      ? "Launching"
-      : currentStatus === "injecting"
-        ? "Injecting"
-        : currentStatus === "error"
-          ? "Error"
-          : "Ready",
+    currentStatus === 'launching'
+      ? 'Launching'
+      : currentStatus === 'injecting'
+        ? 'Injecting'
+        : currentStatus === 'error'
+          ? 'Error'
+          : 'Ready',
   );
   let statusStyle = $derived(
-    currentStatus === "error"
-      ? "background: rgba(255, 107, 107, 0.12); color: #ff6b6b; border-color: rgba(255, 107, 107, 0.2);"
-      : currentStatus === "launching"
-        ? "background: rgba(255, 193, 7, 0.12); color: #ffc107; border-color: rgba(255, 193, 7, 0.2);"
-        : currentStatus === "injecting"
-          ? "background: rgba(99, 140, 255, 0.15); color: #638cff; border-color: rgba(99, 140, 255, 0.2);"
-          : "background: rgba(6, 214, 160, 0.12); color: #06d6a0; border-color: rgba(6, 214, 160, 0.2);",
+    currentStatus === 'error'
+      ? 'background: rgba(255, 107, 107, 0.12); color: #ff6b6b; border-color: rgba(255, 107, 107, 0.2);'
+      : currentStatus === 'launching'
+        ? 'background: rgba(255, 193, 7, 0.12); color: #ffc107; border-color: rgba(255, 193, 7, 0.2);'
+        : currentStatus === 'injecting'
+          ? 'background: rgba(99, 140, 255, 0.15); color: #638cff; border-color: rgba(99, 140, 255, 0.2);'
+          : 'background: rgba(6, 214, 160, 0.12); color: #06d6a0; border-color: rgba(6, 214, 160, 0.2);',
   );
 
   function capitalizeSource(source: string): string {
-    if (source === "gog") return "GOG";
+    if (source === 'gog') return 'GOG';
     return source.charAt(0).toUpperCase() + source.slice(1);
   }
 </script>
@@ -87,14 +85,18 @@
           alt={game.name}
           class="w-full h-full object-cover"
           style="filter: brightness(0.4) saturate(1.2);"
-          onerror={() => { coverError = true; }}
+          onerror={() => {
+            coverError = true;
+          }}
         />
       {:else}
         <div
           class="w-full h-full flex items-center justify-center"
           style="background: linear-gradient(135deg, rgba(99, 140, 255, 0.15) 0%, rgba(168, 85, 247, 0.15) 50%, rgba(10, 12, 20, 1) 100%);"
         >
-          <span class="font-display text-[6rem] font-bold text-white/10">{game.name.charAt(0).toUpperCase()}</span>
+          <span class="font-display text-[6rem] font-bold text-white/10"
+            >{game.name.charAt(0).toUpperCase()}</span
+          >
         </div>
       {/if}
       <!-- Gradient overlay -->
@@ -144,12 +146,7 @@
           onclick={() => game && launchGame(game.id)}
           title="Launch + Inject"
         >
-          <svg
-            width="18"
-            height="18"
-            viewBox="0 0 24 24"
-            fill="currentColor"
-          >
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor">
             <polygon points="5 3 19 12 5 21 5 3" />
           </svg>
           {launchButtonText}
@@ -183,15 +180,14 @@
       {/if}
 
       <!-- Stats grid -->
-      <div
-        class="grid grid-cols-3 gap-3.5 mb-7 animate-fade-up"
-        style="animation-delay: 0.2s;"
-      >
+      <div class="grid grid-cols-3 gap-3.5 mb-7 animate-fade-up" style="animation-delay: 0.2s;">
         <div
           class="p-4 bg-bg-glass border border-border-subtle rounded-[10px]"
           style="backdrop-filter: blur(10px);"
         >
-          <div class="text-[0.68rem] font-semibold text-text-muted uppercase tracking-[1.2px] mb-1.5">
+          <div
+            class="text-[0.68rem] font-semibold text-text-muted uppercase tracking-[1.2px] mb-1.5"
+          >
             Play Time
           </div>
           <div class="font-display text-base font-semibold text-text-primary">
@@ -202,7 +198,9 @@
           class="p-4 bg-bg-glass border border-border-subtle rounded-[10px]"
           style="backdrop-filter: blur(10px);"
         >
-          <div class="text-[0.68rem] font-semibold text-text-muted uppercase tracking-[1.2px] mb-1.5">
+          <div
+            class="text-[0.68rem] font-semibold text-text-muted uppercase tracking-[1.2px] mb-1.5"
+          >
             Last Played
           </div>
           <div class="font-display text-base font-semibold text-text-primary">
@@ -213,11 +211,13 @@
           class="p-4 bg-bg-glass border border-border-subtle rounded-[10px]"
           style="backdrop-filter: blur(10px);"
         >
-          <div class="text-[0.68rem] font-semibold text-text-muted uppercase tracking-[1.2px] mb-1.5">
+          <div
+            class="text-[0.68rem] font-semibold text-text-muted uppercase tracking-[1.2px] mb-1.5"
+          >
             Source ID
           </div>
           <div class="font-display text-base font-semibold text-text-primary">
-            {game.source_id ?? "N/A"}
+            {game.source_id ?? 'N/A'}
           </div>
         </div>
       </div>
@@ -326,12 +326,8 @@
     <!-- Empty state -->
     <div class="flex items-center justify-center h-full">
       <div class="text-center">
-        <div class="text-text-muted text-lg font-display font-semibold mb-2">
-          No Game Selected
-        </div>
-        <div class="text-text-muted text-sm">
-          Select a game to get started
-        </div>
+        <div class="text-text-muted text-lg font-display font-semibold mb-2">No Game Selected</div>
+        <div class="text-text-muted text-sm">Select a game to get started</div>
       </div>
     </div>
   {/if}

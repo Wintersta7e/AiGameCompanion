@@ -97,10 +97,7 @@ fn has_visible_game_window(pid: u32, require_title: bool) -> bool {
     }
 
     unsafe {
-        let _ = EnumWindows(
-            Some(callback),
-            LPARAM(&mut data as *mut FindData as isize),
-        );
+        let _ = EnumWindows(Some(callback), LPARAM(&mut data as *mut FindData as isize));
     }
 
     data.found
@@ -246,9 +243,7 @@ fn current_exe_name() -> Option<String> {
     }
 
     let path = String::from_utf16_lossy(&buf[..len]);
-    path.rsplit('\\')
-        .next()
-        .map(|s| s.to_string())
+    path.rsplit('\\').next().map(|s| s.to_string())
 }
 
 /// Clean up an exe name into a readable game name.
@@ -281,8 +276,7 @@ fn name_from_exe() -> Option<String> {
             // Insert space if previous char is lowercase,
             // or if previous is uppercase and next is lowercase (end of acronym)
             if prev.is_lowercase()
-                || (prev.is_uppercase()
-                    && chars.get(i + 1).is_some_and(|c| c.is_lowercase()))
+                || (prev.is_uppercase() && chars.get(i + 1).is_some_and(|c| c.is_lowercase()))
             {
                 result.push(' ');
             }

@@ -114,19 +114,15 @@ pub async fn send_proxy_message(
     // Read proxy connection details from state.
     let (port, token) = {
         let state = STATE.lock();
-        let port = state.proxy_port.ok_or("Proxy not available. Launch the game from the launcher.")?;
-        let token = state
-            .proxy_token
-            .clone()
-            .ok_or("Proxy token missing.")?;
+        let port = state
+            .proxy_port
+            .ok_or("Proxy not available. Launch the game from the launcher.")?;
+        let token = state.proxy_token.clone().ok_or("Proxy token missing.")?;
         (port, token)
     };
 
     // Filter out translation messages and trim history.
-    let messages: Vec<ChatMessage> = messages
-        .into_iter()
-        .filter(|m| !m.is_translation)
-        .collect();
+    let messages: Vec<ChatMessage> = messages.into_iter().filter(|m| !m.is_translation).collect();
     let messages = if messages.len() > MAX_HISTORY_MESSAGES {
         let mut start = messages.len() - MAX_HISTORY_MESSAGES;
         // Skip leading Assistant messages (conversation must start with User).
@@ -156,7 +152,10 @@ pub async fn send_proxy_message(
     // Build system prompt (prepend game name if detected).
     let game_name = STATE.lock().game_name.clone();
     let system_prompt = match game_name {
-        Some(name) => format!("The user is currently playing {name}. {}", CONFIG.api.system_prompt),
+        Some(name) => format!(
+            "The user is currently playing {name}. {}",
+            CONFIG.api.system_prompt
+        ),
         None => CONFIG.api.system_prompt.clone(),
     };
 
@@ -313,7 +312,9 @@ pub fn send_cancel(generation: u64) {
     let (port, token) = {
         let state = STATE.lock();
         let Some(port) = state.proxy_port else { return };
-        let Some(ref token) = state.proxy_token else { return };
+        let Some(ref token) = state.proxy_token else {
+            return;
+        };
         (port, token.clone())
     };
 
@@ -369,9 +370,15 @@ pub async fn check_health(port: u16, token: &str) -> HashSet<Provider> {
     for (name, is_up) in &health.providers {
         if *is_up {
             match name.as_str() {
-                "claude" => { available.insert(Provider::Claude); }
-                "openai" => { available.insert(Provider::Openai); }
-                "gemini" => { available.insert(Provider::Gemini); }
+                "claude" => {
+                    available.insert(Provider::Claude);
+                }
+                "openai" => {
+                    available.insert(Provider::Openai);
+                }
+                "gemini" => {
+                    available.insert(Provider::Gemini);
+                }
                 other => {
                     tracing::debug!("Proxy health: unknown provider '{other}', skipping");
                 }

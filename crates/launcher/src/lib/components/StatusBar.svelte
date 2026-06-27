@@ -1,6 +1,6 @@
 <script lang="ts">
-  import { onMount } from "svelte";
-  import { getVersion } from "@tauri-apps/api/app";
+  import { onMount } from 'svelte';
+  import { getVersion } from '@tauri-apps/api/app';
 
   interface Props {
     gameCount: number;
@@ -8,10 +8,14 @@
 
   let { gameCount }: Props = $props();
 
-  let version = $state("...");
+  let version = $state('...');
 
   onMount(async () => {
-    try { version = await getVersion(); } catch { version = "0.1.0"; }
+    try {
+      version = await getVersion();
+    } catch {
+      version = '0.1.0';
+    }
   });
 </script>
 
@@ -27,7 +31,7 @@
       ></span>
       <span>System Ready</span>
     </div>
-    <span>{gameCount} {gameCount === 1 ? "game" : "games"}</span>
+    <span>{gameCount} {gameCount === 1 ? 'game' : 'games'}</span>
   </div>
   <div class="flex items-center gap-4 text-[0.68rem] text-text-muted font-mono tracking-wide">
     <span>v{version}</span>

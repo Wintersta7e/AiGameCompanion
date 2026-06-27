@@ -1,377 +1,246 @@
+<div align="center">
+
 # AI Game Companion
 
-Ask an AI questions while playing any game in fullscreen -- without alt-tabbing. Press a hotkey, type your question, optionally attach a screenshot, and get an answer from **Sage**, your in-game advisor.
+**Ask an AI while you play -- without alt-tabbing.**
 
-![Rust](https://img.shields.io/badge/Rust-2021-DEA584?logo=rust)
-![Windows](https://img.shields.io/badge/Windows-x86__64-0078D4?logo=windows)
-![Gemini](https://img.shields.io/badge/Google_Gemini-free_tier-4285F4?logo=googlegemini)
-![Claude](https://img.shields.io/badge/Claude-subscription-D97757?logo=anthropic)
-![OpenAI](https://img.shields.io/badge/OpenAI-subscription-412991?logo=openai)
-[![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](./LICENSE)
+A fullscreen game overlay that hooks a game's DX12/DX11 renderer and lets you ask
+Google Gemini, Claude, or OpenAI questions in-game. Bring your own provider,
+attach a screenshot for context, or translate on-screen text -- all without ever
+leaving the game.
 
-## Overview
+[![Rust](https://img.shields.io/badge/rust-2021-DEA584?logo=rust&logoColor=white)](https://www.rust-lang.org)
+[![Platform](https://img.shields.io/badge/platform-Windows%20x86__64-0078D4?logo=windows&logoColor=white)](#)
+[![Tauri](https://img.shields.io/badge/Tauri-2-24C8DB?logo=tauri&logoColor=white)](https://tauri.app)
+[![Gemini](https://img.shields.io/badge/Google_Gemini-free_tier-4285F4?logo=googlegemini&logoColor=white)](https://aistudio.google.com)
+[![Claude](https://img.shields.io/badge/Claude-subscription-D97757?logo=anthropic&logoColor=white)](https://claude.ai/code)
+[![OpenAI](https://img.shields.io/badge/OpenAI-subscription-412991?logo=openai&logoColor=white)](https://openai.com/codex/)
+[![License](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
+[![Status](https://img.shields.io/badge/status-personal%20%C2%B7%20actively%20developed-brightgreen)](#status)
 
-AI Game Companion is a lightweight DX12/DX11 overlay that hooks into a game's rendering pipeline via Dear ImGui. It talks to **Google Gemini** (free tier), **Claude**, or **OpenAI** -- switch providers mid-game. It can search the web for walkthroughs, guides, and current info on your behalf.
+</div>
 
-- **Zero alt-tab** -- the overlay renders inside the game
-- **Screenshot vision** -- attach the current game frame and Sage will analyze it (Gemini + Claude)
-- **Streaming responses** -- answers appear word-by-word as they're generated
-- **Screen translation** -- press F10 to translate foreign text in JRPGs, untranslated games, etc.
-- **Free or subscription** -- Gemini free tier, or use your Claude/OpenAI subscriptions
+---
+
+## Why
+
+I built this for myself -- a way to ask an AI for a hint, a build, or a
+translation while playing fullscreen, without alt-tabbing to a browser and
+losing the moment. Responses come from **Sage**, an in-game advisor that renders
+right on top of the running game.
+
+It's deliberately **bring-your-own-AI**: Gemini talks to its own free API, while
+Claude and OpenAI run through your *existing* CLI subscriptions -- no middleman
+service, no shared keys. Translation can run **fully offline** on a local vision
+model. There's no telemetry, no analytics, and no account.
+
+It's a personal tool, not a product -- but it's open source under MIT, and if it
+looks useful you're welcome to clone it and try it. No adoption goal and no
+support guarantees, but issues and PRs are read.
+
+## Status
+
+Actively developed personal tool. The overlay, injector, and launcher are
+implemented and ship as tagged Windows releases. It's still rough in places, and
+some games need a little config tuning to hook cleanly -- treat it as a working
+tool you can build and run, not a polished consumer app.
+
+**Implemented:**
+- DX12 + DX11 overlay with automatic API detection (vendored, patched hudhook +
+  Dear ImGui), DPI-aware scaling, F9 toggle, full input capture
+- Multi-provider AI -- Gemini (direct API), Claude & OpenAI (through your own CLI
+  subscriptions via a localhost proxy), switchable mid-game from a dropdown
+- SSE streaming, multi-turn chat, cancel / clear, Google Search grounding
+- Screenshot vision (Gemini + Claude) with hide-capture-show and auto-downscale
+- Screen translation (F10) via Gemini *or* a local vision model (Ollama / LM Studio)
+- CLI injector -- watch mode (auto-inject configured games) + direct mode, with
+  3-tier game-name detection
+- Desktop launcher (Tauri 2 + Svelte 5) -- Steam library discovery, one-click
+  launch+inject, tray, launch-on-startup, play-time tracking
+- TOML config, conversation transcript logging
+
+**Not done yet / out of scope:**
+- OpenAI screenshots -- blocked on an upstream Codex CLI fix
+- DX9 and OpenGL -- detected but not hooked; Vulkan is out of scope (most Vulkan
+  games offer a DX11/DX12 path)
+- Screen-DC capture (not swapchain backbuffer) -- some exclusive-fullscreen games
+  may capture black; borderless windowed is more reliable
+- Planned: quick-ask hotkey, per-game profiles + personality modes, voice I/O,
+  region-select translation
 
 ## Features
 
-### Overlay & Rendering
-- **DX12 + DX11 support** with automatic detection (vendored hudhook, patched for broad engine compatibility)
-- **DPI-aware scaling** -- UI scales proportionally on 1080p, 1440p, 4K, and ultrawide
-- **F9 hotkey toggle** -- show/hide the companion panel instantly
-- **Input capture** -- overlay consumes keyboard/mouse so the game ignores your typing
+### Overlay & rendering
+- DX12 + DX11 with automatic detection (vendored hudhook, patched for broad
+  engine compatibility)
+- DPI-aware UI -- scales proportionally on 1080p, 1440p, 4K, and ultrawide
+- F9 toggle; while open, the overlay consumes keyboard/mouse so the game ignores
+  your typing
 
-### AI & Chat
-- **Google Gemini** -- free tier with vision (screenshot analysis) and streaming
-- **Google Search grounding** -- Sage can search the web for guides, walkthroughs, patch notes
-- **Multi-turn conversation** -- full chat history within each session
-- **Streaming responses** -- SSE streaming with live word-by-word display
-- **Cancel & clear** -- cancel in-flight requests or clear the conversation
-- **Conversation logging** -- session transcripts saved to timestamped files in `logs/`
-- **Real-time translation** -- press F10 to capture the screen and translate all foreign text (configurable hotkey and target language)
-- **Local/offline translation** -- use a local vision model (Ollama, LM Studio) instead of Gemini for fully private, unrestricted translation
-- **Configurable safety filter** -- adjust Gemini's content filtering level to suit your needs
-- **Multi-provider AI** -- switch between Google Gemini, Claude, and OpenAI mid-game from a dropdown in the overlay
+### Multi-provider AI
+Sage can talk through **Gemini**, **Claude**, or **OpenAI** -- switch mid-game
+from a dropdown.
 
-### Multi-Provider AI
+- **Gemini** -- direct API with a free key ([Google AI Studio](https://aistudio.google.com))
+- **Claude** -- your existing [Claude Code](https://claude.ai/code) subscription,
+  no separate key
+- **OpenAI** -- your existing ChatGPT/OpenAI subscription via
+  [Codex CLI](https://openai.com/codex/), no separate key
 
-Sage can talk through **Google Gemini**, **Claude**, or **OpenAI** -- switch providers mid-game from a dropdown in the overlay.
+The launcher runs a localhost proxy that spawns the official CLI tools as
+subprocesses -- the same pattern documented for
+[headless Claude Code](https://code.claude.com/docs/en/headless). No OAuth tokens
+are extracted or shared; each user authenticates their own CLIs. Providers never
+fall back to one another silently.
 
-- **Gemini** -- direct API with a free API key ([Google AI Studio](https://aistudio.google.com))
-- **Claude** -- uses your existing [Claude Code](https://claude.ai/code) subscription (no separate API key needed)
-- **OpenAI** -- uses your existing ChatGPT or OpenAI subscription via [Codex CLI](https://openai.com/codex/) (no separate API key needed)
+> Screenshots are supported for Gemini and Claude. You are responsible for
+> ensuring your use of each provider complies with that provider's terms.
 
-The launcher runs a local proxy that spawns the official CLI tools as subprocesses -- the same pattern documented for [programmatic use of Claude Code](https://code.claude.com/docs/en/headless). No OAuth tokens are extracted or shared. Each user authenticates their own CLI tools independently.
-
-> **Note:** Screenshots are currently supported for Gemini and Claude only. OpenAI screenshot support depends on an upstream Codex CLI fix.
->
-> Users are responsible for ensuring their use of each provider complies with that provider's terms of service.
-
-### Screenshot Capture
-- **Attach screenshots** with one click -- current game frame sent as context to the AI (Gemini and Claude; OpenAI pending upstream fix)
-- **Hide-capture-show** -- overlay hides for 2 frames during capture so it doesn't appear in the screenshot
-- **Automatic downscaling** -- large screenshots are resized before sending
+### Screen translation
+Press F10 to capture the screen and translate foreign text (JRPGs, untranslated
+releases, etc.). Runs through Gemini, or fully offline on a local vision model
+(Ollama / LM Studio) -- no internet, no content filter, no rate limits.
+Configurable hotkey and target language; disabled by default.
 
 ### Injector
+> Injects a UI overlay for AI assistance only. It does not read or modify game
+> memory, intercept network traffic, or touch game logic. Kernel-level anti-cheat
+> may block injection.
 
-> This tool injects a UI overlay for AI assistance only. It does not modify game memory, intercept network traffic, or interact with game logic. Some games with kernel-level anti-cheat may block injection.
+- Watch mode -- configure `[[games]]` and it auto-injects on launch, re-injecting
+  on relaunch
+- Direct mode -- `--process "Game.exe"` for a one-off
+- 3-tier game-name detection (config name > window title > exe name) fed into
+  Sage's system prompt
 
-- **Watch mode** -- configure `[[games]]` in config and the injector auto-injects when a game launches
-- **PID tracking** -- re-injects automatically on game relaunch
-- **Direct mode** -- `--process "Game.exe"` for one-off injection
-- **Game name detection** -- 3-tier priority: config name > window title > exe name, prepended to Sage's system prompt
+### Desktop launcher
+A Tauri 2 + Svelte 5 GUI for your library: Steam auto-discovery, Steam-CDN cover
+art, one-click launch+inject, settings (DLL path, scan-on-startup, minimize-to-
+tray, launch-on-startup), quick buttons to open `config.toml` / `companion.log`,
+and play-time tracking.
 
-## Quick Start
+## Stack
 
-1. **Get a free API key** -- Go to [Google AI Studio](https://aistudio.google.com), sign in, click "Get API Key", and create one. No billing setup required.
+| Layer | Choice | Notes |
+|---|---|---|
+| Overlay | [Rust][rust] cdylib + [Dear ImGui][imgui] | Injected DLL, immediate-mode UI on the game's render thread |
+| Hooking | vendored [hudhook][hudhook] 0.8.3 (patched) | DX12/DX11 swapchain hook; widened command-queue scan |
+| Async / HTTP | [tokio][tokio] + [reqwest][reqwest] | API calls off the render thread; deferred runtime init |
+| Shared state | [parking_lot][parking_lot] | Fast mutex -- the render thread must never block |
+| Proxy | [axum][axum] | Localhost bridge that spawns the Claude / Codex CLIs |
+| Injector | Rust + Win32 | Watch-mode + direct DLL injection |
+| Launcher | [Tauri 2][tauri] + [Svelte 5][svelte] + Tailwind 4 | Steam discovery, launch+inject, tray, autostart |
+| Build | [cargo-xwin][cargo-xwin] | MSVC cross-compile from WSL2 |
+| Logging | [tracing][tracing] | Structured logs to `companion.log` |
 
-2. **Configure** -- Copy `config.example.toml` to `config.toml` next to `overlay.dll` and add your key:
+## Quick start
+
+1. **Get a free Gemini key** at [Google AI Studio](https://aistudio.google.com)
+   -- "Get API Key", no billing required. (Or skip it and use your existing
+   Claude / OpenAI subscription instead.)
+
+2. **Configure.** Copy `config.example.toml` to `config.toml` next to
+   `overlay.dll` and set your key:
    ```toml
    [api.gemini]
    key = "your-gemini-api-key-here"
    ```
+   Every other field has a sensible default; `config.example.toml` documents the
+   full reference (providers, overlay sizing, capture, logging, translation,
+   watch-mode games).
 
-3. **Inject** -- Run the injector from PowerShell:
+3. **Inject** from PowerShell:
+   ```powershell
+   .\injector.exe --process "Game.exe"   # direct
+   .\injector.exe                          # watch mode (auto-inject configured games)
    ```
-   # Direct injection
-   .\injector.exe --process "Game.exe"
 
-   # Or watch mode (auto-inject configured games)
-   .\injector.exe
-   ```
+4. **Play.** Press **F9** in-game to toggle the panel, type a question, and
+   optionally attach the current frame. Press **F10** to translate on-screen text.
 
-4. **Use** -- Press **F9** in-game to toggle the companion panel. Type your question, optionally check "Attach Screenshot", and press Send (or Enter). Press **F10** to instantly translate foreign text on screen.
-
-## Configuration Reference
-
-All fields have sensible defaults. Only `api.gemini.key` is required for the default Gemini provider.
-
-```toml
-[api]
-provider = "gemini"         # "gemini", "claude", or "openai"
-max_tokens = 1024           # Max response length
-system_prompt = "You are a helpful game companion. Be concise and direct."
-safety_filter = "off"       # off, block_high, block_medium, block_low (gemini-only)
-
-[api.gemini]
-key = ""                    # Gemini API key (free from aistudio.google.com)
-model = "gemini-2.5-flash"  # Gemini model
-
-[api.claude]
-model = "claude-haiku-4-5"  # qualified model id (uses Claude Code CLI subscription)
-
-[api.openai]
-model = "gpt-4o"            # gpt-4o, o3, etc. (uses Codex CLI subscription)
-
-[overlay]
-# graphics_api = "dx11"     # Force a specific API (auto-detects if omitted)
-hotkey = "F9"               # Toggle key
-width = 500                 # Initial panel width (scales with display)
-height = 400                # Initial panel height (scales with display)
-opacity = 0.85              # Panel background opacity
-font_size = 16              # Base font size in pixels (scales with display)
-translate_hotkey = "F10"    # Hotkey for screen translation
-# hook_delay = 15           # Extra seconds before hooking (for games with long DX12 init)
-
-[capture]
-max_width = 1920            # Downscale screenshots wider than this
-
-[logging]
-enabled = true              # Save conversation transcripts
-# directory = "C:\\custom\\log\\path"  # Defaults to logs/ next to the DLL
-
-[translation]
-enabled = false             # Enable screen translation hotkey (off by default)
-target_language = "English" # Translate foreign text to this language
-provider = "gemini"         # "gemini" (cloud) or "local" (Ollama/LM Studio)
-
-# Local model settings (used when provider = "local")
-[translation.local]
-endpoint = "http://localhost:11434/v1/chat/completions"
-model = "minicpm-v"         # Any vision model supported by your backend
-
-# Watch mode: injector auto-injects when these games are running
-# [[games]]
-# name = "Horizon Zero Dawn"
-# process = "HorizonZeroDawnRemastered.exe"
-#
-# [[games]]
-# name = "Elden Ring"
-# process = "eldenring.exe"
-```
-
-## Injector CLI
+## Layout
 
 ```
-injector.exe [OPTIONS]
-
-Options:
-  -p, --process <NAME>   Target process name (e.g. "Game.exe")
-  -d, --dll <PATH>       Path to overlay.dll (defaults to same directory)
-  -t, --timeout <SECS>   Seconds to wait for the process to appear (0 = no retry)
-      --list             List running processes and exit
-  -h, --help             Print help
-
-With no flags: enters watch mode using [[games]] from config.toml
-```
-
-## Launcher
-
-The project includes a desktop launcher app for managing your game library, launching games with automatic overlay injection, and configuring settings -- all from a single GUI.
-
-### Features
-- **Steam library auto-detection** -- discovers all installed games across multiple drives
-- **Cover art** -- loads game artwork from the Steam CDN
-- **One-click launch + inject** -- launches the game via Steam and runs the injector automatically
-- **Settings** -- configure overlay DLL path, scan-on-startup, minimize-to-tray, launch-on-startup
-- **Config & Logs** -- quick buttons to open `config.toml` and `companion.log`
-- **Game details** -- install path, executable, play time, source info
-
-### Tech Stack
-- [Tauri v2](https://v2.tauri.app) -- lightweight desktop framework (Rust backend + WebView2)
-- [Svelte 5](https://svelte.dev) -- reactive frontend with runes
-- [Tailwind CSS 4](https://tailwindcss.com) -- utility-first styling
-
-### Build
-
-```bash
-# Frontend (from crates/launcher/)
-node node_modules/vite/bin/vite.js build
-
-# Backend (from repo root)
-cargo xwin build -p launcher --release --target x86_64-pc-windows-msvc --features custom-protocol
-```
-
-The `custom-protocol` feature is required for release builds -- it embeds the frontend assets into the binary.
-
-## Project Structure
-
-```
-├── Cargo.toml                     # Workspace root
+├── Cargo.toml                  # workspace root + [patch.crates-io] hudhook
 ├── crates/
-│   ├── overlay/src/               # DLL (cdylib)
-│   │   ├── lib.rs                 # DllMain, hook setup, render loop, API dispatch
-│   │   ├── ui.rs                  # ImGui panel, DPI scaling, streaming display
-│   │   ├── api.rs                 # Gemini SSE streaming client, Google Search grounding
-│   │   ├── capture.rs             # Screen DC screenshot -> PNG -> base64
-│   │   ├── config.rs              # TOML config, GraphicsApi, GameEntry, TranslationConfig
-│   │   ├── provider.rs            # Provider enum (Gemini/Claude/Openai), ApiConfig
-│   │   ├── proxy_client.rs        # HTTP client for localhost CLI proxy (Claude/OpenAI)
-│   │   ├── translation.rs         # Translation dispatch (Gemini or local vision model)
-│   │   ├── game_detect.rs         # 3-tier game name detection, window-wait for hook timing
-│   │   ├── logging.rs             # Session transcript logging
-│   │   └── state.rs               # AppState (parking_lot::Mutex), Unicode sanitizer
-│   ├── injector/src/
-│   │   └── main.rs                # CLI, watch mode, DLL injection, process finding
-│   └── launcher/                  # Desktop launcher (Tauri v2 + Svelte 5)
-│       ├── src/                   # Svelte frontend
-│       └── src-tauri/             # Rust backend (Steam discovery, settings, sidecar, CLI proxy)
-├── vendor/
-│   └── hudhook/                   # Vendored hudhook 0.8.3 (patched for DX12 compatibility)
-├── config.example.toml            # Config template (no real API key)
-├── scripts/build.sh               # Release build script
-└── release/                       # Build output (gitignored)
+│   ├── overlay/                # injected DLL (cdylib): hook, ImGui UI, AI dispatch
+│   ├── injector/               # CLI exe: watch mode + DLL injection
+│   └── launcher/               # desktop GUI (Tauri 2 + Svelte 5)
+│       ├── src/                # Svelte frontend (runes)
+│       └── src-tauri/          # Rust backend: Steam discovery, settings, CLI proxy
+├── vendor/hudhook/             # vendored hudhook 0.8.3 (patched for DX12 compat)
+├── config.example.toml         # config template (no real key)
+└── scripts/build.sh            # release build -> release/
 ```
 
-## Tech Stack
+## Building from source
 
-| Technology | Purpose |
-|------------|---------|
-| [Rust](https://www.rust-lang.org) | Systems language for both DLL and injector |
-| [hudhook](https://github.com/veeenu/hudhook) | DX12/DX11 render hooking (vendored + patched) |
-| [Dear ImGui](https://github.com/ocornut/imgui) | Immediate-mode game UI |
-| [reqwest](https://docs.rs/reqwest) | HTTP client for Gemini API and localhost proxy |
-| [axum](https://docs.rs/axum) | Localhost HTTP proxy for CLI-based providers |
-| [tokio](https://tokio.rs) | Async runtime for non-blocking API calls |
-| [parking_lot](https://docs.rs/parking_lot) | Fast mutex for render thread shared state |
-| [tracing](https://docs.rs/tracing) | Structured logging to `companion.log` |
-| [Tauri v2](https://v2.tauri.app) | Desktop launcher framework (Rust + WebView2) |
-| [Svelte 5](https://svelte.dev) | Reactive frontend for the launcher |
-| [cargo-xwin](https://github.com/rust-cross/cargo-xwin) | MSVC cross-compilation from WSL2 |
-
-## Building from Source
-
-### Prerequisites (WSL2 Cross-Compilation)
-
-Building is done from WSL2 using `cargo-xwin`. No native Visual Studio required.
+Built from WSL2 with [`cargo-xwin`][cargo-xwin] -- no native Visual Studio needed.
 
 ```bash
-# Rust toolchain
-curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
 rustup target add x86_64-pc-windows-msvc
-
-# Build tools
 cargo install cargo-xwin
 sudo apt install clang lld llvm
+
+cargo xwin build --target x86_64-pc-windows-msvc   # debug
+./scripts/build.sh                                  # release -> release/
 ```
 
-### Build
+Lint + test gates:
 
 ```bash
-# Debug build
-cargo xwin build --target x86_64-pc-windows-msvc
-
-# Release build (copies artifacts to release/)
-./scripts/build.sh
+cargo xwin clippy --workspace --target x86_64-pc-windows-msvc -- -D warnings
+cargo test -p launcher    # proxy helpers; runs on the Linux host
 ```
 
 ## Troubleshooting
 
-**Overlay doesn't appear**
-- Verify the process name matches exactly (use `--list` to check)
-- The game must use DX12 or DX11 (DX9 and OpenGL are detected but not yet supported)
-- If auto-detection picks the wrong API, add `graphics_api = "dx11"` (or `"dx12"`) to `[overlay]` in config.toml
-- Some games with anti-cheat (EAC, BattlEye) may block DLL injection
-- Check `companion.log` next to the DLL for diagnostic info
+- **Overlay doesn't appear** -- confirm the process name (`injector.exe --list`),
+  make sure the game is DX12/DX11, and check `companion.log`. Anti-cheat (EAC,
+  BattlEye) can block injection.
+- **Wrong graphics API detected** -- set `graphics_api = "dx11"` (or `"dx12"`)
+  under `[overlay]`.
+- **Screenshot is black** -- try borderless windowed; screen-DC capture needs DWM
+  composition.
+- **Crash on injection, or a slow-loading game** -- add `hook_delay = 15` under
+  `[overlay]` to wait out a long DX12 init; prefer single-player titles when
+  testing.
+- **API errors** -- "invalid key" check `api.gemini.key`; "rate limited" the free
+  tier allows roughly 250 requests/day.
 
-**Screenshot is black**
-- Screen DC capture works for most games running under DWM composition
-- Try borderless windowed mode if exclusive fullscreen doesn't work
+## Design principles
 
-**API errors**
-- "Invalid API key" -- verify `api.gemini.key` in config.toml (get yours at [Google AI Studio](https://aistudio.google.com))
-- "Rate limited" -- free tier allows ~250 requests/day; wait and retry
-- "Bad request" -- try a shorter message or remove the screenshot
-- "Network error" -- check internet connection
-
-**Game crashes on injection**
-- Anti-cheat software may cause crashes -- try a single-player game first
-- Borderless windowed mode is more stable than exclusive fullscreen
-- For games with long DX12 init (e.g. Horizon Forbidden West), add `hook_delay = 15` to `[overlay]` in config.toml
-- If the game crashes once but works on retry, the DX12 pipeline timing was borderline -- `hook_delay` fixes this
-
-## Local Translation Setup
-
-By default, the F10 translation hotkey uses Google Gemini. If you prefer fully offline, private, or unrestricted translation, you can use a local vision model instead.
-
-### 1. Install Ollama
-
-Download and install [Ollama for Windows](https://ollama.com/download/windows). After installation, Ollama runs automatically in the background.
-
-Alternatively, you can use [LM Studio](https://lmstudio.ai) or any backend that exposes an OpenAI-compatible `/v1/chat/completions` endpoint with vision support.
-
-### 2. Pull a Vision Model
-
-Open a terminal and pull a vision-capable model:
-
-```
-ollama pull minicpm-v
-```
-
-**Recommended models:**
-
-| Model | Size | Notes |
-|-------|------|-------|
-| `minicpm-v` | ~5 GB | Best balance of speed and quality for OCR/translation |
-| `llama3.2-vision` | ~7 GB | Strong general vision model |
-| `llava` | ~5 GB | Lightweight, fast |
-
-### 3. Configure
-
-In your `config.toml`, set the translation provider to `local`:
-
-```toml
-[translation]
-provider = "local"
-
-[translation.local]
-endpoint = "http://localhost:11434/v1/chat/completions"
-model = "minicpm-v"
-```
-
-If you're using LM Studio instead of Ollama, change the endpoint:
-```toml
-endpoint = "http://localhost:1234/v1/chat/completions"
-model = "your-loaded-model-name"
-```
-
-### 4. Use
-
-Press **F10** in-game -- the overlay captures the screen and sends it to your local model for translation. No internet required, no content filtering, no rate limits.
-
-**Troubleshooting local translation:**
-- "Cannot connect to local model" -- make sure Ollama is running (`ollama serve` in a terminal)
-- "Local model timed out" -- vision models can be slow on CPU; a GPU with 6+ GB VRAM is recommended
-- Translation seems wrong -- try a different model (`llama3.2-vision` is more accurate but slower)
-
-## Known Limitations
-
-- Screen DC capture instead of swapchain backbuffer (some exclusive fullscreen games may show black)
-- DX9 and OpenGL detected but not yet supported
-- Vulkan out of scope (hudhook doesn't support it; most Vulkan games offer a DX11/DX12 option)
-- Free tier rate limit: ~250 requests/day, 10-15 RPM
-
-## Roadmap
-
-- Quick-ask hotkey (one-button screenshot + predefined question)
-- Per-game profiles + personality modes
-- Voice I/O (speech-to-text input, text-to-speech output)
-- Region-select translation (draw a box to translate specific text)
-
-## Contributing
-
-Contributions are welcome! Please:
-
-1. Fork the repository
-2. Create a feature branch
-3. Make your changes
-4. Run the lint + test gates:
-   - `cargo xwin clippy --workspace --target x86_64-pc-windows-msvc -- -D warnings`
-   - `cargo test -p launcher` (proxy helpers; runs on the host, no Windows toolchain needed)
-5. Submit a pull request
+1. **Never crash the host game.** The DLL avoids panics, wraps risky FFI in
+   `catch_unwind`, and degrades gracefully if the async runtime fails to start.
+2. **Bring your own AI, no middleman.** Gemini talks direct; Claude/OpenAI spawn
+   your own authenticated CLIs through a localhost proxy. No tokens extracted.
+3. **No silent fallback.** Providers never switch behind your back -- a failed
+   request fails loudly rather than leaking your prompt to a different vendor.
+4. **Private by option.** Translation can run fully offline on a local model; no
+   telemetry or analytics anywhere.
+5. **Launcher and CLI parity.** Anything the launcher automates, the injector
+   does from a terminal.
 
 ## License
 
-MIT License -- see [LICENSE](./LICENSE) for details.
+[MIT](LICENSE).
 
-## Support
+---
 
-- Star this repository
-- [Report issues](../../issues) or suggest features
-- Contribute code or ideas
+<sub>AI Game Companion is a personal tool -- built for my own use, with no
+telemetry or analytics. It injects an overlay for AI assistance only: it does not
+read or modify game memory, intercept network traffic, or touch game logic. You
+are responsible for complying with each AI provider's terms of service. Not
+chasing adoption, but if it looks useful, you're welcome to try it.</sub>
+
+[rust]:        https://www.rust-lang.org
+[imgui]:       https://github.com/ocornut/imgui
+[hudhook]:     https://github.com/veeenu/hudhook
+[tokio]:       https://tokio.rs
+[reqwest]:     https://docs.rs/reqwest
+[parking_lot]: https://docs.rs/parking_lot
+[axum]:        https://docs.rs/axum
+[tauri]:       https://tauri.app
+[svelte]:      https://svelte.dev
+[cargo-xwin]:  https://github.com/rust-cross/cargo-xwin
+[tracing]:     https://docs.rs/tracing
