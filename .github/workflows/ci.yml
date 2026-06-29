@@ -33,7 +33,7 @@ jobs:
       - name: Clippy
         run: cargo clippy --workspace -- -D warnings
       - name: Tests
-        run: cargo test -p launcher
+        run: cargo test --workspace
 
   frontend:
     name: Frontend (lint, types, build)
