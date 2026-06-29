@@ -180,6 +180,7 @@ fn detect_graphics_api() -> Option<GraphicsApi> {
 struct CompanionRenderLoop {
     f9_was_pressed: bool,
     translate_was_pressed: bool,
+    quick_ask_was_pressed: bool,
     logged_first_render: bool,
     /// Saved cursor clip rect from the game, restored when the overlay hides.
     saved_clip_rect: Option<hudhook::windows::Win32::Foundation::RECT>,
@@ -189,6 +190,8 @@ struct CompanionRenderLoop {
     toggle_vk: i32,
     /// Cached translate hotkey VK code (parsed once from CONFIG at init).
     translate_vk: Option<i32>,
+    /// Cached quick-ask hotkey VK code (parsed once from CONFIG at init; None disables).
+    quick_ask_vk: Option<i32>,
 }
 
 impl CompanionRenderLoop {
@@ -196,6 +199,7 @@ impl CompanionRenderLoop {
         Self {
             f9_was_pressed: false,
             translate_was_pressed: false,
+            quick_ask_was_pressed: false,
             logged_first_render: false,
             saved_clip_rect: None,
             was_visible: false,
@@ -205,6 +209,7 @@ impl CompanionRenderLoop {
             } else {
                 None
             },
+            quick_ask_vk: parse_vk_code(&CONFIG.overlay.quick_ask_hotkey),
         }
     }
 }
@@ -317,6 +322,33 @@ impl ImguiRenderLoop for CompanionRenderLoop {
                 }
             }
             self.translate_was_pressed = translate_pressed;
+        }
+
+        // --- Quick-ask hotkey (F8 default) with rising-edge debounce ---
+        if let Some(vk) = self.quick_ask_vk {
+            let quick_pressed = unsafe { GetAsyncKeyState(vk) } & (1 << 15) != 0;
+            if quick_pressed && !self.quick_ask_was_pressed {
+                let mut state = STATE.lock();
+                // Only trigger if not already loading and no capture in progress
+                if !state.is_loading && !state.capture_pending {
+                    let question = CONFIG.overlay.quick_ask_question.clone();
+                    state.push_message(ChatMessage::new(MessageRole::User, question));
+                    state.is_loading = true;
+                    state.error = None;
+                    state.request_generation += 1;
+                    state.streaming_response.clear();
+                    state.capture_pending = true;
+                    state.capture_wait_frames = 2;
+                    state.captured_screenshot = None;
+                    state.send_pending_capture = true;
+                    state.capture_generation = state.request_generation;
+                    // translate_pending stays false -> routes to the normal Sage reply.
+                    state.visible = true;
+                    OVERLAY_VISIBLE.store(true, Ordering::Release);
+                    CAPTURE_ACTIVE.store(true, Ordering::Release);
+                }
+            }
+            self.quick_ask_was_pressed = quick_pressed;
         }
 
         // --- Hide-capture-show (skip lock entirely when no capture is active) ---
