@@ -467,3 +467,48 @@ pub static CONFIG: Lazy<Config> = Lazy::new(|| {
         }
     }
 });
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_vk_code_maps_function_keys() {
+        assert_eq!(parse_vk_code("F1"), Some(0x70));
+        assert_eq!(parse_vk_code("F9"), Some(0x78));
+        assert_eq!(parse_vk_code("F12"), Some(0x7B));
+    }
+
+    #[test]
+    fn parse_vk_code_is_case_insensitive() {
+        assert_eq!(parse_vk_code("f10"), Some(0x79));
+    }
+
+    #[test]
+    fn parse_vk_code_rejects_unknown_keys() {
+        assert_eq!(parse_vk_code("F13"), None);
+        assert_eq!(parse_vk_code("A"), None);
+        assert_eq!(parse_vk_code(""), None);
+    }
+
+    #[test]
+    fn migrate_one_leaves_nested_untouched_when_legacy_is_default() {
+        let mut nested = "def".to_owned();
+        migrate_one("model", "def", &mut nested, "def");
+        assert_eq!(nested, "def");
+    }
+
+    #[test]
+    fn migrate_one_carries_legacy_forward_when_nested_is_default() {
+        let mut nested = "def".to_owned();
+        migrate_one("model", "legacy-val", &mut nested, "def");
+        assert_eq!(nested, "legacy-val");
+    }
+
+    #[test]
+    fn migrate_one_prefers_explicit_nested_over_legacy() {
+        let mut nested = "nested-val".to_owned();
+        migrate_one("model", "legacy-val", &mut nested, "def");
+        assert_eq!(nested, "nested-val");
+    }
+}
