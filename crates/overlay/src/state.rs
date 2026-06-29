@@ -186,3 +186,111 @@ impl AppState {
 }
 
 pub static STATE: Lazy<Mutex<AppState>> = Lazy::new(|| Mutex::new(AppState::default()));
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn user(content: &str) -> ChatMessage {
+        ChatMessage::new(MessageRole::User, content.to_owned())
+    }
+    fn assistant(content: &str) -> ChatMessage {
+        ChatMessage::new(MessageRole::Assistant, content.to_owned())
+    }
+
+    // ---------------- sanitize_for_imgui ----------------
+
+    #[test]
+    fn sanitize_replaces_unicode_with_ascii() {
+        assert_eq!(sanitize_for_imgui("a\u{2014}b"), "a--b"); // em dash
+        assert_eq!(sanitize_for_imgui("\u{201C}hi\u{201D}"), "\"hi\""); // smart quotes
+        assert_eq!(sanitize_for_imgui("x\u{2026}"), "x..."); // ellipsis
+        assert_eq!(sanitize_for_imgui("a\u{2192}b"), "a->b"); // right arrow
+        assert_eq!(sanitize_for_imgui("n\u{2265}1"), "n>=1"); // >=
+    }
+
+    #[test]
+    fn sanitize_preserves_ascii_newlines_and_tabs() {
+        assert_eq!(sanitize_for_imgui("plain text\n\t!"), "plain text\n\t!");
+    }
+
+    #[test]
+    fn sanitize_drops_nul_and_replaces_unknown_glyphs() {
+        assert_eq!(sanitize_for_imgui("a\u{0}b"), "ab"); // NUL dropped
+        assert_eq!(sanitize_for_imgui("\u{1F600}"), "?"); // emoji outside Latin-1
+    }
+
+    // ---------------- push_message ----------------
+
+    #[test]
+    fn push_message_keeps_everything_under_cap() {
+        let mut s = AppState::default();
+        for i in 0..MAX_STORED_MESSAGES {
+            s.push_message(user(&format!("m{i}")));
+        }
+        assert_eq!(s.messages.len(), MAX_STORED_MESSAGES);
+    }
+
+    #[test]
+    fn push_message_evicts_oldest_over_cap() {
+        let mut s = AppState::default();
+        for i in 0..=MAX_STORED_MESSAGES {
+            s.push_message(user(&format!("m{i}")));
+        }
+        assert_eq!(s.messages.len(), MAX_STORED_MESSAGES);
+        assert_eq!(s.messages.first().unwrap().content, "m1"); // m0 evicted
+        assert_eq!(
+            s.messages.last().unwrap().content,
+            format!("m{MAX_STORED_MESSAGES}")
+        );
+    }
+
+    #[test]
+    fn push_message_ensures_first_is_user_after_eviction() {
+        let mut s = AppState::default();
+        // Arrange so evicting the oldest leaves an Assistant at the front,
+        // which the eviction logic must then also drop.
+        s.push_message(user("first"));
+        s.push_message(assistant("orphan"));
+        for i in 0..(MAX_STORED_MESSAGES - 1) {
+            s.push_message(user(&format!("u{i}")));
+        }
+        assert!(
+            s.messages.first().unwrap().role == MessageRole::User,
+            "history must start with a User message"
+        );
+        assert!(
+            !s.messages.iter().any(|m| m.content == "orphan"),
+            "leading Assistant message should be removed after eviction"
+        );
+    }
+
+    // ---------------- cancel_in_flight ----------------
+
+    #[test]
+    fn cancel_in_flight_bumps_generation_and_resets_all_flags() {
+        let mut s = AppState {
+            request_generation: 7,
+            is_loading: true,
+            streaming_response: "partial".to_owned(),
+            capture_pending: true,
+            capture_complete: true,
+            send_pending_capture: true,
+            translate_pending: true,
+            captured_screenshot: Some("img".to_owned()),
+            ..Default::default()
+        };
+
+        let (_provider, old_gen) = s.cancel_in_flight();
+
+        assert_eq!(old_gen, 7);
+        assert_eq!(s.request_generation, 8);
+        assert!(!s.is_loading);
+        assert!(s.streaming_response.is_empty());
+        assert!(!s.capture_pending);
+        assert!(!s.capture_complete);
+        assert!(!s.send_pending_capture);
+        assert!(!s.translate_pending);
+        assert!(s.captured_screenshot.is_none());
+    }
+}

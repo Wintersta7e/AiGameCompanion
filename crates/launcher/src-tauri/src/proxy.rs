@@ -791,6 +791,8 @@ pub async fn start_proxy() -> Result<SocketAddr, Box<dyn std::error::Error>> {
         tracing::error!("Failed to write proxy.port: {e}");
         e
     })?;
+    // Lock down the token file so other local users cannot read it.
+    harden_port_file(&port_file);
     tracing::info!("Wrote proxy.port to {}", port_file.display());
 
     tokio::spawn(async move {
@@ -837,6 +839,57 @@ pub fn cleanup_port_file() {
             tracing::info!("Cleaned up proxy.port");
         }
     }
+}
+
+/// Restrict the `proxy.port` file so only the current user can read it.
+///
+/// The file carries the 256-bit bearer token that authenticates to the proxy,
+/// which can spawn `claude`/`codex` subprocesses. Without this, the file
+/// inherits its parent directory's ACL and may be readable by other local
+/// users. Best-effort: a failure is logged but does not abort startup (the
+/// proxy is still bound to localhost and token-gated).
+fn harden_port_file(path: &std::path::Path) {
+    #[cfg(windows)]
+    {
+        let user = match std::env::var("USERNAME") {
+            Ok(u) if !u.is_empty() => u,
+            _ => {
+                tracing::warn!("USERNAME unset; leaving proxy.port ACL unrestricted");
+                return;
+            }
+        };
+        match silent(std::process::Command::new("icacls").args(icacls_args(path, &user))).output() {
+            Ok(out) if out.status.success() => {
+                tracing::info!("Restricted proxy.port to current user");
+            }
+            Ok(out) => tracing::warn!(
+                "icacls could not restrict proxy.port: {}",
+                String::from_utf8_lossy(&out.stderr).trim()
+            ),
+            Err(e) => tracing::warn!("Failed to run icacls on proxy.port: {e}"),
+        }
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        if let Err(e) = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600)) {
+            tracing::warn!("Failed to chmod proxy.port to 0600: {e}");
+        }
+    }
+}
+
+/// Build the `icacls` argument vector that strips inherited ACEs and grants
+/// only `user` full control. Pure so the construction is unit-testable on any
+/// platform.
+#[cfg(any(windows, test))]
+fn icacls_args(path: &std::path::Path, user: &str) -> Vec<String> {
+    vec![
+        path.to_string_lossy().into_owned(),
+        "/inheritance:r".to_owned(), // drop inherited ACEs (e.g. Users group)
+        "/grant:r".to_owned(),       // replace, not append, the grant list
+        format!("{user}:F"),         // current user keeps full control (rewrite/delete)
+        "/Q".to_owned(),             // quiet on success
+    ]
 }
 
 #[cfg(test)]
@@ -980,5 +1033,134 @@ mod tests {
         let v: serde_json::Value = serde_json::from_str(out.trim_end()).unwrap();
         let parts = v["message"]["content"].as_array().unwrap();
         assert_eq!(parts.len(), 1);
+    }
+
+    // ---------------- parse_claude_line ----------------
+    // Fixtures captured from claude CLI 2.1.195 (--output-format stream-json
+    // --include-partial-messages). These guard against CLI output-format drift.
+
+    #[test]
+    fn parse_claude_line_extracts_text_delta() {
+        let line = r#"{"type":"stream_event","event":{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"PONG"}}}"#;
+        assert_eq!(parse_claude_line(line), Some(sse_text("PONG")));
+    }
+
+    #[test]
+    fn parse_claude_line_ignores_non_text_deltas() {
+        // message_start and content_block_start carry no text_delta.
+        let start = r#"{"type":"stream_event","event":{"type":"message_start","message":{"role":"assistant"}}}"#;
+        let block = r#"{"type":"stream_event","event":{"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}}"#;
+        assert_eq!(parse_claude_line(start), None);
+        assert_eq!(parse_claude_line(block), None);
+    }
+
+    #[test]
+    fn parse_claude_line_ignores_system_and_assistant_frames() {
+        // The proxy relies on stream_event text_delta, not aggregated frames.
+        let system = r#"{"type":"system","subtype":"init","session_id":"x"}"#;
+        let assistant = r#"{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"PONG"}]}}"#;
+        assert_eq!(parse_claude_line(system), None);
+        assert_eq!(parse_claude_line(assistant), None);
+    }
+
+    #[test]
+    fn parse_claude_line_treats_successful_result_as_stream_end() {
+        let line = r#"{"type":"result","subtype":"success","is_error":false,"result":"PONG"}"#;
+        assert_eq!(parse_claude_line(line), None);
+    }
+
+    #[test]
+    fn parse_claude_line_surfaces_error_result_message() {
+        let line = r#"{"type":"result","subtype":"error_during_execution","is_error":true,"error":"quota exceeded"}"#;
+        assert_eq!(parse_claude_line(line), Some(sse_error("quota exceeded")));
+    }
+
+    #[test]
+    fn parse_claude_line_uses_fallback_when_error_result_has_no_message() {
+        let line = r#"{"type":"result","is_error":true}"#;
+        assert_eq!(
+            parse_claude_line(line),
+            Some(sse_error("Unknown Claude CLI error"))
+        );
+    }
+
+    #[test]
+    fn parse_claude_line_skips_malformed_or_empty_lines() {
+        assert_eq!(parse_claude_line("not json"), None);
+        assert_eq!(parse_claude_line(""), None);
+    }
+
+    // ---------------- parse_codex_line ----------------
+    // codex `exec` (no --json) prints the answer as plain text on stdout;
+    // all session preamble goes to stderr. Captured from codex-cli 0.142.4.
+
+    #[test]
+    fn parse_codex_line_emits_plain_text_verbatim() {
+        assert_eq!(parse_codex_line("PONG"), Some(sse_text("PONG")));
+    }
+
+    #[test]
+    fn parse_codex_line_surfaces_refusal() {
+        let line = r#"{"type":"refusal","content":"I can't help with that"}"#;
+        assert_eq!(
+            parse_codex_line(line),
+            Some(sse_error("I can't help with that"))
+        );
+    }
+
+    #[test]
+    fn parse_codex_line_collects_output_text_from_content_array() {
+        let line = r#"{"content":[{"type":"output_text","text":"hello"},{"type":"output_text","text":" world"}]}"#;
+        assert_eq!(parse_codex_line(line), Some(sse_text("hello world")));
+    }
+
+    #[test]
+    fn parse_codex_line_extracts_top_level_text_field() {
+        let line = r#"{"text":"hi there"}"#;
+        assert_eq!(parse_codex_line(line), Some(sse_text("hi there")));
+    }
+
+    #[test]
+    fn parse_codex_line_skips_unrecognized_json_object() {
+        // Valid JSON the parser does not recognize is dropped, not echoed as chat.
+        let line = r#"{"type":"token_count","tokens":42}"#;
+        assert_eq!(parse_codex_line(line), None);
+    }
+
+    // ---------------- proxy.port hardening ----------------
+
+    #[test]
+    fn icacls_args_strip_inheritance_and_grant_only_current_user() {
+        let args = icacls_args(std::path::Path::new("C:\\tools\\proxy.port"), "alice");
+        assert_eq!(args[0], "C:\\tools\\proxy.port", "target file is first arg");
+        assert!(
+            args.iter().any(|a| a == "/inheritance:r"),
+            "must remove inherited ACEs so other users lose access"
+        );
+        assert!(
+            args.iter().any(|a| a == "/grant:r"),
+            "must replace (not add to) the grant list"
+        );
+        assert!(
+            args.iter().any(|a| a == "alice:F"),
+            "must grant the current user full control so the launcher can rewrite/delete it"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn harden_port_file_sets_owner_only_perms_on_unix() {
+        use std::os::unix::fs::PermissionsExt;
+        let path = std::env::temp_dir().join(format!("proxy_port_acl_{}.tmp", std::process::id()));
+        std::fs::write(&path, "54321\ntoken-value").unwrap();
+        harden_port_file(&path);
+        let mode = std::fs::metadata(&path).unwrap().permissions().mode();
+        assert_eq!(mode & 0o777, 0o600, "owner read/write only, no group/other");
+        // The owner must still be able to read it back.
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            "54321\ntoken-value"
+        );
+        std::fs::remove_file(&path).ok();
     }
 }

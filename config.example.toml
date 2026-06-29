@@ -39,6 +39,8 @@ height = 400
 opacity = 0.85
 font_size = 16
 translate_hotkey = "F10"
+quick_ask_hotkey = "F8"     # One-shot: screenshot + the preset question below. Empty "" disables it.
+quick_ask_question = "Based on what's on my screen, what should I do right now? If I'm stuck, give the next step; if it's a fight, a quick tactic; if something's unclear, explain it. Keep it to 1-2 sentences."
 # hook_delay = 15  # Extra seconds to wait before hooking. Set 15-20 for games with long DX12 init (e.g. Horizon).
 
 [capture]

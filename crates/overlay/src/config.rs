@@ -242,6 +242,13 @@ pub struct OverlayConfig {
     pub font_size: f32,
     #[serde(default = "default_translate_hotkey")]
     pub translate_hotkey: String,
+    /// Hotkey for one-shot quick-ask (screenshot + a preset question).
+    /// Empty string disables it.
+    #[serde(default = "default_quick_ask_hotkey")]
+    pub quick_ask_hotkey: String,
+    /// The preset question sent (with a screenshot) on the quick-ask hotkey.
+    #[serde(default = "default_quick_ask_question")]
+    pub quick_ask_question: String,
     /// Extra seconds to wait after game window detected before applying hooks.
     /// Default 0. Set 15-20 for games with long DX12 init (e.g. Horizon).
     #[serde(default = "default_hook_delay")]
@@ -366,6 +373,14 @@ fn default_font_size() -> f32 {
 fn default_translate_hotkey() -> String {
     "F10".into()
 }
+
+fn default_quick_ask_hotkey() -> String {
+    "F8".into()
+}
+
+fn default_quick_ask_question() -> String {
+    "Based on what's on my screen, what should I do right now? If I'm stuck, give the next step; if it's a fight, a quick tactic; if something's unclear, explain it. Keep it to 1-2 sentences.".into()
+}
 fn default_hook_delay() -> u64 {
     0
 }
@@ -399,6 +414,8 @@ impl Default for OverlayConfig {
             opacity: default_opacity(),
             font_size: default_font_size(),
             translate_hotkey: default_translate_hotkey(),
+            quick_ask_hotkey: default_quick_ask_hotkey(),
+            quick_ask_question: default_quick_ask_question(),
             hook_delay: default_hook_delay(),
         }
     }
@@ -467,3 +484,59 @@ pub static CONFIG: Lazy<Config> = Lazy::new(|| {
         }
     }
 });
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_vk_code_maps_function_keys() {
+        assert_eq!(parse_vk_code("F1"), Some(0x70));
+        assert_eq!(parse_vk_code("F9"), Some(0x78));
+        assert_eq!(parse_vk_code("F12"), Some(0x7B));
+    }
+
+    #[test]
+    fn parse_vk_code_is_case_insensitive() {
+        assert_eq!(parse_vk_code("f10"), Some(0x79));
+    }
+
+    #[test]
+    fn parse_vk_code_rejects_unknown_keys() {
+        assert_eq!(parse_vk_code("F13"), None);
+        assert_eq!(parse_vk_code("A"), None);
+        assert_eq!(parse_vk_code(""), None);
+    }
+
+    #[test]
+    fn migrate_one_leaves_nested_untouched_when_legacy_is_default() {
+        let mut nested = "def".to_owned();
+        migrate_one("model", "def", &mut nested, "def");
+        assert_eq!(nested, "def");
+    }
+
+    #[test]
+    fn migrate_one_carries_legacy_forward_when_nested_is_default() {
+        let mut nested = "def".to_owned();
+        migrate_one("model", "legacy-val", &mut nested, "def");
+        assert_eq!(nested, "legacy-val");
+    }
+
+    #[test]
+    fn migrate_one_prefers_explicit_nested_over_legacy() {
+        let mut nested = "nested-val".to_owned();
+        migrate_one("model", "legacy-val", &mut nested, "def");
+        assert_eq!(nested, "nested-val");
+    }
+
+    #[test]
+    fn overlay_config_default_has_quick_ask() {
+        let cfg = OverlayConfig::default();
+        assert_eq!(cfg.quick_ask_hotkey, "F8");
+        assert!(
+            cfg.quick_ask_question.contains("screen"),
+            "default quick-ask question should reference the screen"
+        );
+        assert!(!cfg.quick_ask_question.is_empty());
+    }
+}

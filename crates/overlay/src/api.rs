@@ -344,7 +344,14 @@ fn process_sse_lines(
                         .collect::<Vec<_>>()
                         .join("");
 
-                    if !chunk_text.is_empty() {
+                    if chunk_text.is_empty() {
+                        // An error object (e.g. {"error":{...}}) deserializes as
+                        // an empty-candidates response, so check for one here
+                        // rather than silently dropping the stream's error.
+                        if let Some(msg) = stream_error_message(json_str) {
+                            return Err(format!("API error: {msg}"));
+                        }
+                    } else {
                         let clean = sanitize_for_imgui(&chunk_text);
                         full_text.push_str(&clean);
 
@@ -356,15 +363,10 @@ fn process_sse_lines(
                     }
                 }
                 Err(_) => {
-                    // Check if the API returned an error object in the stream
-                    if let Ok(val) = serde_json::from_str::<serde_json::Value>(json_str) {
-                        if let Some(msg) = val
-                            .get("error")
-                            .and_then(|e| e.get("message"))
-                            .and_then(|m| m.as_str())
-                        {
-                            return Err(format!("API error: {msg}"));
-                        }
+                    // Non-`GeminiResponse` JSON: still surface an error object
+                    // if present, otherwise skip the unparseable chunk.
+                    if let Some(msg) = stream_error_message(json_str) {
+                        return Err(format!("API error: {msg}"));
                     }
                     tracing::debug!("SSE: skipping unparseable JSON chunk");
                 }
@@ -372,4 +374,97 @@ fn process_sse_lines(
         }
     }
     Ok(())
+}
+
+/// Extract `error.message` from a Gemini SSE `data:` payload, if present.
+/// Gemini can stream an error object (e.g. quota exceeded) mid-response that
+/// otherwise deserializes as an empty `GeminiResponse`.
+fn stream_error_message(json_str: &str) -> Option<String> {
+    let val: serde_json::Value = serde_json::from_str(json_str).ok()?;
+    val.get("error")?
+        .get("message")?
+        .as_str()
+        .map(str::to_owned)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // process_sse_lines briefly locks the global STATE (generation check +
+    // streaming_response append). Serialize the STATE-touching tests so a
+    // parallel test cannot change request_generation underneath us.
+    static SERIAL: parking_lot::Mutex<()> = parking_lot::Mutex::new(());
+
+    // A real line captured from gemini-2.5-flash :streamGenerateContent?alt=sse.
+    const GEMINI_LINE: &str = "data: {\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"PONG\"}],\"role\":\"model\"},\"finishReason\":\"STOP\",\"index\":0}],\"modelVersion\":\"gemini-2.5-flash\"}\n";
+
+    #[test]
+    fn extracts_text_from_data_line() {
+        let _g = SERIAL.lock();
+        STATE.lock().request_generation = 100;
+        let mut buf = GEMINI_LINE.as_bytes().to_vec();
+        let mut full = String::new();
+        let r = process_sse_lines(&mut buf, &mut full, 100);
+        assert!(r.is_ok());
+        assert_eq!(full, "PONG");
+        assert!(
+            buf.is_empty(),
+            "a complete line should be drained from the buffer"
+        );
+    }
+
+    #[test]
+    fn joins_multiple_parts_in_one_chunk() {
+        let _g = SERIAL.lock();
+        STATE.lock().request_generation = 100;
+        let line = "data: {\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"foo\"},{\"text\":\"bar\"}]}}]}\n";
+        let mut buf = line.as_bytes().to_vec();
+        let mut full = String::new();
+        assert!(process_sse_lines(&mut buf, &mut full, 100).is_ok());
+        assert_eq!(full, "foobar");
+    }
+
+    #[test]
+    fn buffers_incomplete_line_until_newline() {
+        // A chunk that splits mid-line must leave the partial line buffered
+        // (this is why the parser uses a byte buffer, not line-at-a-time reads).
+        let mut buf = b"data: {\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"par".to_vec();
+        let original = buf.clone();
+        let mut full = String::new();
+        assert!(process_sse_lines(&mut buf, &mut full, 0).is_ok());
+        assert!(full.is_empty());
+        assert_eq!(buf, original, "incomplete line must remain in the buffer");
+    }
+
+    #[test]
+    fn skips_blank_and_non_data_lines() {
+        let mut buf = b"\n: keep-alive\nevent: message\n".to_vec();
+        let mut full = String::new();
+        assert!(process_sse_lines(&mut buf, &mut full, 0).is_ok());
+        assert!(full.is_empty());
+        assert!(buf.is_empty());
+    }
+
+    #[test]
+    fn cancels_when_generation_changed_mid_stream() {
+        let _g = SERIAL.lock();
+        STATE.lock().request_generation = 5;
+        // A stale generation (a newer request superseded this one).
+        let mut buf = GEMINI_LINE.as_bytes().to_vec();
+        let mut full = String::new();
+        let r = process_sse_lines(&mut buf, &mut full, 4);
+        assert_eq!(r, Err("Cancelled".to_string()));
+    }
+
+    #[test]
+    fn surfaces_api_error_object_in_stream() {
+        // Gemini can emit an error object as an SSE data line. It must surface
+        // as an error, not be silently dropped.
+        let line = "data: {\"error\":{\"code\":429,\"message\":\"quota exceeded\"}}\n";
+        let mut buf = line.as_bytes().to_vec();
+        let mut full = String::new();
+        let r = process_sse_lines(&mut buf, &mut full, 0);
+        assert_eq!(r, Err("API error: quota exceeded".to_string()));
+    }
 }
