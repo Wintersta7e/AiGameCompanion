@@ -30,6 +30,7 @@
   /* ── Animations ── */
   --animate-fade-up: fade-up 0.5s ease-out both;
   --animate-pulse-soft: pulse-soft 4s ease-in-out infinite;
+  --animate-pulse-fast: pulse-soft 2.4s ease-in-out infinite;
   --animate-beam: beam 2.4s linear infinite;
 }
 

@@ -52,7 +52,7 @@
     if (e.target === e.currentTarget) open = false;
   }
   function onKeydown(e: KeyboardEvent) {
-    if (e.key === 'Escape') open = false;
+    if (open && e.key === 'Escape') open = false;
   }
 
   const toggles: { key: keyof Settings; label: string }[] = [
@@ -61,6 +61,9 @@
     { key: 'launch_on_startup', label: 'Launch on system startup' },
   ];
 </script>
+
+<!-- Window-level handler so Esc closes even before focus enters the dialog. -->
+<svelte:window onkeydown={onKeydown} />
 
 {#if open}
   <!-- svelte-ignore a11y_interactive_supports_focus -->
@@ -149,8 +152,9 @@
               >
                 <span
                   class="w-[7px] h-[7px] rounded-full"
-                  style="background: {PROVIDERS[key].dot}; box-shadow: 0 0 6px {PROVIDERS[key]
-                    .dot};"
+                  style="background: {PROVIDERS[key]
+                    .dot}; box-shadow: 0 0 6px color-mix(in oklab, {PROVIDERS[key]
+                    .dot} 53%, transparent);"
                 ></span>
                 {PROVIDERS[key].label}
               </button>
@@ -195,7 +199,7 @@
           <button
             onclick={save}
             disabled={saving}
-            class="px-[18px] py-2 rounded-[9px] font-display text-[12.5px] font-semibold cursor-pointer transition-all duration-150"
+            class="px-[18px] py-2 rounded-[9px] font-display text-[12.5px] font-semibold cursor-pointer transition-all duration-150 enabled:hover:brightness-110"
             style="background: var(--accent); color: #0b0b0d;"
           >
             {saving ? 'Saving…' : 'Save'}

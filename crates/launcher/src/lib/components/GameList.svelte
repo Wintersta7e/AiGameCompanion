@@ -1,6 +1,7 @@
 <script lang="ts">
   import GameListItem from './GameListItem.svelte';
   import {
+    getGames,
     getFilteredGames,
     getSearchQuery,
     getSelectedGameId,
@@ -11,6 +12,7 @@
   } from '../stores/games.svelte';
 
   let filteredGames = $derived(getFilteredGames());
+  let totalGames = $derived(getGames().length);
   let selectedId = $derived(getSelectedGameId());
   let currentSearch = $derived(getSearchQuery());
   let isLoading = $derived(getIsLoading());
@@ -37,7 +39,7 @@
         class="font-mono text-[10px] text-t-mid px-2 py-0.5 rounded-[7px]"
         style="background: rgba(255,255,255,0.045);"
       >
-        {filteredGames.length}
+        {totalGames}
       </span>
     </div>
     <div
@@ -121,11 +123,13 @@
       const el = e.currentTarget as HTMLElement;
       el.style.color = 'var(--accent)';
       el.style.borderColor = 'color-mix(in oklab, var(--accent) 45%, transparent)';
+      el.style.background = 'color-mix(in oklab, var(--accent) 6%, transparent)';
     }}
     onmouseleave={(e) => {
       const el = e.currentTarget as HTMLElement;
       el.style.color = 'var(--color-t-lo)';
       el.style.borderColor = 'var(--color-line)';
+      el.style.background = 'transparent';
     }}
   >
     <svg

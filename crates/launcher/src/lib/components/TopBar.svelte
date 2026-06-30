@@ -33,6 +33,19 @@
       console.error(e);
     }
   }
+
+  // Gear hover: accent-tinted border + subtle bg lift (inline styles win over
+  // Tailwind hover utilities, so drive it from JS like the other controls).
+  function gearEnter(e: MouseEvent) {
+    const el = e.currentTarget as HTMLElement;
+    el.style.borderColor = 'color-mix(in oklab, var(--accent) 40%, transparent)';
+    el.style.background = 'rgba(255,255,255,0.06)';
+  }
+  function gearLeave(e: MouseEvent) {
+    const el = e.currentTarget as HTMLElement;
+    el.style.borderColor = 'var(--color-line)';
+    el.style.background = 'rgba(255,255,255,0.03)';
+  }
 </script>
 
 <header
@@ -69,7 +82,7 @@
   >
     <span class="relative flex w-[7px] h-[7px]">
       <span
-        class="absolute inset-0 rounded-full animate-pulse-soft"
+        class="absolute inset-0 rounded-full animate-pulse-fast"
         style="background: var(--color-ok); box-shadow: 0 0 8px var(--color-ok);"
       ></span>
     </span>
@@ -89,6 +102,12 @@
         {@const active = key === provider}
         <button
           onclick={() => setProvider(key)}
+          onmouseenter={(e) => {
+            if (!active) (e.currentTarget as HTMLElement).style.color = 'var(--color-t-mid)';
+          }}
+          onmouseleave={(e) => {
+            if (!active) (e.currentTarget as HTMLElement).style.color = 'var(--color-t-lo)';
+          }}
           aria-pressed={active}
           class="flex items-center gap-1.5 px-[11px] py-1.5 rounded-lg font-display text-[11.5px] font-medium tracking-[0.02em] cursor-pointer transition-all duration-150"
           style="
@@ -113,6 +132,8 @@
     <!-- settings -->
     <button
       onclick={onOpenSettings}
+      onmouseenter={gearEnter}
+      onmouseleave={gearLeave}
       title="Settings"
       aria-label="Settings"
       class="w-[34px] h-[34px] grid place-items-center rounded-[9px] text-t-mid cursor-pointer transition-all duration-150 hover:text-t-hi"

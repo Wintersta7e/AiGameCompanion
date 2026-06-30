@@ -2,6 +2,7 @@
   import type { Game } from '../stores/games.svelte';
   import { setSelectedGameId } from '../stores/games.svelte';
   import { formatPlayTime } from '../utils/format';
+  import { hashHue } from '../utils/accent';
 
   interface Props {
     game: Game;
@@ -32,6 +33,10 @@
       .toUpperCase(),
   );
   let dotColor = $derived(sourceColors[game.source] ?? 'var(--accent)');
+  // Each row's initial-fallback thumb gets its own hue (the global --accent is
+  // reserved for the selected row's rail/border/dot), so the placeholder thumbs
+  // stay multi-coloured like the design instead of all sharing one colour.
+  let thumbColor = $derived(hashHue(game.id));
 </script>
 
 <button
@@ -75,7 +80,7 @@
     {:else}
       <div
         class="w-full h-full grid place-items-center font-display font-bold text-base text-white/85"
-        style="background: linear-gradient(135deg, color-mix(in oklab, var(--accent) 45%, #16161a), #101013); text-shadow: 0 1px 5px rgba(0,0,0,0.55);"
+        style="background: linear-gradient(135deg, color-mix(in oklab, {thumbColor} 45%, #16161a), #101013); text-shadow: 0 1px 5px rgba(0,0,0,0.55);"
       >
         {initial}
       </div>

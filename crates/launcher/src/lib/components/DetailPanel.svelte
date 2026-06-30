@@ -20,6 +20,15 @@
     }
   });
 
+  // Per-source dot colour (matches the sidebar rows).
+  const sourceColors: Record<string, string> = {
+    steam: '#66c0f4',
+    epic: '#cfcfcf',
+    gog: '#b035e8',
+    manual: 'var(--accent)',
+  };
+  let srcDot = $derived(game ? (sourceColors[game.source] ?? 'var(--accent)') : 'var(--accent)');
+
   let coverSrc = $derived(game?.cover_art_path && !coverError ? game.cover_art_path : null);
   let initial = $derived(
     (game?.name ?? '?')
@@ -87,6 +96,18 @@
       fileError = String(e);
     }
   }
+
+  // Hover affordance for the outline buttons (Config/Logs): accent border + bg lift.
+  function fileBtnEnter(e: MouseEvent) {
+    const el = e.currentTarget as HTMLElement;
+    el.style.borderColor = 'color-mix(in oklab, var(--accent) 38%, transparent)';
+    el.style.background = 'rgba(255,255,255,0.06)';
+  }
+  function fileBtnLeave(e: MouseEvent) {
+    const el = e.currentTarget as HTMLElement;
+    el.style.borderColor = 'var(--color-line)';
+    el.style.background = 'rgba(255,255,255,0.03)';
+  }
 </script>
 
 <div class="flex-1 overflow-y-auto relative" style="background: var(--color-ink-1);">
@@ -141,7 +162,13 @@
           {game.name}
         </h1>
         <div class="flex items-center gap-[13px] mt-[11px]">
-          <span class="text-[11.5px] text-t-mid">{capSource(game.source)}</span>
+          <span class="flex items-center gap-[7px] text-[11.5px] text-t-mid">
+            <span
+              class="w-[7px] h-[7px] rounded-full"
+              style="background: {srcDot}; box-shadow: 0 0 6px {srcDot};"
+            ></span>
+            {capSource(game.source)}
+          </span>
           {#if game.exe_name}<span class="font-mono text-[11px] text-t-lo">{game.exe_name}</span
             >{/if}
         </div>
@@ -166,7 +193,7 @@
             <div class="relative w-[54px] h-[54px]">
               <div
                 class="absolute inset-0 rounded-full animate-pulse-soft"
-                style="background: radial-gradient(circle at 50% 40%, #fff 0%, color-mix(in oklab, var(--accent) 85%, white) 24%, var(--accent) 56%, transparent 80%); box-shadow: 0 0 28px -2px var(--accent);"
+                style="background: radial-gradient(circle at 50% 40%, #fff 0%, color-mix(in oklab, var(--accent) 85%, white) 24%, var(--accent) 56%, color-mix(in oklab, var(--accent) 38%, transparent) 80%, transparent 100%); box-shadow: 0 0 28px -2px var(--accent);"
               ></div>
               <div
                 class="absolute inset-[3px] rounded-full"
@@ -245,7 +272,7 @@
           <button
             onclick={() => game && launchGame(game.id)}
             disabled={launchBusy}
-            class="flex items-center gap-[9px] px-[26px] py-[13px] rounded-[11px] border-none font-display text-[14px] font-semibold tracking-[0.03em] transition-all duration-200"
+            class="flex items-center gap-[9px] px-[26px] py-[13px] rounded-[11px] border-none font-display text-[14px] font-semibold tracking-[0.03em] transition-all duration-200 enabled:hover:brightness-110 enabled:hover:-translate-y-px"
             class:cursor-pointer={!launchBusy}
             class:cursor-not-allowed={launchBusy}
             class:opacity-60={launchBusy}
@@ -258,6 +285,8 @@
           </button>
           <button
             onclick={openConfig}
+            onmouseenter={fileBtnEnter}
+            onmouseleave={fileBtnLeave}
             title="Open config.toml"
             class="px-[18px] py-[13px] rounded-[11px] font-display text-[12.5px] font-medium tracking-[0.03em] text-t-mid cursor-pointer transition-all duration-150 hover:text-t-hi"
             style="border: 1px solid var(--color-line); background: rgba(255,255,255,0.03);"
@@ -265,6 +294,8 @@
           >
           <button
             onclick={openLogs}
+            onmouseenter={fileBtnEnter}
+            onmouseleave={fileBtnLeave}
             title="Open companion.log"
             class="px-[18px] py-[13px] rounded-[11px] font-display text-[12.5px] font-medium tracking-[0.03em] text-t-mid cursor-pointer transition-all duration-150 hover:text-t-hi"
             style="border: 1px solid var(--color-line); background: rgba(255,255,255,0.03);"
@@ -291,7 +322,7 @@
 
       <!-- STATS -->
       <div class="grid grid-cols-3 gap-3" style="animation: fade-up 0.5s ease 0.12s both;">
-        {#each [{ l: 'Play time', v: playTime }, { l: 'Last played', v: lastPlayed }, { l: 'Source ID', v: game.source_id ?? 'N/A' }] as s (s.l)}
+        {#each [{ l: 'Play time', v: playTime }, { l: 'Last played', v: lastPlayed }, { l: 'Graphics API', v: 'Auto · DX12' }] as s (s.l)}
           <div
             class="p-4 rounded-[13px] border border-line"
             style="background: rgba(255,255,255,0.018);"
