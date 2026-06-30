@@ -1,24 +1,20 @@
 <script lang="ts">
   import { onMount } from 'svelte';
+  import { invoke } from '@tauri-apps/api/core';
   import TopBar from './lib/components/TopBar.svelte';
   import StatusBar from './lib/components/StatusBar.svelte';
   import GameList from './lib/components/GameList.svelte';
   import DetailPanel from './lib/components/DetailPanel.svelte';
   import Background from './lib/components/Background.svelte';
   import SettingsModal from './lib/components/SettingsModal.svelte';
-  import { invoke } from '@tauri-apps/api/core';
   import { scanGames, getGames, loadGames } from './lib/stores/games.svelte';
 
   onMount(async () => {
     try {
       const settings = await invoke<{ scan_on_startup: boolean }>('get_settings');
-      if (settings.scan_on_startup) {
-        scanGames();
-      } else {
-        loadGames();
-      }
+      if (settings.scan_on_startup) scanGames();
+      else loadGames();
     } catch {
-      // Fallback: scan if settings can't be loaded
       scanGames();
     }
   });
@@ -35,5 +31,5 @@
     <DetailPanel />
   </main>
   <StatusBar gameCount={games.length} />
+  <SettingsModal bind:open={settingsOpen} />
 </div>
-<SettingsModal bind:open={settingsOpen} />

@@ -1,61 +1,55 @@
-@import url('https://fonts.googleapis.com/css2?family=Rajdhani:wght@400;500;600;700&family=Exo+2:ital,wght@0,300;0,400;0,500;0,600;0,700;1,400&family=JetBrains+Mono:wght@400;500;600&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=Hanken+Grotesk:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap');
 @import 'tailwindcss';
 
 @theme {
-  /* ── Background palette ── */
-  --color-bg-deep: #0a0c14;
-  --color-bg-surface: #111522;
-  --color-bg-card: #161b2e;
-  --color-bg-glass: rgba(22, 27, 46, 0.65);
+  /* ── Neutral inks (cover art supplies the color) ── */
+  --color-ink-0: #0b0b0d;
+  --color-ink-1: #131316;
+  --color-ink-2: #191920;
+  --color-ink-3: #23232b;
 
-  /* ── Border palette ── */
-  --color-border-subtle: rgba(99, 140, 255, 0.08);
-  --color-border-glow: rgba(99, 140, 255, 0.25);
+  /* ── Hairlines ── */
+  --color-line: rgba(255, 255, 255, 0.075);
+  --color-line-2: rgba(255, 255, 255, 0.04);
 
-  /* ── Accent palette ── */
-  --color-accent: #638cff;
-  --color-accent-secondary: #a855f7;
-  --color-accent-tertiary: #06d6a0;
-  --color-accent-warm: #ff6b6b;
+  /* ── Text ── */
+  --color-t-hi: #ececef;
+  --color-t-mid: #9a9aa7;
+  --color-t-lo: #5c5c68;
 
-  /* ── Text palette ── */
-  --color-text-primary: #e8ecf4;
-  --color-text-secondary: #8892b0;
-  --color-text-muted: #4a5578;
+  /* ── Semantic status ── */
+  --color-ok: #4ad6a0;
+  --color-warn: #e8c15a;
+  --color-err: #e8636b;
 
-  /* ── Font families ── */
-  --font-display: 'Rajdhani', sans-serif;
-  --font-body: 'Exo 2', sans-serif;
+  /* ── Fonts ── */
+  --font-display: 'Space Grotesk', sans-serif;
+  --font-body: 'Hanken Grotesk', system-ui, sans-serif;
   --font-mono: 'JetBrains Mono', monospace;
 
-  /* ── Accent opacity variants ── */
-  --color-accent-8: rgba(99, 140, 255, 0.08);
-  --color-accent-12: rgba(99, 140, 255, 0.12);
-  --color-accent-15: rgba(99, 140, 255, 0.15);
-  --color-accent-25: rgba(99, 140, 255, 0.25);
-  --color-secondary-15: rgba(168, 85, 247, 0.15);
-  --color-tertiary-12: rgba(6, 214, 160, 0.12);
-  --color-warm-12: rgba(255, 107, 107, 0.12);
-  --color-bg-interactive: rgba(255, 255, 255, 0.03);
-  --color-bg-hover: rgba(255, 255, 255, 0.06);
-
   /* ── Animations ── */
-  --animate-drift: drift 20s ease-in-out infinite;
-  --animate-card-in: card-in 0.35s ease-out both;
-  --animate-fade-up: fade-up 0.4s ease-out both;
-  --animate-pulse-glow: pulse-glow 2s ease-in-out infinite;
+  --animate-fade-up: fade-up 0.5s ease-out both;
+  --animate-pulse-soft: pulse-soft 4s ease-in-out infinite;
+  --animate-beam: beam 2.4s linear infinite;
 }
 
-/* ── Base body styles ── */
+/*
+ * The live accent is a runtime CSS variable, set per selected game by
+ * lib/stores/accent.svelte.ts (dominant color from the cover art, with a
+ * hashed-hue fallback). Everything accent-driven reads var(--accent).
+ */
+:root {
+  --accent: #e0a23c;
+}
+
 body {
   font-family: var(--font-body);
-  background-color: var(--color-bg-deep);
-  color: var(--color-text-primary);
+  background-color: var(--color-ink-0);
+  color: var(--color-t-hi);
   overflow: hidden;
   margin: 0;
 }
 
-/* ── Heading font ── */
 h1,
 h2,
 h3,
@@ -65,44 +59,10 @@ h6 {
   font-family: var(--font-display);
 }
 
-/* ── Keyframes: drift -- ambient background orb movement ── */
-@keyframes drift {
-  0%,
-  100% {
-    transform: translate(0, 0) scale(1);
-    opacity: 0.3;
-  }
-  25% {
-    transform: translate(30px, -20px) scale(1.05);
-    opacity: 0.4;
-  }
-  50% {
-    transform: translate(-20px, 15px) scale(0.95);
-    opacity: 0.25;
-  }
-  75% {
-    transform: translate(10px, 25px) scale(1.02);
-    opacity: 0.35;
-  }
-}
-
-/* ── Keyframes: card-in -- list items slide in from the left ── */
-@keyframes card-in {
-  from {
-    opacity: 0;
-    transform: translateX(-16px);
-  }
-  to {
-    opacity: 1;
-    transform: translateX(0);
-  }
-}
-
-/* ── Keyframes: fade-up -- detail panel elements rise into view ── */
 @keyframes fade-up {
   from {
     opacity: 0;
-    transform: translateY(12px);
+    transform: translateY(10px);
   }
   to {
     opacity: 1;
@@ -110,20 +70,27 @@ h6 {
   }
 }
 
-/* ── Keyframes: pulse-glow -- status indicator pulsing ── */
-@keyframes pulse-glow {
+@keyframes pulse-soft {
   0%,
   100% {
-    opacity: 1;
-    box-shadow: 0 0 4px currentColor;
+    opacity: 0.82;
+    transform: scale(1);
   }
   50% {
-    opacity: 0.6;
-    box-shadow: 0 0 12px currentColor;
+    opacity: 1;
+    transform: scale(1.07);
   }
 }
 
-/* ── Reduced motion -- respect user preference ── */
+@keyframes beam {
+  0% {
+    background-position: 200% 0;
+  }
+  100% {
+    background-position: -200% 0;
+  }
+}
+
 @media (prefers-reduced-motion: reduce) {
   *,
   *::before,
@@ -134,28 +101,24 @@ h6 {
   }
 }
 
-/* ── Custom scrollbar -- thin, accent-colored ── */
+/* ── Custom scrollbar ── */
 body,
 .overflow-y-auto,
 .overflow-auto {
   scrollbar-width: thin;
-  scrollbar-color: var(--color-accent) transparent;
+  scrollbar-color: rgba(255, 255, 255, 0.18) transparent;
 }
-
 ::-webkit-scrollbar {
-  width: 6px;
-  height: 6px;
+  width: 8px;
+  height: 8px;
 }
-
 ::-webkit-scrollbar-track {
   background: transparent;
 }
-
 ::-webkit-scrollbar-thumb {
-  background-color: rgba(99, 140, 255, 0.3);
-  border-radius: 3px;
+  background-color: rgba(255, 255, 255, 0.12);
+  border-radius: 4px;
 }
-
 ::-webkit-scrollbar-thumb:hover {
-  background-color: rgba(99, 140, 255, 0.5);
+  background-color: rgba(255, 255, 255, 0.22);
 }

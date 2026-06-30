@@ -1,5 +1,6 @@
 <script lang="ts">
   import { invoke } from '@tauri-apps/api/core';
+  import { PROVIDERS, getProvider, setProvider, type Provider } from '../stores/companion.svelte';
 
   interface Settings {
     overlay_dll_path: string | null;
@@ -18,8 +19,11 @@
   });
   let saving = $state(false);
   let saveError = $state<string | null>(null);
+  let provider = $derived(getProvider());
 
-  async function load(): Promise<void> {
+  const providerKeys = Object.keys(PROVIDERS) as Provider[];
+
+  async function load() {
     try {
       settings = await invoke<Settings>('get_settings');
     } catch (e) {
@@ -27,14 +31,13 @@
     }
   }
 
-  async function save(): Promise<void> {
+  async function save() {
     saving = true;
     saveError = null;
     try {
       await invoke('update_settings', { settings });
       open = false;
     } catch (e) {
-      console.error('Failed to save settings:', e);
       saveError = String(e);
     } finally {
       saving = false;
@@ -42,22 +45,21 @@
   }
 
   $effect(() => {
-    if (open) {
-      load();
-    }
+    if (open) load();
   });
 
-  function onBackdropClick(e: MouseEvent): void {
-    if (e.target === e.currentTarget) {
-      open = false;
-    }
+  function onBackdrop(e: MouseEvent) {
+    if (e.target === e.currentTarget) open = false;
+  }
+  function onKeydown(e: KeyboardEvent) {
+    if (e.key === 'Escape') open = false;
   }
 
-  function onKeydown(e: KeyboardEvent): void {
-    if (e.key === 'Escape') {
-      open = false;
-    }
-  }
+  const toggles: { key: keyof Settings; label: string }[] = [
+    { key: 'scan_on_startup', label: 'Scan games on startup' },
+    { key: 'minimize_to_tray', label: 'Minimize to tray' },
+    { key: 'launch_on_startup', label: 'Launch on system startup' },
+  ];
 </script>
 
 {#if open}
@@ -66,157 +68,139 @@
     role="dialog"
     aria-modal="true"
     aria-label="Settings"
-    class="fixed inset-0 z-50 flex items-center justify-center"
-    onclick={onBackdropClick}
+    class="absolute inset-0 z-[60] flex items-center justify-center"
+    onclick={onBackdrop}
     onkeydown={onKeydown}
-    style="background: rgba(0, 0, 0, 0.6); backdrop-filter: blur(4px);"
+    style="background: rgba(6, 6, 8, 0.62); backdrop-filter: blur(6px); animation: fade-up 0.18s ease;"
   >
     <div
-      class="w-[480px] rounded-xl border border-border-subtle overflow-hidden animate-fade-up"
-      style="background: var(--color-bg-surface); box-shadow: 0 24px 48px rgba(0, 0, 0, 0.4);"
+      class="w-[480px] max-w-[90%] rounded-2xl border border-line overflow-hidden"
+      style="background: var(--color-ink-1); box-shadow: 0 30px 70px rgba(0,0,0,0.6); animation: fade-up 0.22s ease;"
     >
-      <!-- Header -->
-      <div class="flex items-center justify-between px-6 py-4 border-b border-border-subtle">
-        <h2 class="font-display text-lg font-semibold text-text-primary tracking-wide uppercase">
-          Settings
-        </h2>
+      <!-- header -->
+      <div class="flex items-center justify-between px-[22px] py-[18px] border-b border-line">
+        <span class="font-display text-[15px] font-semibold tracking-[0.04em] text-t-hi"
+          >Settings</span
+        >
         <button
-          class="w-8 h-8 flex items-center justify-center rounded-md text-text-secondary hover:text-white hover:bg-[rgba(255,60,60,0.7)] transition-all duration-150"
           onclick={() => (open = false)}
           aria-label="Close settings"
+          class="w-[30px] h-[30px] grid place-items-center rounded-lg text-t-mid cursor-pointer transition-all duration-150 hover:text-white"
+          onmouseenter={(e) =>
+            ((e.currentTarget as HTMLElement).style.background = 'rgba(232,72,72,0.7)')}
+          onmouseleave={(e) => ((e.currentTarget as HTMLElement).style.background = 'transparent')}
         >
-          <svg width="12" height="12" viewBox="0 0 12 12" fill="none">
-            <line
-              x1="2"
-              y1="2"
-              x2="10"
-              y2="10"
+          <svg width="12" height="12" viewBox="0 0 12 12"
+            ><line
+              x1="2.4"
+              y1="2.4"
+              x2="9.6"
+              y2="9.6"
               stroke="currentColor"
-              stroke-width="1.5"
+              stroke-width="1.4"
               stroke-linecap="round"
-            />
-            <line
-              x1="10"
-              y1="2"
-              x2="2"
-              y2="10"
+            /><line
+              x1="9.6"
+              y1="2.4"
+              x2="2.4"
+              y2="9.6"
               stroke="currentColor"
-              stroke-width="1.5"
+              stroke-width="1.4"
               stroke-linecap="round"
-            />
-          </svg>
+            /></svg
+          >
         </button>
       </div>
 
-      <!-- Body -->
-      <div class="px-6 py-5 flex flex-col gap-4">
-        <!-- Overlay DLL Path -->
-        <div class="flex flex-col gap-1.5">
-          <label for="dll-path" class="font-body text-sm text-text-secondary"
-            >Overlay DLL Path</label
-          >
+      <!-- body -->
+      <div class="px-[22px] py-5 flex flex-col gap-[18px]">
+        <!-- dll path -->
+        <div class="flex flex-col gap-2">
+          <span class="text-[12.5px] text-t-mid">Overlay DLL path</span>
           <input
-            id="dll-path"
             type="text"
-            placeholder="Auto-detect (default)"
+            placeholder="Auto-detect (next to injector.exe)"
             value={settings.overlay_dll_path ?? ''}
-            oninput={(e) => {
-              const v = (e.target as HTMLInputElement).value;
-              settings.overlay_dll_path = v || null;
-            }}
-            class="w-full px-3 py-2 rounded-lg border border-border-subtle bg-[rgba(255,255,255,0.04)] text-text-primary font-body text-sm outline-none focus:border-border-glow transition-colors placeholder:text-text-muted"
+            oninput={(e) =>
+              (settings.overlay_dll_path = (e.target as HTMLInputElement).value || null)}
+            class="w-full px-[13px] py-[10px] rounded-[10px] border border-line text-t-hi font-mono text-[11.5px] outline-none transition-colors placeholder:text-t-lo"
+            style="background: rgba(255,255,255,0.04);"
           />
         </div>
 
-        <!-- Toggle: Scan on Startup -->
-        <label class="flex items-center justify-between cursor-pointer group">
-          <span
-            class="font-body text-sm text-text-secondary group-hover:text-text-primary transition-colors"
-            >Scan games on startup</span
-          >
-          <button
-            role="switch"
-            aria-label="Scan games on startup"
-            aria-checked={settings.scan_on_startup}
-            onclick={() => (settings.scan_on_startup = !settings.scan_on_startup)}
-            class="w-10 h-[22px] rounded-full relative transition-colors duration-200"
-            style="background: {settings.scan_on_startup
-              ? 'var(--color-accent)'
-              : 'rgba(255,255,255,0.1)'};"
-          >
-            <span
-              class="absolute top-[3px] w-4 h-4 rounded-full bg-white transition-transform duration-200"
-              style="left: {settings.scan_on_startup ? '21px' : '3px'};"
-            ></span>
-          </button>
-        </label>
+        <!-- default provider -->
+        <div class="flex flex-col gap-[9px]">
+          <span class="text-[12.5px] text-t-mid">Default AI provider</span>
+          <div class="flex gap-[7px]">
+            {#each providerKeys as key (key)}
+              {@const active = key === provider}
+              <button
+                onclick={() => setProvider(key)}
+                class="flex-1 flex items-center justify-center gap-[7px] py-[10px] rounded-[9px] font-display text-[12.5px] font-medium cursor-pointer transition-all duration-150"
+                style="
+                  border: 1px solid {active
+                  ? 'color-mix(in oklab, var(--accent) 34%, transparent)'
+                  : 'var(--color-line)'};
+                  background: {active
+                  ? 'color-mix(in oklab, var(--accent) 16%, transparent)'
+                  : 'rgba(255,255,255,0.02)'};
+                  color: {active ? 'var(--color-t-hi)' : 'var(--color-t-mid)'};
+                "
+              >
+                <span
+                  class="w-[7px] h-[7px] rounded-full"
+                  style="background: {PROVIDERS[key].dot}; box-shadow: 0 0 6px {PROVIDERS[key]
+                    .dot};"
+                ></span>
+                {PROVIDERS[key].label}
+              </button>
+            {/each}
+          </div>
+        </div>
 
-        <!-- Toggle: Minimize to Tray -->
-        <label class="flex items-center justify-between cursor-pointer group">
-          <span
-            class="font-body text-sm text-text-secondary group-hover:text-text-primary transition-colors"
-            >Minimize to tray</span
-          >
-          <button
-            role="switch"
-            aria-label="Minimize to tray"
-            aria-checked={settings.minimize_to_tray}
-            onclick={() => (settings.minimize_to_tray = !settings.minimize_to_tray)}
-            class="w-10 h-[22px] rounded-full relative transition-colors duration-200"
-            style="background: {settings.minimize_to_tray
-              ? 'var(--color-accent)'
-              : 'rgba(255,255,255,0.1)'};"
-          >
-            <span
-              class="absolute top-[3px] w-4 h-4 rounded-full bg-white transition-transform duration-200"
-              style="left: {settings.minimize_to_tray ? '21px' : '3px'};"
-            ></span>
-          </button>
-        </label>
-
-        <!-- Toggle: Launch on Startup -->
-        <label class="flex items-center justify-between cursor-pointer group">
-          <span
-            class="font-body text-sm text-text-secondary group-hover:text-text-primary transition-colors"
-            >Launch on system startup</span
-          >
-          <button
-            role="switch"
-            aria-label="Launch on system startup"
-            aria-checked={settings.launch_on_startup}
-            onclick={() => (settings.launch_on_startup = !settings.launch_on_startup)}
-            class="w-10 h-[22px] rounded-full relative transition-colors duration-200"
-            style="background: {settings.launch_on_startup
-              ? 'var(--color-accent)'
-              : 'rgba(255,255,255,0.1)'};"
-          >
-            <span
-              class="absolute top-[3px] w-4 h-4 rounded-full bg-white transition-transform duration-200"
-              style="left: {settings.launch_on_startup ? '21px' : '3px'};"
-            ></span>
-          </button>
-        </label>
+        <!-- toggles -->
+        {#each toggles as t (t.key)}
+          {@const on = settings[t.key] as boolean}
+          <div class="flex items-center justify-between">
+            <span class="text-[13px] text-t-mid">{t.label}</span>
+            <button
+              role="switch"
+              aria-checked={on}
+              aria-label={t.label}
+              onclick={() => ((settings[t.key] as boolean) = !on)}
+              class="relative w-[42px] h-[23px] rounded-full border-none cursor-pointer transition-colors duration-200"
+              style="background: {on ? 'var(--accent)' : 'rgba(255,255,255,0.13)'};"
+            >
+              <span
+                class="absolute top-[3px] w-[17px] h-[17px] rounded-full bg-white transition-all duration-200"
+                style="left: {on ? '22px' : '3px'};"
+              ></span>
+            </button>
+          </div>
+        {/each}
       </div>
 
-      <!-- Footer -->
+      <!-- footer -->
       {#if saveError}
-        <div class="px-6 py-2 text-sm text-red-400">{saveError}</div>
+        <div class="px-[22px] py-2 text-sm text-err">{saveError}</div>
       {/if}
-      <div class="flex justify-end gap-3 px-6 py-4 border-t border-border-subtle">
-        <button
-          class="px-4 py-2 rounded-lg font-body text-sm text-text-secondary hover:text-text-primary hover:bg-[rgba(255,255,255,0.06)] transition-all duration-150"
-          onclick={() => (open = false)}
-        >
-          Cancel
-        </button>
-        <button
-          class="px-4 py-2 rounded-lg font-body text-sm text-white transition-all duration-150"
-          style="background: linear-gradient(135deg, #638cff 0%, #a855f7 100%); box-shadow: 0 0 12px rgba(99, 140, 255, 0.25);"
-          onclick={save}
-          disabled={saving}
-        >
-          {saving ? 'Saving...' : 'Save'}
-        </button>
+      <div class="flex items-center justify-between px-[22px] py-4 border-t border-line">
+        <span class="font-mono text-[10px] text-t-lo">no telemetry · bring-your-own-AI</span>
+        <div class="flex gap-[10px]">
+          <button
+            onclick={() => (open = false)}
+            class="px-4 py-2 rounded-[9px] font-display text-[12.5px] font-medium text-t-mid cursor-pointer transition-all duration-150 hover:text-t-hi hover:bg-white/[0.05]"
+            >Cancel</button
+          >
+          <button
+            onclick={save}
+            disabled={saving}
+            class="px-[18px] py-2 rounded-[9px] font-display text-[12.5px] font-semibold cursor-pointer transition-all duration-150"
+            style="background: var(--accent); color: #0b0b0d;"
+          >
+            {saving ? 'Saving…' : 'Save'}
+          </button>
+        </div>
       </div>
     </div>
   </div>
