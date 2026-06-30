@@ -17,6 +17,21 @@ const ERROR_COLOR: [f32; 4] = [0.91, 0.39, 0.42, 1.0];
 /// resolution and then scaled proportionally to the actual display.
 const REF_WIDTH: f32 = 1920.0;
 
+/// Draw a small filled dot at the current cursor, vertically centred on the
+/// text line, then advance the cursor past it. The default ImGui font is
+/// Latin-1 only and renders glyphs like a diamond or bullet as '?', so the
+/// brand mark and status dot are drawn as shapes instead of typed.
+fn draw_dot(ui: &Ui, color: [f32; 4], radius: f32) {
+    let p = ui.cursor_screen_pos();
+    let line_h = ui.text_line_height();
+    ui.get_window_draw_list()
+        .add_circle([p[0] + radius, p[1] + line_h * 0.5], radius, color)
+        .filled(true)
+        .build();
+    ui.dummy([radius * 2.0, line_h]);
+    ui.same_line();
+}
+
 pub fn draw_panel(ui: &Ui) {
     // Snapshot state we need for drawing, then drop the lock.
     let (
@@ -111,12 +126,13 @@ pub fn draw_panel(ui: &Ui) {
     ui.window("AI Game Companion")
         .position([margin, margin], Condition::FirstUseEver)
         .size([win_w, win_h], Condition::FirstUseEver)
+        .title_bar(false)
+        .collapsible(false)
         .build(|| {
             let window_size = ui.content_region_avail();
 
             // ── Header: brand + provider ────────────────────────────────
-            ui.text_colored(ACCENT, "\u{25C6}"); // Sage mark
-            ui.same_line();
+            draw_dot(ui, ACCENT, 4.5 * scale); // Sage mark (drawn; font has no glyph)
             ui.text_colored(TEXT_HI, "SAGE");
 
             let dropdown_height = 30.0 * scale;
@@ -176,13 +192,13 @@ pub fn draw_panel(ui: &Ui) {
 
                 // Streaming response in progress (with a soft caret).
                 if is_loading && !streaming_snapshot.is_empty() {
-                    let live = format!("{streaming_snapshot}\u{258C}");
+                    let live = format!("{streaming_snapshot}|");
                     draw_message(ui, MessageRole::Assistant, &live, true, indent, scale);
                     ui.set_scroll_here_y_with_ratio(1.0);
                 } else if is_loading {
                     // Awaiting first token: a quiet "thinking" line.
                     let _c = ui.push_style_color(StyleColor::Text, TEXT_LO);
-                    ui.text("Sage is thinking\u{2026}");
+                    ui.text("Sage is thinking...");
                 }
 
                 // Auto-scroll to bottom when new content arrives.
@@ -230,7 +246,8 @@ pub fn draw_panel(ui: &Ui) {
                     let _b = ui.push_style_color(StyleColor::Button, ACCENT);
                     let _bh =
                         ui.push_style_color(StyleColor::ButtonHovered, [0.95, 0.71, 0.31, 1.0]);
-                    let _ba = ui.push_style_color(StyleColor::ButtonActive, [0.80, 0.57, 0.20, 1.0]);
+                    let _ba =
+                        ui.push_style_color(StyleColor::ButtonActive, [0.80, 0.57, 0.20, 1.0]);
                     let _bt = ui.push_style_color(StyleColor::Text, [0.043, 0.043, 0.051, 1.0]);
                     ui.enabled(send_enabled, || {
                         send_pressed = ui.button_with_size("Send", [btn_w, input_h]);
@@ -310,26 +327,33 @@ pub fn draw_panel(ui: &Ui) {
 
             // ── Status bar ──────────────────────────────────────────────
             ui.separator();
-            if let Some(err) = &error_snapshot {
-                ui.text_colored(ERROR_COLOR, "\u{25CF}");
-                ui.same_line();
-                ui.text_colored(TEXT_MID, format!("Error: {err}"));
+            let (status_color, status_text) = if let Some(err) = &error_snapshot {
+                (ERROR_COLOR, format!("Error: {err}"))
             } else if is_loading {
-                ui.text_colored(ACCENT, "\u{25CF}");
-                ui.same_line();
-                ui.text_colored(TEXT_MID, "Streaming\u{2026}");
+                (ACCENT, "Streaming...".to_string())
             } else {
-                ui.text_colored(OK_COLOR, "\u{25CF}");
-                ui.same_line();
-                ui.text_colored(TEXT_MID, "Ready  \u{00B7}  F9 toggle  \u{00B7}  F10 translate");
-            }
+                (
+                    OK_COLOR,
+                    "Ready  \u{00B7}  F9 toggle  \u{00B7}  F10 translate".to_string(),
+                )
+            };
+            // Status indicator drawn as a filled dot (font has no dot glyph).
+            draw_dot(ui, status_color, 3.5 * scale);
+            ui.text_colored(TEXT_MID, &status_text);
         });
 }
 
 /// Draw a single chat turn: a coloured accent rail, a role label, and the
 /// wrapped body. The rail is drawn beside (not behind) the text, so it needs
 /// no draw-list channel splitting and renders correctly in immediate mode.
-fn draw_message(ui: &Ui, role: MessageRole, content: &str, streaming: bool, indent: f32, scale: f32) {
+fn draw_message(
+    ui: &Ui,
+    role: MessageRole,
+    content: &str,
+    streaming: bool,
+    indent: f32,
+    scale: f32,
+) {
     let (label, label_color, bar_color) = match role {
         MessageRole::User => ("YOU", TEXT_LO, ACCENT),
         MessageRole::Assistant => ("SAGE", ACCENT, SAGE_BAR),
@@ -346,7 +370,10 @@ fn draw_message(ui: &Ui, role: MessageRole, content: &str, streaming: bool, inde
         let _lc = ui.push_style_color(StyleColor::Text, label_color);
         ui.text(label);
         drop(_lc);
-        let _bc = ui.push_style_color(StyleColor::Text, if streaming { ACCENT } else { body_color });
+        let _bc = ui.push_style_color(
+            StyleColor::Text,
+            if streaming { ACCENT } else { body_color },
+        );
         // text_wrapped wraps at the child window's content-region edge.
         ui.text_wrapped(content);
     });
@@ -357,7 +384,10 @@ fn draw_message(ui: &Ui, role: MessageRole, content: &str, streaming: bool, inde
     let dl = ui.get_window_draw_list();
     dl.add_rect(
         [start[0], start[1]],
-        [start[0] + 3.0 * scale, (end[1] - 8.0 * scale).max(start[1] + 4.0)],
+        [
+            start[0] + 3.0 * scale,
+            (end[1] - 8.0 * scale).max(start[1] + 4.0),
+        ],
         bar_color,
     )
     .filled(true)
