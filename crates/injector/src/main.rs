@@ -161,37 +161,45 @@ fn inject_one_shot(process_name: &str, dll_path: PathBuf, timeout_secs: u64) -> 
     let timeout = Duration::from_secs(timeout_secs);
     let start = Instant::now();
 
-    let process = loop {
-        match Process::by_name(process_name) {
-            Ok(p) => break p,
-            Err(_) => {
-                if timeout_secs == 0 || start.elapsed() >= timeout {
-                    eprintln!("Process '{}' not found.", process_name);
-                    eprintln!();
-                    eprintln!("Hint: use --list to see running processes, or --timeout N to wait.");
-
-                    if let Ok(processes) = list_process_names() {
-                        let query = process_name.to_lowercase();
-                        let similar: Vec<_> = processes
-                            .iter()
-                            .filter(|p| p.to_lowercase().contains(&query.replace(".exe", "")))
-                            .collect();
-                        if !similar.is_empty() {
-                            eprintln!();
-                            eprintln!("Similar processes:");
-                            for name in similar {
-                                eprintln!("  {name}");
-                            }
-                        }
-                    }
-
-                    bail!("Process not found");
-                }
-                thread::sleep(Duration::from_secs(1));
-                print!(".");
-            }
+    let target_pid = loop {
+        let pid = enumerate_processes().ok().and_then(|processes| {
+            processes
+                .into_iter()
+                .find(|process| process.name.eq_ignore_ascii_case(process_name))
+                .map(|process| process.pid)
+        });
+        if let Some(pid) = pid {
+            break pid;
         }
+
+        if timeout_secs == 0 || start.elapsed() >= timeout {
+            eprintln!("Process '{}' not found.", process_name);
+            eprintln!();
+            eprintln!("Hint: use --list to see running processes, or --timeout N to wait.");
+
+            if let Ok(processes) = list_process_names() {
+                let query = process_name.to_lowercase();
+                let similar: Vec<_> = processes
+                    .iter()
+                    .filter(|p| p.to_lowercase().contains(&query.replace(".exe", "")))
+                    .collect();
+                if !similar.is_empty() {
+                    eprintln!();
+                    eprintln!("Similar processes:");
+                    for name in similar {
+                        eprintln!("  {name}");
+                    }
+                }
+            }
+
+            bail!("Process not found");
+        }
+
+        thread::sleep(Duration::from_secs(1));
+        print!(".");
     };
+
+    let process = Process::by_name(process_name).context("Failed to open target process")?;
 
     println!();
     println!("Injecting {} into {}...", dll_path.display(), process_name);
@@ -199,7 +207,21 @@ fn inject_one_shot(process_name: &str, dll_path: PathBuf, timeout_secs: u64) -> 
     process.inject(dll_path).context("Failed to inject DLL")?;
 
     println!("Injection successful!");
-    Ok(())
+    println!("INJECTED");
+
+    loop {
+        match enumerate_processes() {
+            Ok(processes) => {
+                if !processes.iter().any(|process| process.pid == target_pid) {
+                    println!("GAME_EXITED");
+                    return Ok(());
+                }
+            }
+            Err(e) => eprintln!("Failed to enumerate processes: {e}"),
+        }
+
+        thread::sleep(Duration::from_secs(3));
+    }
 }
 
 // --- Watch mode ---

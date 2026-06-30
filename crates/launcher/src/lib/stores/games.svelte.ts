@@ -107,6 +107,16 @@ export function getSelectedGame(): Game | undefined {
 
 let gameStatuses = $state<Record<string, string>>({});
 
+listen<string>('injector-linked', (event) => {
+  const gameId = event.payload;
+  gameStatuses = { ...gameStatuses, [gameId]: 'linked' };
+});
+
+listen<string>('injector-error', (event) => {
+  const gameId = event.payload;
+  gameStatuses = { ...gameStatuses, [gameId]: 'error' };
+});
+
 // Listen for injector process exit and reset status
 listen<string>('injector-finished', (event) => {
   const gameId = event.payload;

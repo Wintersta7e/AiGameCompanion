@@ -152,10 +152,25 @@ pub async fn launch_game(game_id: String, app: tauri::AppHandle) -> Result<Strin
         let gid = game_id.clone();
         tauri::async_runtime::spawn(async move {
             use tauri_plugin_shell::process::CommandEvent;
+            let mut injected_seen = false;
             while let Some(event) = rx.recv().await {
                 match event {
+                    CommandEvent::Stdout(bytes) => {
+                        let output = String::from_utf8_lossy(&bytes);
+                        if !injected_seen && output.lines().any(|line| line.contains("INJECTED")) {
+                            injected_seen = true;
+                            let s = app_handle.state::<AppState>();
+                            if let Some(session) = s.active_injectors.lock().get_mut(&gid) {
+                                session.started_at = std::time::Instant::now();
+                            }
+                            let _ = app_handle.emit("injector-linked", &gid);
+                        }
+                    }
                     CommandEvent::Terminated(_) | CommandEvent::Error(_) => {
                         let _ = app_handle.emit("injector-finished", &gid);
+                        if !injected_seen {
+                            let _ = app_handle.emit("injector-error", &gid);
+                        }
                         let s = app_handle.state::<AppState>();
                         // Remove session and compute play time
                         let session = s.active_injectors.lock().remove(&gid);
