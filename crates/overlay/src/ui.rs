@@ -1,10 +1,17 @@
-use imgui::{Condition, StyleColor, Ui};
+use imgui::{Condition, StyleColor, StyleVar, Ui};
 
 use crate::state::{ChatMessage, MessageRole, STATE};
 
-const USER_COLOR: [f32; 4] = [0.4, 0.7, 1.0, 1.0]; // light blue
-const ASSISTANT_COLOR: [f32; 4] = [0.6, 1.0, 0.6, 1.0]; // light green
-const ERROR_COLOR: [f32; 4] = [1.0, 0.4, 0.4, 1.0]; // red
+// ── Sage palette (overlay has no per-game cover art, so it uses the brand
+//    accent rather than the launcher's cover-driven colour). ──────────────
+const ACCENT: [f32; 4] = [0.878, 0.635, 0.235, 1.0]; // brand gold
+const ACCENT_DIM: [f32; 4] = [0.878, 0.635, 0.235, 0.20];
+const TEXT_HI: [f32; 4] = [0.925, 0.925, 0.937, 1.0];
+const TEXT_MID: [f32; 4] = [0.604, 0.604, 0.655, 1.0];
+const TEXT_LO: [f32; 4] = [0.360, 0.360, 0.410, 1.0];
+const SAGE_BAR: [f32; 4] = [0.45, 0.47, 0.50, 0.55];
+const OK_COLOR: [f32; 4] = [0.29, 0.84, 0.63, 1.0];
+const ERROR_COLOR: [f32; 4] = [0.91, 0.39, 0.42, 1.0];
 
 /// Reference resolution for UI layout. All sizes are authored for this
 /// resolution and then scaled proportionally to the actual display.
@@ -61,14 +68,45 @@ pub fn draw_panel(ui: &Ui) {
     let scale = (display_w / REF_WIDTH).max(1.0);
 
     let win_w = 500.0 * scale;
-    let win_h = 400.0 * scale;
+    let win_h = 440.0 * scale;
     let margin = 16.0 * scale;
-    let btn_w = 64.0 * scale;
-    let input_h = 60.0 * scale;
-    let input_area_height = 100.0 * scale;
-    let status_bar_height = 24.0 * scale;
+    let btn_w = 68.0 * scale;
+    let input_h = 56.0 * scale;
+    let input_area_height = 104.0 * scale;
+    let status_bar_height = 26.0 * scale;
 
-    let window_bg = ui.push_style_color(StyleColor::WindowBg, [0.08, 0.08, 0.10, 0.92]);
+    // ── Style: rounded, padded, comfortable dark panel ──────────────────
+    // Bound as named locals so they auto-pop (in reverse) at end of fn,
+    // staying active for the whole window draw.
+    let _sv_wr = ui.push_style_var(StyleVar::WindowRounding(13.0));
+    let _sv_cr = ui.push_style_var(StyleVar::ChildRounding(11.0));
+    let _sv_fr = ui.push_style_var(StyleVar::FrameRounding(9.0));
+    let _sv_pr = ui.push_style_var(StyleVar::PopupRounding(9.0));
+    let _sv_sr = ui.push_style_var(StyleVar::ScrollbarRounding(8.0));
+    let _sv_ss = ui.push_style_var(StyleVar::ScrollbarSize(8.0));
+    let _sv_wp = ui.push_style_var(StyleVar::WindowPadding([16.0, 14.0]));
+    let _sv_fp = ui.push_style_var(StyleVar::FramePadding([11.0, 8.0]));
+    let _sv_is = ui.push_style_var(StyleVar::ItemSpacing([10.0, 10.0]));
+    let _sv_wb = ui.push_style_var(StyleVar::WindowBorderSize(1.0));
+    let _sv_fb = ui.push_style_var(StyleVar::FrameBorderSize(1.0));
+
+    let _sc_wbg = ui.push_style_color(StyleColor::WindowBg, [0.055, 0.055, 0.062, 0.95]);
+    let _sc_cbg = ui.push_style_color(StyleColor::ChildBg, [1.0, 1.0, 1.0, 0.015]);
+    let _sc_pbg = ui.push_style_color(StyleColor::PopupBg, [0.07, 0.07, 0.08, 0.98]);
+    let _sc_bdr = ui.push_style_color(StyleColor::Border, [1.0, 1.0, 1.0, 0.08]);
+    let _sc_txt = ui.push_style_color(StyleColor::Text, TEXT_HI);
+    let _sc_txd = ui.push_style_color(StyleColor::TextDisabled, TEXT_LO);
+    let _sc_fbg = ui.push_style_color(StyleColor::FrameBg, [1.0, 1.0, 1.0, 0.04]);
+    let _sc_fbh = ui.push_style_color(StyleColor::FrameBgHovered, [1.0, 1.0, 1.0, 0.07]);
+    let _sc_fba = ui.push_style_color(StyleColor::FrameBgActive, [1.0, 1.0, 1.0, 0.09]);
+    let _sc_btn = ui.push_style_color(StyleColor::Button, [1.0, 1.0, 1.0, 0.05]);
+    let _sc_bth = ui.push_style_color(StyleColor::ButtonHovered, [1.0, 1.0, 1.0, 0.09]);
+    let _sc_bta = ui.push_style_color(StyleColor::ButtonActive, [1.0, 1.0, 1.0, 0.12]);
+    let _sc_hdr = ui.push_style_color(StyleColor::Header, ACCENT_DIM);
+    let _sc_hdh = ui.push_style_color(StyleColor::HeaderHovered, [1.0, 1.0, 1.0, 0.08]);
+    let _sc_sep = ui.push_style_color(StyleColor::Separator, [1.0, 1.0, 1.0, 0.07]);
+    let _sc_sgb = ui.push_style_color(StyleColor::ScrollbarBg, [0.0, 0.0, 0.0, 0.0]);
+    let _sc_sgg = ui.push_style_color(StyleColor::ScrollbarGrab, [1.0, 1.0, 1.0, 0.12]);
 
     ui.window("AI Game Companion")
         .position([margin, margin], Condition::FirstUseEver)
@@ -76,17 +114,17 @@ pub fn draw_panel(ui: &Ui) {
         .build(|| {
             let window_size = ui.content_region_avail();
 
-            // --- Provider dropdown ---
-            let dropdown_height = if available_providers.len() > 1 || available_providers.is_empty()
-            {
-                28.0 * scale
-            } else {
-                0.0
-            };
+            // ── Header: brand + provider ────────────────────────────────
+            ui.text_colored(ACCENT, "\u{25C6}"); // Sage mark
+            ui.same_line();
+            ui.text_colored(TEXT_HI, "SAGE");
+
+            let dropdown_height = 30.0 * scale;
+            let combo_w = 132.0 * scale;
 
             if available_providers.len() > 1 {
                 let current_label = format!("{current_provider}");
-                let combo_w = 120.0 * scale;
+                ui.same_line_with_pos(window_size[0] - combo_w);
                 ui.set_next_item_width(combo_w);
                 if let Some(_combo) = ui.begin_combo("##provider", &current_label) {
                     for &p in &available_providers {
@@ -107,10 +145,21 @@ pub fn draw_panel(ui: &Ui) {
                     }
                 }
             } else if available_providers.is_empty() {
-                ui.text_colored(ERROR_COLOR, "No AI provider configured");
+                ui.same_line_with_pos(window_size[0] - combo_w);
+                ui.text_colored(ERROR_COLOR, "No provider");
+            } else {
+                // Exactly one provider: show it as a quiet right-aligned label.
+                let label = format!("{current_provider}");
+                let tw = ui.calc_text_size(&label)[0];
+                ui.same_line_with_pos(window_size[0] - tw);
+                ui.text_colored(TEXT_MID, &label);
             }
 
-            // --- Chat history (scrollable) ---
+            ui.spacing();
+            ui.separator();
+            ui.spacing();
+
+            // ── Chat history (scrollable) ───────────────────────────────
             let chat_height =
                 window_size[1] - input_area_height - status_bar_height - dropdown_height;
 
@@ -119,50 +168,47 @@ pub fn draw_panel(ui: &Ui) {
                 .size([0.0, chat_height])
                 .begin()
             {
+                let indent = 12.0 * scale;
+
                 for (role, content) in &messages_snapshot {
-                    let (label, color) = match role {
-                        MessageRole::User => ("You", USER_COLOR),
-                        MessageRole::Assistant => ("Sage", ASSISTANT_COLOR),
-                    };
-                    let _color = ui.push_style_color(StyleColor::Text, color);
-                    ui.text_wrapped(format!("{label}: {content}"));
-                    _color.pop();
-                    ui.spacing();
+                    draw_message(ui, *role, content, false, indent, scale);
                 }
 
-                // Show streaming response in progress
+                // Streaming response in progress (with a soft caret).
                 if is_loading && !streaming_snapshot.is_empty() {
-                    let _color = ui.push_style_color(StyleColor::Text, ASSISTANT_COLOR);
-                    ui.text_wrapped(format!("Sage: {streaming_snapshot}"));
-                    _color.pop();
-                    ui.spacing();
+                    let live = format!("{streaming_snapshot}\u{258C}");
+                    draw_message(ui, MessageRole::Assistant, &live, true, indent, scale);
                     ui.set_scroll_here_y_with_ratio(1.0);
+                } else if is_loading {
+                    // Awaiting first token: a quiet "thinking" line.
+                    let _c = ui.push_style_color(StyleColor::Text, TEXT_LO);
+                    ui.text("Sage is thinking\u{2026}");
                 }
 
-                // Auto-scroll to bottom when new content arrives
+                // Auto-scroll to bottom when new content arrives.
                 if ui.scroll_y() >= ui.scroll_max_y() - 20.0 {
                     ui.set_scroll_here_y_with_ratio(1.0);
                 }
             }
 
-            ui.separator();
+            ui.spacing();
 
-            // --- Input section ---
+            // ── Input row ───────────────────────────────────────────────
             let mut input_buf = input_snapshot;
             ui.input_text_multiline(
                 "##input",
                 &mut input_buf,
-                [window_size[0] - btn_w - 16.0, input_h],
+                [window_size[0] - btn_w - 12.0, input_h],
             )
             .build();
 
-            // Check for Enter (without Shift) to send
+            // Enter (without Shift) sends.
             let enter_pressed = ui.is_key_pressed(imgui::Key::Enter) && !ui.io().key_shift;
 
             ui.same_line();
             if is_loading {
-                // Show Cancel button instead of Send when loading
-                if ui.button_with_size("Cancel", [btn_w, input_h]) {
+                // Cancel replaces Send while a request is in flight.
+                if ui.button_with_size("Stop", [btn_w, input_h]) {
                     let mut state = STATE.lock();
                     let partial = (!state.streaming_response.is_empty())
                         .then(|| format!("{} [cancelled]", state.streaming_response));
@@ -179,11 +225,18 @@ pub fn draw_panel(ui: &Ui) {
             } else {
                 let send_enabled = !input_buf.trim().is_empty();
                 let mut send_pressed = false;
-                ui.enabled(send_enabled, || {
-                    send_pressed = ui.button_with_size("Send", [btn_w, input_h]);
-                });
+                // Accent-filled Send button (scoped colour push).
+                {
+                    let _b = ui.push_style_color(StyleColor::Button, ACCENT);
+                    let _bh =
+                        ui.push_style_color(StyleColor::ButtonHovered, [0.95, 0.71, 0.31, 1.0]);
+                    let _ba = ui.push_style_color(StyleColor::ButtonActive, [0.80, 0.57, 0.20, 1.0]);
+                    let _bt = ui.push_style_color(StyleColor::Text, [0.043, 0.043, 0.051, 1.0]);
+                    ui.enabled(send_enabled, || {
+                        send_pressed = ui.button_with_size("Send", [btn_w, input_h]);
+                    });
+                }
 
-                // Handle send
                 if (send_pressed || enter_pressed) && send_enabled {
                     let generation = {
                         let mut state = STATE.lock();
@@ -202,15 +255,15 @@ pub fn draw_panel(ui: &Ui) {
                     };
 
                     if let Some(gen) = generation {
-                        // Clear local buffer so write-back doesn't overwrite the cleared state
+                        // Clear local buffer so write-back doesn't overwrite cleared state.
                         input_buf.clear();
 
                         let skip_screenshot = attach_screenshot
                             && current_provider == crate::provider::Provider::Openai;
 
                         if attach_screenshot && !skip_screenshot {
-                            // Initiate hide-capture-show. The actual API call will be
-                            // triggered from lib.rs once capture completes.
+                            // Initiate hide-capture-show; the API call fires from
+                            // lib.rs once capture completes.
                             let mut state = STATE.lock();
                             state.capture_pending = true;
                             state.capture_wait_frames = 2;
@@ -220,13 +273,11 @@ pub fn draw_panel(ui: &Ui) {
                             crate::CAPTURE_ACTIVE.store(true, std::sync::atomic::Ordering::Release);
                         } else {
                             if skip_screenshot {
-                                // OpenAI doesn't support screenshot attachment yet
                                 STATE.lock().push_message(ChatMessage::new(
                                     MessageRole::Assistant,
                                     "(Screenshots not yet available for OpenAI)".into(),
                                 ));
                             }
-                            // No screenshot -- spawn API call immediately
                             let messages = STATE.lock().messages.clone();
                             crate::spawn_api_request(gen, messages, None);
                         }
@@ -234,11 +285,12 @@ pub fn draw_panel(ui: &Ui) {
                 }
             }
 
+            // ── Footer controls: screenshot toggle + new chat ───────────
+            ui.spacing();
             let mut attach = attach_screenshot;
-            ui.checkbox("Attach Screenshot", &mut attach);
-            ui.same_line();
-            // Clear button -- reset conversation
-            if ui.small_button("Clear Chat") {
+            ui.checkbox("Attach screenshot", &mut attach);
+            ui.same_line_with_pos(window_size[0] - 92.0 * scale);
+            if ui.small_button("New chat") {
                 let mut state = STATE.lock();
                 state.messages.clear();
                 state.error = None;
@@ -249,25 +301,68 @@ pub fn draw_panel(ui: &Ui) {
                 }
             }
 
-            // Write back UI changes to state
+            // Write back UI changes to state.
             {
                 let mut state = STATE.lock();
                 state.input_buffer = input_buf;
                 state.attach_screenshot = attach;
             }
 
-            // --- Status bar ---
+            // ── Status bar ──────────────────────────────────────────────
             ui.separator();
             if let Some(err) = &error_snapshot {
-                let _color = ui.push_style_color(StyleColor::Text, ERROR_COLOR);
-                ui.text(format!("Error: {err}"));
-                _color.pop();
+                ui.text_colored(ERROR_COLOR, "\u{25CF}");
+                ui.same_line();
+                ui.text_colored(TEXT_MID, format!("Error: {err}"));
             } else if is_loading {
-                ui.text("Streaming...");
+                ui.text_colored(ACCENT, "\u{25CF}");
+                ui.same_line();
+                ui.text_colored(TEXT_MID, "Streaming\u{2026}");
             } else {
-                ui.text("Ready");
+                ui.text_colored(OK_COLOR, "\u{25CF}");
+                ui.same_line();
+                ui.text_colored(TEXT_MID, "Ready  \u{00B7}  F9 toggle  \u{00B7}  F10 translate");
             }
         });
+}
 
-    window_bg.pop();
+/// Draw a single chat turn: a coloured accent rail, a role label, and the
+/// wrapped body. The rail is drawn beside (not behind) the text, so it needs
+/// no draw-list channel splitting and renders correctly in immediate mode.
+fn draw_message(ui: &Ui, role: MessageRole, content: &str, streaming: bool, indent: f32, scale: f32) {
+    let (label, label_color, bar_color) = match role {
+        MessageRole::User => ("YOU", TEXT_LO, ACCENT),
+        MessageRole::Assistant => ("SAGE", ACCENT, SAGE_BAR),
+    };
+    let body_color = match role {
+        MessageRole::User => TEXT_HI,
+        MessageRole::Assistant => [0.85, 0.86, 0.88, 1.0],
+    };
+
+    let start = ui.cursor_screen_pos();
+
+    ui.indent_by(indent);
+    ui.group(|| {
+        let _lc = ui.push_style_color(StyleColor::Text, label_color);
+        ui.text(label);
+        drop(_lc);
+        let _bc = ui.push_style_color(StyleColor::Text, if streaming { ACCENT } else { body_color });
+        // text_wrapped wraps at the child window's content-region edge.
+        ui.text_wrapped(content);
+    });
+    ui.unindent_by(indent);
+
+    // Accent rail beside the turn.
+    let end = ui.cursor_screen_pos();
+    let dl = ui.get_window_draw_list();
+    dl.add_rect(
+        [start[0], start[1]],
+        [start[0] + 3.0 * scale, (end[1] - 8.0 * scale).max(start[1] + 4.0)],
+        bar_color,
+    )
+    .filled(true)
+    .rounding(2.0)
+    .build();
+
+    ui.spacing();
 }
