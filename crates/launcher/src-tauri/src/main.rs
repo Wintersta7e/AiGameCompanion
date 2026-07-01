@@ -28,11 +28,11 @@ use tauri_plugin_global_shortcut::{Code, GlobalShortcutExt, Modifiers, Shortcut,
 
 #[allow(clippy::too_many_lines)] // Tauri builder + setup is one long, linear wiring.
 fn main() {
-    // Overlay toggle hotkey (Ctrl+Alt+G): a modifier chord, not a bare F-key, so
-    // it does not collide with common in-game bindings.
-    let toggle = Shortcut::new(Some(Modifiers::CONTROL | Modifiers::ALT), Code::KeyG);
-    let translate = Shortcut::new(Some(Modifiers::CONTROL | Modifiers::ALT), Code::KeyT);
-    let quick_ask = Shortcut::new(Some(Modifiers::CONTROL | Modifiers::ALT), Code::KeyA);
+    // Overlay hotkeys (Ctrl+Shift+G/T/A): modifier chords, not bare F-keys, and
+    // not Ctrl+Alt (which equals AltGr on international keyboards).
+    let toggle = Shortcut::new(Some(Modifiers::CONTROL | Modifiers::SHIFT), Code::KeyG);
+    let translate = Shortcut::new(Some(Modifiers::CONTROL | Modifiers::SHIFT), Code::KeyT);
+    let quick_ask = Shortcut::new(Some(Modifiers::CONTROL | Modifiers::SHIFT), Code::KeyA);
 
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())

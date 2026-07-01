@@ -297,7 +297,7 @@
         <button class="icon-btn" onclick={newChat} title="New chat" aria-label="New chat">
           <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 1 0 3-6.7L3 8" /><path d="M3 3v5h5" /></svg>
         </button>
-        <button class="icon-btn" onclick={hideOverlay} title="Hide (Ctrl+Alt+G)" aria-label="Hide">
+        <button class="icon-btn" onclick={hideOverlay} title="Hide (Ctrl+Shift+G)" aria-label="Hide">
           <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M6 9l6 6 6-6" /></svg>
         </button>
       </div>
@@ -493,7 +493,7 @@
                 <div class="te-sub">Set api.gemini.api_key in config.toml.</div>
               {:else}
                 <div class="te-title">No foreign text captured yet.</div>
-                <div class="te-sub">Aim at on-screen text and press Ctrl+Alt+T.</div>
+                <div class="te-sub">Aim at on-screen text and press Ctrl+Shift+T.</div>
               {/if}
             </div>
           {/if}
@@ -502,7 +502,7 @@
           <button
             class="recapture live"
             onclick={runTranslate}
-            disabled={translateBusy || !game || !availability.gemini}>Re-capture · Ctrl+Alt+T</button
+            disabled={translateBusy || !game || !availability.gemini}>Re-capture · Ctrl+Shift+T</button
           >
           <button class="recapture live" onclick={copyTranslation} disabled={!translateText}
             >Copy</button

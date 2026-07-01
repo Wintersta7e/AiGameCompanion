@@ -65,7 +65,7 @@
     status === 'launching' ? 'Launching…' : status === 'linked' ? 'Relaunch' : 'Launch',
   );
   let beamLabel = $derived(
-    status === 'linked' ? 'LINKED' : launchBusy ? 'LINKING…' : 'CTRL+ALT+G ⇄ OVERLAY',
+    status === 'linked' ? 'LINKED' : launchBusy ? 'LINKING…' : 'CTRL+SHIFT+G ⇄ OVERLAY',
   );
 
   function capSource(s: string): string {
@@ -372,7 +372,7 @@
             <span
               class="font-mono text-[11px] text-t-hi px-[9px] py-[3px] rounded-md"
               style="background: var(--color-ink-3); border: 1px solid var(--color-line); box-shadow: 0 1.5px 0 rgba(0,0,0,0.4);"
-              >Ctrl+Alt+G</span
+              >Ctrl+Shift+G</span
             >
           </div>
           <!-- vision -->
