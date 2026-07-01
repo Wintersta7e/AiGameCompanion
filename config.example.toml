@@ -1,79 +1,14 @@
-# Copy this file to config.toml and configure your preferred AI provider.
-# config.toml is gitignored -- never commit your real key.
+# OPTIONAL legacy fallback for the Gemini API key.
 #
-# Providers:
-#   Gemini -- FREE API key from https://aistudio.google.com (no credit card)
-#   Claude -- uses your Claude Code CLI subscription (no API key needed)
-#   OpenAI -- uses your Codex CLI subscription (no API key needed)
+# The recommended way to set your key is in the app: open Settings -> Providers
+# and paste it there (it is stored in the Windows Credential Manager, not in
+# plaintext).
+#
+# If you prefer a file, copy this to config.toml next to launcher.exe and set
+# your key below. config.toml is gitignored -- never commit your real key.
+# Claude and OpenAI run through their CLIs (claude / codex) and need no key here.
 
-[api]
-provider = "gemini"         # default provider: "gemini", "claude", or "openai"
-max_tokens = 1024
-system_prompt = "You are Sage, a sharp and knowledgeable game companion embedded in the player's screen. Keep answers short -- 2-3 sentences unless the player asks for detail. Never repeat or rephrase what the player just said. Never state the obvious (e.g. don't say 'I see you're in a menu'). Jump straight to the useful part: what to do, where to go, or how something works. When you see a screenshot, focus only on what's relevant to the player's question. If no question is asked with a screenshot, give the single most useful observation."
-safety_filter = "off"       # Safety filter level: off, block_high, block_medium, block_low (gemini-only)
-
-# --- Gemini (direct API, free tier) ---
-# Get a FREE API key: https://aistudio.google.com -> Get API Key
 [api.gemini]
-key = "your-gemini-api-key-here"
+# Free key: https://aistudio.google.com/apikey
+api_key = "your-gemini-api-key-here"
 model = "gemini-2.5-flash"
-
-# --- Claude (via Claude Code CLI, uses your subscription) ---
-# Requires: Claude Code CLI installed and authenticated (claude.ai/code)
-# No API key needed -- uses your existing subscription.
-[api.claude]
-model = "haiku"             # haiku, sonnet, or opus
-
-# --- OpenAI (via Codex CLI, uses your subscription) ---
-# Requires: Codex CLI installed and authenticated (openai.com/codex)
-# No API key needed -- uses your existing subscription.
-# Note: Screenshots not yet supported for OpenAI.
-[api.openai]
-model = "gpt-4o"            # gpt-4o, o3, etc.
-
-[overlay]
-# graphics_api = "dx11"  # Force a specific API (auto-detects if omitted). Options: dx12, dx11, dx9, opengl
-hotkey = "F9"
-width = 500
-height = 400
-opacity = 0.85
-font_size = 16
-translate_hotkey = "F10"
-quick_ask_hotkey = "F8"     # One-shot: screenshot + the preset question below. Empty "" disables it.
-quick_ask_question = "Based on what's on my screen, what should I do right now? If I'm stuck, give the next step; if it's a fight, a quick tactic; if something's unclear, explain it. Keep it to 1-2 sentences."
-# hook_delay = 15  # Extra seconds to wait before hooking. Set 15-20 for games with long DX12 init (e.g. Horizon).
-
-[capture]
-# Screenshot longest side is downscaled to this many pixels before sending.
-max_width = 1920
-
-[logging]
-enabled = true
-# directory = "C:\\custom\\log\\path"  # Defaults to logs/ next to the DLL
-
-[translation]
-enabled = true
-target_language = "English"
-provider = "gemini"          # "gemini" or "local"
-
-# Local model settings (used when provider = "local")
-# Works with Ollama, LM Studio, vLLM, or any OpenAI-compatible API
-[translation.local]
-endpoint = "http://localhost:11434/v1/chat/completions"
-model = "minicpm-v"
-
-# Game list for auto-inject watch mode.
-# Run injector.exe with no flags to watch for these games and auto-inject.
-# Run injector.exe --process "Game.exe" to skip watch mode and inject directly.
-
-# [[games]]
-# name = "Horizon Zero Dawn"
-# process = "HorizonZeroDawnRemastered.exe"
-#
-# [[games]]
-# name = "Elden Ring"
-# process = "eldenring.exe"
-#
-# [[games]]
-# name = "Dark Souls III"
-# process = "DarkSoulsIII.exe"
