@@ -18,6 +18,10 @@ without ever leaving the game, and **without injecting anything into it**.
 [![License](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
 [![Status](https://img.shields.io/badge/status-personal%20%C2%B7%20actively%20developed-brightgreen)](#status)
 
+<br />
+
+<img src="screenshots/launcher.png" alt="The Sage launcher, with an AI companion bound to a game" width="900" />
+
 </div>
 
 ---
@@ -81,6 +85,10 @@ a working tool you can build and run, not a polished consumer app.
   -- no DLL, no swapchain hook, works regardless of graphics API.
 - **Ctrl+Shift+G** toggles it; while interactive it takes keyboard focus so your
   typing doesn't reach the game, then hands focus back on hide.
+
+<p align="center">
+  <img src="screenshots/overlay.png" alt="The Sage overlay linked to a game, ready to answer questions about the screen" width="330" />
+</p>
 
 ### Multi-provider AI
 Sage can talk through **Gemini**, **Claude**, or **OpenAI** -- pick one from the

@@ -18,7 +18,7 @@
 
   let { open = $bindable(false) }: { open: boolean } = $props();
 
-  const VERSION = 'v0.4.0';
+  const VERSION = 'v2.0.0'; // keep in sync with tauri.conf.json "version"
   const KEY_URL = 'https://aistudio.google.com/apikey';
 
   let section = $state<'providers' | 'hotkeys' | 'launcher' | 'about'>('providers');
@@ -127,6 +127,9 @@
   function pickProvider(p: Provider) {
     if (!availability[p]) return;
     setProvider(p);
+    // Keep the local settings in sync so Save doesn't write back the stale,
+    // open-time provider and revert this choice.
+    settings.active_provider = p;
   }
 
   $effect(() => {

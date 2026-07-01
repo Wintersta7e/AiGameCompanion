@@ -58,7 +58,7 @@
   };
   const LAUNCH_LABELS: Record<string, string> = {
     launching: 'Launching…',
-    linked: 'Relaunch',
+    linked: 'Running',
   };
   const BEAM_LABELS: Record<string, string> = {
     linked: 'LINKED',
@@ -266,7 +266,7 @@
         <div class="relative flex items-center gap-3">
           <button
             onclick={() => game && launchGame(game.id)}
-            disabled={launchBusy}
+            disabled={launchBusy || status === 'linked'}
             class="flex items-center gap-[9px] px-[26px] py-[13px] rounded-[11px] border-none font-display text-[14px] font-semibold tracking-[0.03em] transition-all duration-200 enabled:hover:brightness-110 enabled:hover:-translate-y-px"
             class:cursor-pointer={!launchBusy}
             class:cursor-not-allowed={launchBusy}

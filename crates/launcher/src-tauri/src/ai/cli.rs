@@ -286,8 +286,14 @@ fn parse_codex_line(line: &str) -> Option<Parsed> {
             }
         }
 
-        tracing::debug!("Ignoring unrecognized codex JSON: {line}");
-        return None;
+        // An object carrying a protocol "type" we don't recognize is a control
+        // frame -- drop it. Anything else (a bare JSON value, or an object with
+        // no "type") is the model's answer that happens to be JSON: fall through
+        // and emit it verbatim rather than silently dropping it.
+        if v.get("type").and_then(serde_json::Value::as_str).is_some() {
+            tracing::debug!("Ignoring unrecognized codex control frame: {line}");
+            return None;
+        }
     }
 
     Some(Parsed::Text(line.to_owned()))
@@ -694,5 +700,14 @@ mod tests {
     fn parse_codex_line_skips_unrecognized_json_object() {
         let line = r#"{"type":"token_count","tokens":42}"#;
         assert_eq!(parse_codex_line(line), None);
+    }
+
+    #[test]
+    fn parse_codex_line_emits_typeless_json_answer_verbatim() {
+        // A JSON answer with no protocol "type" is the model's output, not a
+        // control frame -- emit it verbatim instead of dropping it.
+        let object = r#"{"ok":true}"#;
+        assert_eq!(parse_codex_line(object), Some(Parsed::Text(object.to_owned())));
+        assert_eq!(parse_codex_line("42"), Some(Parsed::Text("42".to_owned())));
     }
 }
