@@ -196,7 +196,7 @@ cargo test -p launcher    # pure-logic tests; run on the Linux host
 
 ## License
 
-[MIT](LICENSE).
+[MIT](LICENSE). Release notes live in [CHANGELOG.md](CHANGELOG.md).
 
 ---
 
