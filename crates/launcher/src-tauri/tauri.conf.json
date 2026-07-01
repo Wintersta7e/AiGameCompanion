@@ -23,13 +23,13 @@
       {
         "label": "overlay",
         "title": "Sage Overlay",
-        "width": 520,
-        "height": 460,
+        "width": 400,
+        "height": 760,
         "decorations": false,
         "transparent": true,
         "alwaysOnTop": true,
         "skipTaskbar": true,
-        "resizable": false,
+        "resizable": true,
         "shadow": false,
         "visible": false,
         "focus": false
