@@ -3,7 +3,6 @@
   import { PROVIDERS, getProvider, setProvider, type Provider } from '../stores/companion.svelte';
 
   interface Settings {
-    overlay_dll_path: string | null;
     scan_on_startup: boolean;
     minimize_to_tray: boolean;
     launch_on_startup: boolean;
@@ -12,7 +11,6 @@
   let { open = $bindable(false) }: { open: boolean } = $props();
 
   let settings = $state<Settings>({
-    overlay_dll_path: null,
     scan_on_startup: true,
     minimize_to_tray: true,
     launch_on_startup: false,
@@ -117,20 +115,6 @@
 
       <!-- body -->
       <div class="px-[22px] py-5 flex flex-col gap-[18px]">
-        <!-- dll path -->
-        <div class="flex flex-col gap-2">
-          <span class="text-[12.5px] text-t-mid">Overlay DLL path</span>
-          <input
-            type="text"
-            placeholder="Auto-detect (next to injector.exe)"
-            value={settings.overlay_dll_path ?? ''}
-            oninput={(e) =>
-              (settings.overlay_dll_path = (e.target as HTMLInputElement).value || null)}
-            class="w-full px-[13px] py-[10px] rounded-[10px] border border-line text-t-hi font-mono text-[11.5px] outline-none transition-colors placeholder:text-t-lo"
-            style="background: rgba(255,255,255,0.04);"
-          />
-        </div>
-
         <!-- default provider -->
         <div class="flex flex-col gap-[9px]">
           <span class="text-[12.5px] text-t-mid">Default AI provider</span>

@@ -16,8 +16,8 @@ concurrency:
 jobs:
   rust:
     name: Rust (fmt, clippy, test)
-    # Native MSVC target -- overlay/injector are Windows-only, so this builds
-    # the real shipped artifacts without cross-compilation.
+    # Native MSVC target so the Windows-only launcher builds the real shipped
+    # artifact without cross-compilation.
     runs-on: windows-latest
     defaults:
       run:

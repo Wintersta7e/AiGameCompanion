@@ -45,13 +45,11 @@
   let statusLabel = $derived(
     status === 'launching'
       ? 'Launching…'
-      : status === 'injecting'
-        ? 'Injecting…'
-        : status === 'error'
-          ? 'Error'
-          : status === 'linked'
-            ? 'Linked · Active'
-            : 'Ready',
+      : status === 'error'
+        ? 'Error'
+        : status === 'linked'
+          ? 'Linked · Active'
+          : 'Ready',
   );
   let statusColor = $derived(
     status === 'error'
@@ -62,18 +60,12 @@
           ? 'var(--color-ok)'
           : 'var(--accent)',
   );
-  let launchBusy = $derived(status === 'launching' || status === 'injecting');
+  let launchBusy = $derived(status === 'launching');
   let launchLabel = $derived(
-    status === 'launching'
-      ? 'Launching…'
-      : status === 'injecting'
-        ? 'Injecting…'
-        : status === 'linked'
-          ? 'Re-inject'
-          : 'Launch + Inject',
+    status === 'launching' ? 'Launching…' : status === 'linked' ? 'Relaunch' : 'Launch',
   );
   let beamLabel = $derived(
-    status === 'linked' ? 'LINKED' : launchBusy ? 'LINKING…' : 'F9 ⇄ OVERLAY',
+    status === 'linked' ? 'LINKED' : launchBusy ? 'LINKING…' : 'CTRL+ALT+G ⇄ OVERLAY',
   );
 
   function capSource(s: string): string {
@@ -262,7 +254,7 @@
             </div>
             <div class="text-center max-w-[128px]">
               <div class="font-display text-[12px] font-medium text-t-hi truncate">{shortName}</div>
-              <div class="text-[10px] text-t-lo font-mono mt-1">Auto · DX12</div>
+              <div class="text-[10px] text-t-lo font-mono mt-1">External · Any API</div>
             </div>
           </div>
         </div>
@@ -296,7 +288,7 @@
             onclick={openLogs}
             onmouseenter={fileBtnEnter}
             onmouseleave={fileBtnLeave}
-            title="Open companion.log"
+            title="Open launcher.log"
             class="px-[18px] py-[13px] rounded-[11px] font-display text-[12.5px] font-medium tracking-[0.03em] text-t-mid cursor-pointer transition-all duration-150 hover:text-t-hi"
             style="border: 1px solid var(--color-line); background: rgba(255,255,255,0.03);"
             >Logs</button
@@ -322,7 +314,7 @@
 
       <!-- STATS -->
       <div class="grid grid-cols-3 gap-3" style="animation: fade-up 0.5s ease 0.12s both;">
-        {#each [{ l: 'Play time', v: playTime }, { l: 'Last played', v: lastPlayed }, { l: 'Graphics API', v: 'Auto · DX12' }] as s (s.l)}
+        {#each [{ l: 'Play time', v: playTime }, { l: 'Last played', v: lastPlayed }, { l: 'Source', v: capSource(game.source) }] as s (s.l)}
           <div
             class="p-4 rounded-[13px] border border-line"
             style="background: rgba(255,255,255,0.018);"
@@ -371,27 +363,17 @@
               >{prov.model}</span
             >
           </div>
-          <!-- hotkeys -->
-          {#each [{ l: 'Overlay hotkey', k: 'F9' }, { l: 'Translate hotkey', k: 'F10' }] as h (h.l)}
-            <div
-              class="flex items-center justify-between px-[15px] py-[13px] rounded-[11px] border border-line"
-              style="background: rgba(255,255,255,0.016);"
-            >
-              <span class="text-[12.5px] text-t-mid">{h.l}</span>
-              <span
-                class="font-mono text-[11px] text-t-hi px-[9px] py-[3px] rounded-md"
-                style="background: var(--color-ink-3); border: 1px solid var(--color-line); box-shadow: 0 1.5px 0 rgba(0,0,0,0.4);"
-                >{h.k}</span
-              >
-            </div>
-          {/each}
-          <!-- translation -->
+          <!-- overlay hotkey -->
           <div
             class="flex items-center justify-between px-[15px] py-[13px] rounded-[11px] border border-line"
             style="background: rgba(255,255,255,0.016);"
           >
-            <span class="text-[12.5px] text-t-mid">Translation</span>
-            <span class="font-display text-[12px] font-medium text-t-lo">Off</span>
+            <span class="text-[12.5px] text-t-mid">Overlay hotkey</span>
+            <span
+              class="font-mono text-[11px] text-t-hi px-[9px] py-[3px] rounded-md"
+              style="background: var(--color-ink-3); border: 1px solid var(--color-line); box-shadow: 0 1.5px 0 rgba(0,0,0,0.4);"
+              >Ctrl+Alt+G</span
+            >
           </div>
           <!-- vision -->
           <div

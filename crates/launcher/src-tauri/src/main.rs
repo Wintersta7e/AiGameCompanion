@@ -12,6 +12,7 @@ mod discovery;
 mod models;
 mod overlay;
 mod overlay_capture;
+mod process_watch;
 mod state;
 
 use ai::AiState;
@@ -33,7 +34,6 @@ fn main() {
     let handler_toggle = toggle;
 
     tauri::Builder::default()
-        .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_autostart::init(
             MacosLauncher::LaunchAgent,

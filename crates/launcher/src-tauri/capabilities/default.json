@@ -10,16 +10,6 @@
     "core:window:allow-close",
     "core:window:allow-start-dragging",
     "core:window:allow-set-focus",
-    {
-      "identifier": "shell:allow-spawn",
-      "allow": [
-        {
-          "name": "../../../target/x86_64-pc-windows-msvc/release/injector",
-          "sidecar": true,
-          "args": ["--process", { "validator": "^[\\w.-]+\\.exe$" }, "--timeout", { "validator": "^\\d{1,3}$" }]
-        }
-      ]
-    },
     "opener:default"
   ]
 }

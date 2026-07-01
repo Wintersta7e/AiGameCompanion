@@ -28,7 +28,6 @@ pub struct Game {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct LauncherSettings {
-    pub overlay_dll_path: Option<String>,
     pub scan_on_startup: bool,
     pub minimize_to_tray: bool,
     pub launch_on_startup: bool,
@@ -39,7 +38,6 @@ pub struct LauncherSettings {
 impl Default for LauncherSettings {
     fn default() -> Self {
         Self {
-            overlay_dll_path: None,
             scan_on_startup: true,
             minimize_to_tray: true,
             launch_on_startup: false,
