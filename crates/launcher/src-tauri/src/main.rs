@@ -6,12 +6,16 @@
     clippy::missing_panics_doc
 )]
 
+mod ai;
 mod commands;
 mod discovery;
 mod models;
+mod overlay;
+mod overlay_capture;
 mod proxy;
 mod state;
 
+use overlay::OverlayState;
 use state::AppState;
 use tauri::{
     menu::{MenuBuilder, MenuItemBuilder},
@@ -19,8 +23,15 @@ use tauri::{
     Manager,
 };
 use tauri_plugin_autostart::{MacosLauncher, ManagerExt};
+use tauri_plugin_global_shortcut::{Code, GlobalShortcutExt, Modifiers, Shortcut, ShortcutState};
 
+#[allow(clippy::too_many_lines)] // Tauri builder + setup is one long, linear wiring.
 fn main() {
+    // Overlay toggle hotkey (Ctrl+Alt+G): a modifier chord, not a bare F-key, so
+    // it does not collide with common in-game bindings.
+    let toggle = Shortcut::new(Some(Modifiers::CONTROL | Modifiers::ALT), Code::KeyG);
+    let handler_toggle = toggle;
+
     tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_opener::init())
@@ -28,7 +39,17 @@ fn main() {
             MacosLauncher::LaunchAgent,
             None,
         ))
-        .setup(|app| {
+        .plugin(
+            tauri_plugin_global_shortcut::Builder::new()
+                .with_handler(move |app, shortcut, event| {
+                    if shortcut == &handler_toggle && event.state() == ShortcutState::Pressed {
+                        overlay::toggle(app);
+                    }
+                })
+                .build(),
+        )
+        .manage(OverlayState::default())
+        .setup(move |app| {
             let app_dir = app
                 .path()
                 .app_data_dir()
@@ -52,6 +73,11 @@ fn main() {
                 let _ = autostart.enable();
             } else {
                 let _ = autostart.disable();
+            }
+
+            // Register the overlay toggle hotkey (log + continue on conflict).
+            if let Err(e) = app.global_shortcut().register(toggle) {
+                tracing::warn!("overlay toggle hotkey registration failed: {e}");
             }
 
             // Build system tray (always present, shown/hidden based on setting)
@@ -97,6 +123,13 @@ fn main() {
         })
         .on_window_event(|window, event| {
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                // The overlay window only hides; the main window drives the
+                // launcher's tray / exit behaviour.
+                if window.label() == "overlay" {
+                    api.prevent_close();
+                    let _ = window.hide();
+                    return;
+                }
                 let state = window.state::<AppState>();
                 let minimize_to_tray = state.launcher.lock().settings.minimize_to_tray;
                 if minimize_to_tray {
@@ -119,6 +152,8 @@ fn main() {
             commands::games::open_game_logs,
             commands::settings::get_settings,
             commands::settings::update_settings,
+            overlay::ask_sage,
+            overlay::capture_game,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

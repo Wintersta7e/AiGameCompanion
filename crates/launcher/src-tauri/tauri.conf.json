@@ -12,12 +12,27 @@
   "app": {
     "windows": [
       {
+        "label": "main",
         "title": "AI Game Companion",
         "width": 1100,
         "height": 700,
         "minWidth": 900,
         "minHeight": 600,
         "decorations": false
+      },
+      {
+        "label": "overlay",
+        "title": "Sage Overlay",
+        "width": 520,
+        "height": 460,
+        "decorations": false,
+        "transparent": true,
+        "alwaysOnTop": true,
+        "skipTaskbar": true,
+        "resizable": false,
+        "shadow": false,
+        "visible": false,
+        "focus": false
       }
     ],
     "security": {
