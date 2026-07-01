@@ -258,14 +258,12 @@ fn parse_claude_line(line: &str) -> Option<Parsed> {
 /// are decoded.
 fn parse_codex_line(line: &str) -> Option<Parsed> {
     if let Ok(v) = serde_json::from_str::<serde_json::Value>(line) {
-        if let Some(refusal_type) = v.get("type").and_then(serde_json::Value::as_str) {
-            if refusal_type == "refusal" {
-                let msg = v
-                    .get("content")
-                    .and_then(serde_json::Value::as_str)
-                    .unwrap_or("Model refused the request");
-                return Some(Parsed::Error(msg.to_owned()));
-            }
+        if v.get("type").and_then(serde_json::Value::as_str) == Some("refusal") {
+            let msg = v
+                .get("content")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or("Model refused the request");
+            return Some(Parsed::Error(msg.to_owned()));
         }
 
         if let Some(content) = v.get("content").and_then(serde_json::Value::as_array) {
