@@ -5,6 +5,8 @@
   import { getProviderMeta } from '../stores/companion.svelte';
   import { formatPlayTime, formatLastPlayed } from '../utils/format';
 
+  let { onOpenSettings }: { onOpenSettings?: () => void } = $props();
+
   let game: Game | undefined = $derived(getSelectedGame());
   let prov = $derived(getProviderMeta());
 
@@ -65,7 +67,7 @@
     status === 'launching' ? 'Launching…' : status === 'linked' ? 'Relaunch' : 'Launch',
   );
   let beamLabel = $derived(
-    status === 'linked' ? 'LINKED' : launchBusy ? 'LINKING…' : 'CTRL+SHIFT+G ⇄ OVERLAY',
+    status === 'linked' ? 'LINKED' : launchBusy ? 'DETECTING…' : 'CTRL+SHIFT+G ⇄ OVERLAY',
   );
 
   function capSource(s: string): string {
@@ -333,7 +335,11 @@
           <span class="font-display text-[11px] font-semibold tracking-[0.16em] text-t-lo"
             >COMPANION SETUP</span
           >
-          <span class="font-mono text-[10px] text-t-lo">edit in config.toml →</span>
+          <button
+            onclick={() => onOpenSettings?.()}
+            class="font-mono text-[10px] text-t-lo cursor-pointer transition-colors hover:text-t-mid"
+            >manage in Settings →</button
+          >
         </div>
         <div class="grid grid-cols-2 gap-2.5">
           <!-- provider -->
@@ -374,6 +380,26 @@
               style="background: var(--color-ink-3); border: 1px solid var(--color-line); box-shadow: 0 1.5px 0 rgba(0,0,0,0.4);"
               >Ctrl+Shift+G</span
             >
+          </div>
+          <!-- translate hotkey -->
+          <div
+            class="flex items-center justify-between px-[15px] py-[13px] rounded-[11px] border border-line"
+            style="background: rgba(255,255,255,0.016);"
+          >
+            <span class="text-[12.5px] text-t-mid">Translate hotkey</span>
+            <span
+              class="font-mono text-[11px] text-t-hi px-[9px] py-[3px] rounded-md"
+              style="background: var(--color-ink-3); border: 1px solid var(--color-line); box-shadow: 0 1.5px 0 rgba(0,0,0,0.4);"
+              >Ctrl+Shift+T</span
+            >
+          </div>
+          <!-- translation (per-game translate config lands with a future setting) -->
+          <div
+            class="flex items-center justify-between px-[15px] py-[13px] rounded-[11px] border border-line"
+            style="background: rgba(255,255,255,0.016);"
+          >
+            <span class="text-[12.5px] text-t-mid">Translation</span>
+            <span class="font-display text-[12px] font-medium text-t-lo">Off</span>
           </div>
           <!-- vision -->
           <div

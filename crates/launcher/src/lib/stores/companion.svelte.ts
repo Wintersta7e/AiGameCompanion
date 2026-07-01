@@ -1,8 +1,9 @@
 /**
- * Companion (AI provider) selection for the launcher UI. In the real app this
- * mirrors `[api].provider` in config.toml — wire setProvider() to a Tauri
- * command that persists the choice (and the overlay picks it up on next launch).
+ * Companion (AI provider) selection for the launcher UI. Mirrors the overlay's
+ * persisted `active_provider`; `setProvider` persists via `set_active_provider`.
  */
+
+import { invoke } from '@tauri-apps/api/core';
 
 export type Provider = 'gemini' | 'claude' | 'openai';
 
@@ -32,7 +33,20 @@ export function getProviderMeta(): ProviderMeta {
 
 export function setProvider(p: Provider): void {
   provider = p;
-  // TODO: invoke('set_provider', { provider: p }) to persist into config.toml
+  void invoke('set_active_provider', { provider: p }).catch(() => {
+    /* selection still applies for this session */
+  });
+}
+
+/** Load the persisted provider on startup. */
+export async function loadProvider(): Promise<void> {
+  try {
+    const settings = await invoke<{ active_provider?: string }>('get_settings');
+    const saved = settings.active_provider;
+    if (saved && saved in PROVIDERS) provider = saved as Provider;
+  } catch {
+    /* keep the default */
+  }
 }
 
 export function cycleProvider(): void {

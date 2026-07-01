@@ -10,12 +10,14 @@
   import SettingsModal from './lib/components/SettingsModal.svelte';
   import Overlay from './lib/components/Overlay.svelte';
   import { scanGames, getGames, loadGames } from './lib/stores/games.svelte';
+  import { loadProvider } from './lib/stores/companion.svelte';
 
   // The overlay companion loads the same SPA in a second window; branch on label.
   const isOverlay = getCurrentWindow().label === 'overlay';
 
   onMount(async () => {
     if (isOverlay) return;
+    void loadProvider();
     try {
       const settings = await invoke<{ scan_on_startup: boolean }>('get_settings');
       if (settings.scan_on_startup) scanGames();
@@ -37,7 +39,7 @@
     <TopBar onOpenSettings={() => (settingsOpen = true)} />
     <main class="flex flex-1 overflow-hidden">
       <GameList />
-      <DetailPanel />
+      <DetailPanel onOpenSettings={() => (settingsOpen = true)} />
     </main>
     <StatusBar gameCount={games.length} />
     <SettingsModal bind:open={settingsOpen} />

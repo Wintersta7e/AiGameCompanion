@@ -42,6 +42,15 @@ impl CliMode {
     pub fn is_available(self) -> bool {
         !matches!(self, Self::Unavailable)
     }
+
+    /// Human label for where the CLI was detected.
+    pub fn location(self) -> &'static str {
+        match self {
+            Self::Native => "PATH",
+            Self::Wsl => "WSL",
+            Self::Unavailable => "",
+        }
+    }
 }
 
 /// Cached CLI availability, detected once at startup on a background thread.

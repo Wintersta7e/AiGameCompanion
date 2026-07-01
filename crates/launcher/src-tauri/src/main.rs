@@ -13,6 +13,7 @@ mod models;
 mod overlay;
 mod overlay_capture;
 mod process_watch;
+mod secrets;
 mod state;
 
 use ai::AiState;
@@ -174,11 +175,15 @@ fn main() {
             commands::games::open_game_logs,
             commands::settings::get_settings,
             commands::settings::update_settings,
+            commands::settings::open_url,
+            commands::settings::open_config_folder,
             commands::ai::ask_sage,
             commands::ai::cancel_sage,
             commands::ai::available_providers,
             commands::ai::set_active_provider,
             commands::ai::translate_screen,
+            commands::ai::set_gemini_key,
+            commands::ai::recheck_clis,
             overlay::capture_game,
         ])
         .run(tauri::generate_context!())

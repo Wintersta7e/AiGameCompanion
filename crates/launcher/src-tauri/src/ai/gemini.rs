@@ -115,33 +115,36 @@ struct ResponsePart {
     text: Option<String>,
 }
 
-/// Read the transitional Gemini configuration stored next to the executable.
+const DEFAULT_MODEL: &str = "gemini-2.5-flash";
+
+/// Load the Gemini configuration. The API key prefers OS secret storage (set via
+/// Settings), falling back to a legacy `config.toml` next to the executable; the
+/// model falls back to a default. `config.toml` is therefore optional.
 pub fn load_config() -> Result<GeminiConfig, String> {
-    let executable = std::env::current_exe()
-        .map_err(|error| format!("failed to locate launcher executable: {error}"))?;
-    let directory = executable
-        .parent()
-        .ok_or_else(|| "launcher executable has no parent directory".to_owned())?;
-    let path = directory.join("config.toml");
-    let source = std::fs::read_to_string(&path)
-        .map_err(|error| format!("failed to read {}: {error}", path.display()))?;
-    let config: LauncherConfig = toml::from_str(&source).map_err(|error| {
-        // Never surface the raw toml error to the UI: it embeds the offending
-        // source line, which could be the api_key line. Log the detail locally.
-        tracing::warn!("failed to parse {}: {error}", path.display());
-        "config.toml is malformed. Check the api.gemini settings.".to_owned()
-    })?;
-    let api_key = config.api.gemini.api_key.trim().to_owned();
-    let model = config.api.gemini.model.trim().to_owned();
-
-    if api_key.is_empty() {
-        return Err("Gemini API key is missing. Set api.gemini.api_key in config.toml.".to_owned());
-    }
-    if model.is_empty() {
-        return Err("Gemini model is missing. Set api.gemini.model in config.toml.".to_owned());
-    }
-
+    let file = read_config_file();
+    let api_key = crate::secrets::gemini_key()
+        .or_else(|| {
+            let key = file.api.gemini.api_key.trim();
+            (!key.is_empty()).then(|| key.to_owned())
+        })
+        .ok_or_else(|| "Gemini API key is not set. Add it in Settings.".to_owned())?;
+    let model = match file.api.gemini.model.trim() {
+        "" => DEFAULT_MODEL.to_owned(),
+        model => model.to_owned(),
+    };
     Ok(GeminiConfig { api_key, model })
+}
+
+/// Read the legacy `config.toml` next to the executable, if present. Missing or
+/// malformed files (which could leak the key in a parse error) yield defaults.
+fn read_config_file() -> LauncherConfig {
+    std::env::current_exe()
+        .ok()
+        .and_then(|exe| exe.parent().map(std::path::Path::to_path_buf))
+        .map(|dir| dir.join("config.toml"))
+        .and_then(|path| std::fs::read_to_string(path).ok())
+        .and_then(|source| toml::from_str(&source).ok())
+        .unwrap_or_default()
 }
 
 /// Map a chat message role onto a Gemini content role (`user` / `model`).

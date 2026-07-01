@@ -81,3 +81,34 @@ pub async fn translate_screen(
     let text = crate::ai::translate_capture(hwnd).await?;
     Ok(TranslateResult { text })
 }
+
+/// Store (or clear, when empty) the Gemini API key in OS secret storage. Returns
+/// the refreshed availability so the UI can flip the Gemini pill without a
+/// restart. The key is never returned or logged.
+#[tauri::command]
+#[allow(clippy::needless_pass_by_value)]
+pub fn set_gemini_key(ai: State<'_, AiState>, key: String) -> Result<ProviderAvailability, String> {
+    crate::secrets::set_gemini_key(key.trim())?;
+    Ok(ai.availability())
+}
+
+/// Re-run CLI detection (claude/codex) off the UI thread and return the refreshed
+/// availability.
+#[tauri::command]
+#[allow(clippy::needless_pass_by_value)]
+pub async fn recheck_clis(ai: State<'_, AiState>) -> Result<ProviderAvailability, String> {
+    let cfg = tokio::task::spawn_blocking(|| {
+        let claude = crate::ai::detect_cli("claude");
+        let codex = crate::ai::detect_cli("codex");
+        let codex_workdir = crate::ai::ensure_codex_workdir(codex);
+        crate::ai::CliConfig {
+            claude,
+            codex,
+            codex_workdir,
+        }
+    })
+    .await
+    .map_err(|error| format!("CLI re-check failed: {error}"))?;
+    ai.set_cli(cfg);
+    Ok(ai.availability())
+}

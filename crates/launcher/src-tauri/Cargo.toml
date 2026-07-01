@@ -30,6 +30,9 @@ base64 = "0.22"
 # Win32 foreground-window detection + focus handoff (overlay companion). Only
 # compiled for Windows targets; the launcher's pure-logic tests run on Linux.
 [target.'cfg(windows)'.dependencies]
+# OS secret storage (Credential Manager) for the Gemini API key. Windows-only so
+# the Linux test build does not pull the secret-service (dbus) backend.
+keyring = { version = "3", features = ["windows-native"] }
 windows = { version = "0.54", features = [
     "Graphics_Capture",
     "Graphics_DirectX",

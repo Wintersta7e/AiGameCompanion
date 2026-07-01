@@ -106,6 +106,9 @@ pub struct ProviderAvailability {
     pub gemini: bool,
     pub claude: bool,
     pub openai: bool,
+    /// Where each CLI was detected ("PATH" / "WSL" / "").
+    pub claude_where: String,
+    pub openai_where: String,
 }
 
 /// Parameters of a chat request, deserialized from the `ask_sage` command.
@@ -153,6 +156,8 @@ impl AiState {
             gemini: gemini::load_config().is_ok(),
             claude: cli.claude.is_available(),
             openai: cli.codex.is_available(),
+            claude_where: cli.claude.location().to_owned(),
+            openai_where: cli.codex.location().to_owned(),
         }
     }
 
