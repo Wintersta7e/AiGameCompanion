@@ -107,8 +107,13 @@ export function getSelectedGame(): Game | undefined {
 
 let gameStatuses = $state<Record<string, string>>({});
 
-// Listen for injector process exit and reset status
-listen<string>('injector-finished', (event) => {
+listen<string>('game-linked', (event) => {
+  const gameId = event.payload;
+  gameStatuses = { ...gameStatuses, [gameId]: 'linked' };
+});
+
+// Reset status when the watched game process exits (or was never found).
+listen<string>('game-finished', (event) => {
   const gameId = event.payload;
   gameStatuses = { ...gameStatuses, [gameId]: 'idle' };
 });
@@ -118,14 +123,16 @@ export function getGameStatus(id: string): string {
 }
 
 export async function launchGame(gameId: string): Promise<void> {
-  // Duplicate-launch protection
-  if (gameStatuses[gameId] === 'launching' || gameStatuses[gameId] === 'injecting') {
+  // Duplicate-launch protection: already starting or running.
+  if (gameStatuses[gameId] === 'launching' || gameStatuses[gameId] === 'linked') {
     return;
   }
+  // Optimistic 'launching'; the game-linked / game-finished events drive the
+  // rest. Do not overwrite with the invoke result -- an event may already have
+  // updated the status while we awaited.
   gameStatuses = { ...gameStatuses, [gameId]: 'launching' };
   try {
-    const result = await invoke<string>('launch_game', { gameId });
-    gameStatuses = { ...gameStatuses, [gameId]: result };
+    await invoke<string>('launch_game', { gameId });
   } catch (err) {
     console.error('Failed to launch game:', err);
     gameStatuses = { ...gameStatuses, [gameId]: 'error' };

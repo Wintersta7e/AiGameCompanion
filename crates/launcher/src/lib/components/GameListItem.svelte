@@ -1,7 +1,8 @@
 <script lang="ts">
   import type { Game } from '../stores/games.svelte';
-  import { setSelectedGameId, getGameStatus } from '../stores/games.svelte';
+  import { setSelectedGameId } from '../stores/games.svelte';
   import { formatPlayTime } from '../utils/format';
+  import { hashHue } from '../utils/accent';
 
   interface Props {
     game: Game;
@@ -12,62 +13,61 @@
   let { game, selected, index }: Props = $props();
 
   const sourceColors: Record<string, string> = {
-    steam: '#1b9aff',
-    epic: '#ccc',
+    steam: '#66c0f4',
+    epic: '#cfcfcf',
     gog: '#b035e8',
-    manual: '#06d6a0',
+    manual: 'var(--accent)',
   };
 
   let coverSrc = $derived(game.cover_art_path ?? null);
   let imgError = $state(false);
-
   $effect(() => {
     if (game) imgError = false;
   });
 
   let playTimeFormatted = $derived(formatPlayTime(game.play_time_minutes));
-
-  let status = $derived(getGameStatus(game.id));
-
-  let statusDotColor = $derived(
-    status === 'launching'
-      ? '#ffc107'
-      : status === 'injecting'
-        ? '#638cff'
-        : status === 'error'
-          ? '#ff6b6b'
-          : '#06d6a0',
+  let initial = $derived(
+    game.name
+      .replace(/[^A-Za-z0-9]/, '')
+      .charAt(0)
+      .toUpperCase(),
   );
-
-  let statusDotShadow = $derived(
-    status === 'launching'
-      ? '0 0 6px rgba(255, 193, 7, 0.4)'
-      : status === 'injecting'
-        ? '0 0 6px rgba(99, 140, 255, 0.4)'
-        : status === 'error'
-          ? '0 0 6px rgba(255, 107, 107, 0.4)'
-          : '0 0 6px rgba(6, 214, 160, 0.4)',
-  );
-
-  function handleClick(): void {
-    setSelectedGameId(game.id);
-  }
+  let dotColor = $derived(sourceColors[game.source] ?? 'var(--accent)');
+  // Each row's initial-fallback thumb gets its own hue (the global --accent is
+  // reserved for the selected row's rail/border/dot), so the placeholder thumbs
+  // stay multi-coloured like the design instead of all sharing one colour.
+  let thumbColor = $derived(hashHue(game.id));
 </script>
 
 <button
-  class="w-full flex items-center gap-3 px-3 py-2.5 rounded-[10px] cursor-pointer border mb-0.5 text-left transition-all duration-150"
-  class:bg-[rgba(99,140,255,0.08)]={selected}
-  class:border-border-glow={selected}
-  class:border-transparent={!selected}
-  class:hover:bg-[rgba(99,140,255,0.05)]={!selected}
-  class:hover:border-border-subtle={!selected}
-  onclick={handleClick}
-  style="animation: card-in 0.3s ease-out {index * 0.03}s both;"
+  onclick={() => setSelectedGameId(game.id)}
+  class="relative flex items-center gap-[11px] w-full text-left px-[11px] py-[9px] rounded-[11px] cursor-pointer transition-all duration-150"
+  style="
+    animation: card-in 0.3s ease-out {index * 0.03}s both;
+    border: 1px solid {selected
+    ? 'color-mix(in oklab, var(--accent) 34%, transparent)'
+    : 'transparent'};
+    background: {selected
+    ? 'linear-gradient(90deg, color-mix(in oklab, var(--accent) 16%, transparent), transparent 62%)'
+    : 'transparent'};
+  "
+  onmouseenter={(e) => {
+    if (!selected) (e.currentTarget as HTMLElement).style.background = 'rgba(255,255,255,0.035)';
+  }}
+  onmouseleave={(e) => {
+    if (!selected) (e.currentTarget as HTMLElement).style.background = 'transparent';
+  }}
 >
-  <!-- Cover art thumbnail -->
+  <!-- accent rail (selected) -->
+  <span
+    class="absolute left-0 top-1/2 -translate-y-1/2 w-[3px] rounded-r-[3px] transition-all duration-200"
+    style="height: {selected ? '28px' : '0'}; background: var(--accent);"
+  ></span>
+
+  <!-- cover thumb -->
   <div
-    class="w-[42px] h-[56px] rounded-md overflow-hidden shrink-0"
-    style="box-shadow: 0 2px 8px rgba(0, 0, 0, 0.3);"
+    class="relative w-[38px] h-[52px] rounded-[7px] shrink-0 overflow-hidden"
+    style="box-shadow: 0 2px 9px rgba(0,0,0,0.45);"
   >
     {#if coverSrc && !imgError}
       <img
@@ -75,40 +75,41 @@
         alt={game.name}
         class="w-full h-full object-cover"
         loading="lazy"
-        onerror={() => {
-          imgError = true;
-        }}
+        onerror={() => (imgError = true)}
       />
     {:else}
       <div
-        class="w-full h-full flex items-center justify-center font-display font-bold text-[0.9rem] text-white/70"
-        style="background: linear-gradient(135deg, {sourceColors[game.source] ??
-          '#638cff'}33 0%, {sourceColors[game.source] ?? '#a855f7'}33 100%);"
+        class="w-full h-full grid place-items-center font-display font-bold text-base text-white/85"
+        style="background: linear-gradient(135deg, color-mix(in oklab, {thumbColor} 45%, #16161a), #101013); text-shadow: 0 1px 5px rgba(0,0,0,0.55);"
       >
-        {game.name.charAt(0).toUpperCase()}
+        {initial}
       </div>
     {/if}
+    <span class="absolute inset-0" style="box-shadow: inset 0 0 0 1px rgba(255,255,255,0.08);"
+    ></span>
   </div>
 
-  <!-- Game info -->
+  <!-- info -->
   <div class="flex-1 min-w-0">
-    <div class="font-display text-[0.88rem] font-semibold text-text-primary truncate">
-      {game.name}
-    </div>
-    <div class="text-[0.7rem] text-text-muted mt-0.5 flex items-center gap-1.5">
+    <div class="font-display text-[13px] font-medium text-t-hi truncate">{game.name}</div>
+    <div class="flex items-center gap-[7px] mt-[3px] text-[10.5px] text-t-lo">
       <span
-        class="w-1.5 h-1.5 rounded-full inline-block shrink-0"
-        style="background: {sourceColors[game.source] ?? '#06d6a0'};"
+        class="w-[7px] h-[7px] rounded-full shrink-0"
+        style="background: {dotColor}; box-shadow: 0 0 6px color-mix(in oklab, {dotColor} 60%, transparent);"
       ></span>
       <span class="uppercase tracking-wide">{game.source}</span>
-      <span>&#183;</span>
-      <span>{playTimeFormatted}</span>
+      <span class="opacity-50">·</span>
+      <span class="font-mono">{playTimeFormatted}</span>
     </div>
   </div>
 
-  <!-- Status dot -->
-  <div
-    class="w-[7px] h-[7px] rounded-full shrink-0"
-    style="background: {statusDotColor}; box-shadow: {statusDotShadow};"
-  ></div>
+  <!-- status dot -->
+  <span
+    class="rounded-full shrink-0"
+    style="
+      width: {selected ? '7px' : '6px'}; height: {selected ? '7px' : '6px'};
+      background: {selected ? 'var(--accent)' : 'rgba(255,255,255,0.13)'};
+      box-shadow: {selected ? '0 0 8px var(--accent)' : 'none'};
+    "
+  ></span>
 </button>

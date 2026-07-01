@@ -8,32 +8,30 @@
 
   let { gameCount }: Props = $props();
 
-  let version = $state('...');
+  let version = $state('…');
 
   onMount(async () => {
     try {
       version = await getVersion();
     } catch {
-      version = '0.1.0';
+      version = '2.0.0';
     }
   });
 </script>
 
 <footer
-  class="h-8 flex items-center justify-between px-5 shrink-0 border-t border-border-subtle"
-  style="background: rgba(10, 12, 20, 0.9); backdrop-filter: blur(10px);"
+  class="h-[34px] flex items-center justify-between px-[18px] shrink-0 border-t border-line font-mono text-[10.5px] text-t-lo"
+  style="background: rgba(9, 9, 11, 0.78); backdrop-filter: blur(10px);"
 >
-  <div class="flex items-center gap-4 text-[0.68rem] text-text-muted font-mono tracking-wide">
-    <div class="flex items-center gap-[5px]">
+  <div class="flex items-center gap-[14px]">
+    <span class="flex items-center gap-1.5">
       <span
-        class="w-1.5 h-1.5 rounded-full bg-accent-tertiary"
-        style="box-shadow: 0 0 6px rgba(6, 214, 160, 0.4);"
+        class="w-1.5 h-1.5 rounded-full"
+        style="background: var(--color-ok); box-shadow: 0 0 6px var(--color-ok);"
       ></span>
-      <span>System Ready</span>
-    </div>
+      Watcher active
+    </span>
     <span>{gameCount} {gameCount === 1 ? 'game' : 'games'}</span>
   </div>
-  <div class="flex items-center gap-4 text-[0.68rem] text-text-muted font-mono tracking-wide">
-    <span>v{version}</span>
-  </div>
+  <span>Sage v{version}</span>
 </footer>

@@ -1,122 +1,143 @@
 <script lang="ts">
   import { getCurrentWindow } from '@tauri-apps/api/window';
-  import { getSearchQuery, setSearchQuery } from '../stores/games.svelte';
-  import appIcon from '../assets/icon-128.png';
+  import { getGames } from '../stores/games.svelte';
+  import { PROVIDERS, getProvider, setProvider, type Provider } from '../stores/companion.svelte';
 
   let { onOpenSettings }: { onOpenSettings: () => void } = $props();
 
   const appWindow = getCurrentWindow();
 
-  let searchFocused = $state(false);
-  let currentQuery = $derived(getSearchQuery());
+  let provider = $derived(getProvider());
+  let count = $derived(getGames().length);
 
-  let debounceTimer: ReturnType<typeof setTimeout> | null = null;
+  const providerKeys = Object.keys(PROVIDERS) as Provider[];
 
-  function handleInput(e: Event): void {
-    const target = e.target as HTMLInputElement;
-    if (debounceTimer) clearTimeout(debounceTimer);
-    debounceTimer = setTimeout(() => {
-      setSearchQuery(target.value);
-    }, 150);
-  }
-
-  async function minimize(): Promise<void> {
+  async function minimize() {
     try {
       await appWindow.minimize();
     } catch (e) {
-      console.error('Minimize failed:', e);
+      console.error(e);
     }
   }
-
-  async function toggleMaximize(): Promise<void> {
+  async function toggleMax() {
     try {
       await appWindow.toggleMaximize();
     } catch (e) {
-      console.error('Maximize failed:', e);
+      console.error(e);
     }
   }
-
-  async function close(): Promise<void> {
+  async function close() {
     try {
       await appWindow.close();
     } catch (e) {
-      console.error('Close failed:', e);
+      console.error(e);
     }
+  }
+
+  // Gear hover: accent-tinted border + subtle bg lift (inline styles win over
+  // Tailwind hover utilities, so drive it from JS like the other controls).
+  function gearEnter(e: MouseEvent) {
+    const el = e.currentTarget as HTMLElement;
+    el.style.borderColor = 'color-mix(in oklab, var(--accent) 40%, transparent)';
+    el.style.background = 'rgba(255,255,255,0.06)';
+  }
+  function gearLeave(e: MouseEvent) {
+    const el = e.currentTarget as HTMLElement;
+    el.style.borderColor = 'var(--color-line)';
+    el.style.background = 'rgba(255,255,255,0.03)';
   }
 </script>
 
 <header
   data-tauri-drag-region
-  class="flex items-center justify-between h-14 px-6 shrink-0 border-b border-border-subtle"
-  style="background: rgba(10, 12, 20, 0.85); backdrop-filter: blur(20px);"
+  class="h-[60px] shrink-0 flex items-center justify-between px-4 border-b border-line relative z-10"
+  style="background: rgba(9, 9, 11, 0.72); backdrop-filter: blur(20px);"
 >
-  <!-- Left: Logo + Title -->
-  <div class="flex items-center gap-3.5">
-    <img
-      src={appIcon}
-      alt="AI Game Companion"
-      class="w-9 h-9 rounded-lg"
-      style="box-shadow: 0 0 16px rgba(99, 140, 255, 0.3);"
-    />
-    <span
-      class="font-display text-xl font-semibold tracking-wider uppercase"
-      style="background: linear-gradient(135deg, #638cff 0%, #a855f7 100%); -webkit-background-clip: text; -webkit-text-fill-color: transparent; background-clip: text;"
-    >
-      AI Game Companion
-    </span>
+  <!-- brand -->
+  <div class="flex items-center gap-[11px]">
+    <div class="relative w-[30px] h-[30px] shrink-0">
+      <div
+        class="absolute inset-0 rounded-full animate-pulse-soft"
+        style="background: radial-gradient(circle at 50% 42%, #fff 0%, color-mix(in oklab, var(--accent) 85%, white) 24%, var(--accent) 56%, color-mix(in oklab, var(--accent) 38%, transparent) 80%, transparent 100%); box-shadow: 0 0 18px -2px var(--accent);"
+      ></div>
+      <div
+        class="absolute inset-[2px] rounded-full"
+        style="border: 1px solid rgba(255,255,255,0.18);"
+      ></div>
+      <div
+        class="absolute w-[5px] h-[5px] rounded-full"
+        style="background: rgba(255,255,255,0.92); top: 18%; right: 20%;"
+      ></div>
+    </div>
+    <div class="flex flex-col leading-none">
+      <span class="font-display font-semibold text-base tracking-[0.16em] text-t-hi">SAGE</span>
+      <span class="text-[9px] tracking-[0.34em] text-t-lo mt-1 font-semibold">GAME COMPANION</span>
+    </div>
   </div>
 
-  <!-- Center: reserved -->
-  <div></div>
+  <!-- watcher status -->
+  <div
+    class="flex items-center gap-[9px] px-[15px] py-[7px] rounded-full whitespace-nowrap"
+    style="background: rgba(255,255,255,0.025); border: 1px solid var(--color-line);"
+  >
+    <span class="relative flex w-[7px] h-[7px]">
+      <span
+        class="absolute inset-0 rounded-full animate-pulse-fast"
+        style="background: var(--color-ok); box-shadow: 0 0 8px var(--color-ok);"
+      ></span>
+    </span>
+    <span class="text-[11.5px] text-t-mid">Watcher active</span>
+    <span class="w-px h-[11px] bg-line"></span>
+    <span class="font-mono text-[10.5px] text-t-lo">{count} bound · listening</span>
+  </div>
 
-  <!-- Right: Search + Settings -->
-  <div class="flex items-center gap-2.5">
-    <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
+  <!-- right cluster -->
+  <div class="flex items-center gap-[10px]">
+    <!-- provider switch -->
     <div
-      role="search"
-      onmousedown={(e) => e.stopPropagation()}
-      class="flex items-center gap-2 py-[7px] px-3.5 rounded-[10px] border transition-all duration-300"
-      class:w-[220px]={!searchFocused}
-      class:w-[280px]={searchFocused}
-      style="background: {searchFocused
-        ? 'rgba(255, 255, 255, 0.06)'
-        : 'rgba(255, 255, 255, 0.04)'}; border-color: {searchFocused
-        ? 'rgba(99, 140, 255, 0.25)'
-        : 'rgba(99, 140, 255, 0.08)'}; box-shadow: {searchFocused
-        ? '0 0 16px rgba(99, 140, 255, 0.08)'
-        : 'none'};"
+      class="flex items-center gap-[3px] p-[3px] rounded-[11px]"
+      style="background: rgba(255,255,255,0.03); border: 1px solid var(--color-line);"
     >
-      <svg
-        width="14"
-        height="14"
-        viewBox="0 0 24 24"
-        fill="none"
-        stroke="currentColor"
-        stroke-width="2.5"
-        stroke-linecap="round"
-        class="shrink-0 text-text-muted"
-      >
-        <circle cx="11" cy="11" r="8" />
-        <line x1="21" y1="21" x2="16.65" y2="16.65" />
-      </svg>
-      <input
-        type="text"
-        placeholder="Search games..."
-        value={currentQuery}
-        oninput={handleInput}
-        onfocus={() => (searchFocused = true)}
-        onblur={() => (searchFocused = false)}
-        aria-label="Search games"
-        class="bg-transparent border-none outline-none text-text-primary font-body text-[0.85rem] w-full placeholder:text-text-muted"
-      />
+      {#each providerKeys as key (key)}
+        {@const active = key === provider}
+        <button
+          onclick={() => setProvider(key)}
+          onmouseenter={(e) => {
+            if (!active) (e.currentTarget as HTMLElement).style.color = 'var(--color-t-mid)';
+          }}
+          onmouseleave={(e) => {
+            if (!active) (e.currentTarget as HTMLElement).style.color = 'var(--color-t-lo)';
+          }}
+          aria-pressed={active}
+          class="flex items-center gap-1.5 px-[11px] py-1.5 rounded-lg font-display text-[11.5px] font-medium tracking-[0.02em] cursor-pointer transition-all duration-150"
+          style="
+            border: 1px solid {active
+            ? 'color-mix(in oklab, var(--accent) 32%, transparent)'
+            : 'transparent'};
+            background: {active
+            ? 'color-mix(in oklab, var(--accent) 20%, transparent)'
+            : 'transparent'};
+            color: {active ? 'var(--color-t-hi)' : 'var(--color-t-lo)'};
+          "
+        >
+          <span
+            class="w-[7px] h-[7px] rounded-full"
+            style="background: {PROVIDERS[key].dot}; box-shadow: 0 0 6px {PROVIDERS[key].dot};"
+          ></span>
+          {PROVIDERS[key].label}
+        </button>
+      {/each}
     </div>
 
+    <!-- settings -->
     <button
-      class="w-9 h-9 flex items-center justify-center border border-border-subtle rounded-md text-text-secondary transition-all duration-150 cursor-pointer hover:text-text-primary hover:bg-[rgba(255,255,255,0.08)] hover:border-border-glow"
-      style="background: rgba(255, 255, 255, 0.03);"
+      onclick={onOpenSettings}
+      onmouseenter={gearEnter}
+      onmouseleave={gearLeave}
       title="Settings"
       aria-label="Settings"
-      onclick={onOpenSettings}
+      class="w-[34px] h-[34px] grid place-items-center rounded-[9px] text-t-mid cursor-pointer transition-all duration-150 hover:text-t-hi"
+      style="border: 1px solid var(--color-line); background: rgba(255,255,255,0.03);"
     >
       <svg
         width="16"
@@ -124,7 +145,7 @@
         viewBox="0 0 24 24"
         fill="none"
         stroke="currentColor"
-        stroke-width="2"
+        stroke-width="1.8"
         stroke-linecap="round"
       >
         <circle cx="12" cy="12" r="3" />
@@ -134,75 +155,75 @@
       </svg>
     </button>
 
-    <!-- Window divider -->
-    <div class="w-px h-5 bg-border-subtle mx-1"></div>
+    <span class="w-px h-5 bg-line mx-0.5"></span>
 
-    <!-- Window controls -->
+    <!-- window controls -->
     <button
-      class="w-8 h-8 flex items-center justify-center rounded-md cursor-pointer text-text-secondary transition-all duration-150 hover:text-text-primary hover:bg-[rgba(255,255,255,0.08)]"
       onclick={minimize}
       title="Minimize"
       aria-label="Minimize"
+      class="w-[30px] h-[30px] grid place-items-center rounded-lg text-t-mid cursor-pointer transition-all duration-150 hover:text-t-hi hover:bg-white/[0.08]"
     >
-      <svg width="12" height="12" viewBox="0 0 12 12" fill="none">
-        <line
+      <svg width="11" height="11" viewBox="0 0 12 12"
+        ><line
           x1="2"
           y1="6"
           x2="10"
           y2="6"
           stroke="currentColor"
-          stroke-width="1.5"
+          stroke-width="1.4"
           stroke-linecap="round"
-        />
-      </svg>
+        /></svg
+      >
     </button>
-
     <button
-      class="w-8 h-8 flex items-center justify-center rounded-md cursor-pointer text-text-secondary transition-all duration-150 hover:text-text-primary hover:bg-[rgba(255,255,255,0.08)]"
-      onclick={toggleMaximize}
+      onclick={toggleMax}
       title="Maximize"
       aria-label="Maximize"
+      class="w-[30px] h-[30px] grid place-items-center rounded-lg text-t-mid cursor-pointer transition-all duration-150 hover:text-t-hi hover:bg-white/[0.08]"
     >
-      <svg width="12" height="12" viewBox="0 0 12 12" fill="none">
-        <rect
-          x="2"
-          y="2"
-          width="8"
-          height="8"
-          rx="1"
+      <svg width="11" height="11" viewBox="0 0 12 12"
+        ><rect
+          x="2.2"
+          y="2.2"
+          width="7.6"
+          height="7.6"
+          rx="1.4"
           stroke="currentColor"
-          stroke-width="1.5"
+          stroke-width="1.3"
           fill="none"
-        />
-      </svg>
+        /></svg
+      >
     </button>
-
     <button
-      class="w-8 h-8 flex items-center justify-center rounded-md cursor-pointer text-text-secondary transition-all duration-150 hover:text-white hover:bg-[rgba(255,60,60,0.7)]"
       onclick={close}
       title="Close"
       aria-label="Close"
+      class="w-[30px] h-[30px] grid place-items-center rounded-lg text-t-mid cursor-pointer transition-all duration-150 hover:text-white"
+      style="--hover: rgba(232,72,72,0.75);"
+      onmouseenter={(e) =>
+        ((e.currentTarget as HTMLElement).style.background = 'rgba(232,72,72,0.75)')}
+      onmouseleave={(e) => ((e.currentTarget as HTMLElement).style.background = 'transparent')}
     >
-      <svg width="12" height="12" viewBox="0 0 12 12" fill="none">
-        <line
-          x1="2"
-          y1="2"
-          x2="10"
-          y2="10"
+      <svg width="11" height="11" viewBox="0 0 12 12"
+        ><line
+          x1="2.4"
+          y1="2.4"
+          x2="9.6"
+          y2="9.6"
           stroke="currentColor"
-          stroke-width="1.5"
+          stroke-width="1.4"
           stroke-linecap="round"
-        />
-        <line
-          x1="10"
-          y1="2"
-          x2="2"
-          y2="10"
+        /><line
+          x1="9.6"
+          y1="2.4"
+          x2="2.4"
+          y2="9.6"
           stroke="currentColor"
-          stroke-width="1.5"
+          stroke-width="1.4"
           stroke-linecap="round"
-        />
-      </svg>
+        /></svg
+      >
     </button>
   </div>
 </header>

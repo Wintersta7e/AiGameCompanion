@@ -1,24 +1,19 @@
-use std::collections::HashMap;
+use std::collections::HashSet;
 use std::path::PathBuf;
-use std::time::Instant;
 
 use parking_lot::Mutex;
-use tauri_plugin_shell::process::CommandChild;
 
 use crate::models::LauncherState;
-
-/// Tracks an active injection session for play time accounting.
-pub struct ActiveSession {
-    /// Held alive so the sidecar process isn't killed on drop. Never read directly.
-    #[allow(dead_code)]
-    pub child: CommandChild,
-    pub started_at: Instant,
-}
 
 pub struct AppState {
     pub launcher: Mutex<LauncherState>,
     pub state_path: PathBuf,
-    pub active_injectors: Mutex<HashMap<String, ActiveSession>>,
+    /// Game ids with an active play session (a running process being watched).
+    /// Guards against launching the same game twice.
+    pub active_sessions: Mutex<HashSet<String>>,
+    /// Serializes `save()` so the watcher thread and command threads cannot
+    /// interleave writes to the shared temp file.
+    save_lock: Mutex<()>,
 }
 
 impl AppState {
@@ -52,11 +47,14 @@ impl AppState {
         Self {
             launcher: Mutex::new(launcher),
             state_path,
-            active_injectors: Mutex::new(HashMap::new()),
+            active_sessions: Mutex::new(HashSet::new()),
+            save_lock: Mutex::new(()),
         }
     }
 
     pub fn save(&self) -> Result<(), String> {
+        // Serialize concurrent saves so they cannot clobber each other's temp file.
+        let _write = self.save_lock.lock();
         // Clone state and drop lock before file I/O
         let state = self.launcher.lock().clone();
         let json = serde_json::to_string_pretty(&state).map_err(|e| e.to_string())?;
