@@ -10,9 +10,6 @@ BUILD_DIR="target/${TARGET}/release"
 # into every binary on the release artifacts.
 export RUSTFLAGS="${RUSTFLAGS:-} --remap-path-prefix=${HOME}=~"
 
-echo "Building overlay + injector (release)..."
-cargo xwin build --release --target "$TARGET"
-
 echo "Building launcher frontend..."
 (cd crates/launcher && node node_modules/vite/bin/vite.js build)
 
@@ -21,8 +18,6 @@ cargo xwin build -p launcher --release --target "$TARGET" --features custom-prot
 
 echo "Copying artifacts to ${RELEASE_DIR}/..."
 mkdir -p "$RELEASE_DIR"
-cp "${BUILD_DIR}/overlay.dll" "$RELEASE_DIR/"
-cp "${BUILD_DIR}/injector.exe" "$RELEASE_DIR/"
 cp "${BUILD_DIR}/launcher.exe" "$RELEASE_DIR/"
 cp config.example.toml "$RELEASE_DIR/"
 

@@ -2,11 +2,10 @@ use tauri::Emitter;
 use tauri::Manager;
 use tauri::State;
 use tauri_plugin_opener::OpenerExt;
-use tauri_plugin_shell::ShellExt;
 
 use crate::discovery;
 use crate::models::{Game, GameSource};
-use crate::state::{ActiveSession, AppState};
+use crate::state::AppState;
 
 #[tauri::command]
 #[allow(clippy::needless_pass_by_value)]
@@ -44,16 +43,37 @@ pub async fn scan_games(state: State<'_, AppState>) -> Result<Vec<Game>, String>
 }
 
 #[tauri::command]
-#[allow(clippy::too_many_lines)]
 pub async fn launch_game(game_id: String, app: tauri::AppHandle) -> Result<String, String> {
-    let state = app.state::<AppState>();
-
-    // Guard: prevent duplicate injection for the same game
-    if state.active_injectors.lock().contains_key(&game_id) {
-        return Err("Injector already active for this game".to_string());
+    // Reserve the session slot atomically (guard + insert) so two rapid launches
+    // cannot both start the same game.
+    {
+        let state = app.state::<AppState>();
+        let mut sessions = state.active_sessions.lock();
+        if sessions.contains(&game_id) {
+            return Err("This game is already running".to_string());
+        }
+        sessions.insert(game_id.clone());
     }
 
-    // Get game from state
+    match do_launch(&app, &game_id) {
+        Ok(()) => Ok("launching".to_string()),
+        Err(e) => {
+            // Release the reservation so the game can be launched again.
+            app.state::<AppState>()
+                .active_sessions
+                .lock()
+                .remove(&game_id);
+            Err(e)
+        }
+    }
+}
+
+/// Launch the game and attach the playtime watcher. The caller has already
+/// reserved `game_id` in `active_sessions`; on `Err` the caller releases it, and
+/// on the no-watcher path this releases it after emitting a terminal event.
+fn do_launch(app: &tauri::AppHandle, game_id: &str) -> Result<(), String> {
+    let state = app.state::<AppState>();
+
     let game = {
         let launcher = state.launcher.lock();
         launcher
@@ -97,93 +117,39 @@ pub async fn launch_game(game_id: String, app: tauri::AppHandle) -> Result<Strin
         }
     }
 
-    // Resolve exe name on demand if not cached
-    let mut exe_name = game.exe_name.clone();
-    if exe_name.is_empty() {
-        if let Some(dir) = &game.install_dir {
-            let (resolved_name, resolved_path) =
-                discovery::steam::resolve_game_exe(std::path::Path::new(dir));
-            exe_name = resolved_name;
-            // Cache the resolved exe for next time
-            let mut launcher = state.launcher.lock();
-            if let Some(g) = launcher.games.iter_mut().find(|g| g.id == game_id) {
-                g.exe_name.clone_from(&exe_name);
-                g.exe_path = resolved_path;
-            }
-            drop(launcher);
-            if let Err(e) = state.save() {
-                tracing::warn!("Failed to cache resolved exe: {e}");
-            }
-        }
-    }
-
-    // Validate exe_name before passing to sidecar (must match capability regex: ^[\w.-]+\.exe$)
-    if !exe_name.is_empty() {
-        let has_exe_ext = std::path::Path::new(&exe_name)
-            .extension()
-            .is_some_and(|ext| ext.eq_ignore_ascii_case("exe"));
-        let is_valid = has_exe_ext
-            && exe_name
-                .chars()
-                .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '.' || c == '-');
-        if !is_valid {
-            return Err(format!("Invalid exe name: {exe_name}"));
-        }
-
-        let shell = app.shell();
-        let sidecar = shell
-            .sidecar("injector")
-            .map_err(|e| format!("Sidecar error: {e}"))?
-            .args(["--process", &exe_name, "--timeout", "30"]);
-
-        let (mut rx, child) = sidecar
-            .spawn()
-            .map_err(|e| format!("Failed to spawn injector: {e}"))?;
-        state.active_injectors.lock().insert(
-            game_id.clone(),
-            ActiveSession {
-                child,
-                started_at: std::time::Instant::now(),
-            },
-        );
-
-        // Listen for sidecar exit, track play time, and emit event to frontend
-        let app_handle = app.clone();
-        let gid = game_id.clone();
-        tauri::async_runtime::spawn(async move {
-            use tauri_plugin_shell::process::CommandEvent;
-            while let Some(event) = rx.recv().await {
-                match event {
-                    CommandEvent::Terminated(_) | CommandEvent::Error(_) => {
-                        let _ = app_handle.emit("injector-finished", &gid);
-                        let s = app_handle.state::<AppState>();
-                        // Remove session and compute play time
-                        let session = s.active_injectors.lock().remove(&gid);
-                        if let Some(session) = session {
-                            let elapsed_mins = session.started_at.elapsed().as_secs() / 60;
-                            if elapsed_mins > 0 {
-                                let mut launcher = s.launcher.lock();
-                                if let Some(g) = launcher.games.iter_mut().find(|g| g.id == gid) {
-                                    g.play_time_minutes += elapsed_mins;
-                                    tracing::info!(
-                                        "Session ended for {}: +{}min (total: {}min)",
-                                        g.name,
-                                        elapsed_mins,
-                                        g.play_time_minutes
-                                    );
-                                }
-                                drop(launcher);
-                                if let Err(e) = s.save() {
-                                    tracing::error!("Failed to save play time: {e}");
-                                }
-                            }
-                        }
-                        break;
-                    }
-                    _ => {}
+    // Attach the session watcher. Steam games are watched via Steam's own
+    // running-flag (keyed by appid): authoritative, and no exe guessing. The
+    // launch branch above already validated the appid is present + all-digits.
+    if game.source == GameSource::Steam {
+        let app_id = game.source_id.clone().unwrap_or_default();
+        crate::process_watch::spawn_steam_watch(app.clone(), game_id.to_owned(), app_id);
+    } else {
+        // Non-Steam: watch by executable name, resolving it on demand if needed.
+        let mut exe_name = game.exe_name.clone();
+        if exe_name.is_empty() {
+            if let Some(dir) = &game.install_dir {
+                let (resolved_name, resolved_path) =
+                    discovery::steam::resolve_game_exe(std::path::Path::new(dir));
+                exe_name = resolved_name;
+                // Cache the resolved exe for next time.
+                let mut launcher = state.launcher.lock();
+                if let Some(g) = launcher.games.iter_mut().find(|g| g.id == game_id) {
+                    g.exe_name.clone_from(&exe_name);
+                    g.exe_path = resolved_path;
+                }
+                drop(launcher);
+                if let Err(e) = state.save() {
+                    tracing::warn!("Failed to cache resolved exe: {e}");
                 }
             }
-        });
+        }
+        // No process name to watch -- reset to idle (the game did launch).
+        if exe_name.is_empty() {
+            let _ = app.emit("game-finished", game_id);
+            state.active_sessions.lock().remove(game_id);
+        } else {
+            crate::process_watch::spawn_game_watch(app.clone(), game_id.to_owned(), exe_name);
+        }
     }
 
     // Update last_played timestamp
@@ -197,30 +163,22 @@ pub async fn launch_game(game_id: String, app: tauri::AppHandle) -> Result<Strin
         tracing::error!("Failed to save state: {e}");
     }
 
-    Ok("injecting".to_string())
+    Ok(())
 }
 
-/// Resolve the directory containing the overlay DLL (config.toml + companion.log live here).
-fn overlay_dir(app: &tauri::AppHandle) -> Result<std::path::PathBuf, String> {
-    let state = app.state::<AppState>();
-    let custom = state.launcher.lock().settings.overlay_dll_path.clone();
-    if let Some(ref dll_path) = custom {
-        let p = std::path::Path::new(dll_path);
-        if let Some(parent) = p.parent() {
-            return Ok(parent.to_path_buf());
-        }
-    }
-    // Default: same directory as the launcher exe
+/// Resolve the directory where the companion's `config.toml` lives (next to the
+/// launcher executable).
+fn companion_dir() -> Result<std::path::PathBuf, String> {
     std::env::current_exe()
         .ok()
         .and_then(|p| p.parent().map(std::path::Path::to_path_buf))
-        .ok_or_else(|| "Cannot determine overlay directory".to_string())
+        .ok_or_else(|| "Cannot determine companion directory".to_string())
 }
 
 #[tauri::command]
 #[allow(clippy::needless_pass_by_value)]
 pub fn open_game_config(app: tauri::AppHandle) -> Result<(), String> {
-    let dir = overlay_dir(&app)?;
+    let dir = companion_dir()?;
     let config_path = dir.join("config.toml");
     if config_path.exists() {
         app.opener()
@@ -234,13 +192,16 @@ pub fn open_game_config(app: tauri::AppHandle) -> Result<(), String> {
 #[tauri::command]
 #[allow(clippy::needless_pass_by_value)]
 pub fn open_game_logs(app: tauri::AppHandle) -> Result<(), String> {
-    let dir = overlay_dir(&app)?;
-    let log_path = dir.join("companion.log");
+    let log_dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|e| format!("Cannot determine log directory: {e}"))?;
+    let log_path = log_dir.join("launcher.log");
     if log_path.exists() {
         app.opener()
             .open_path(log_path.to_string_lossy().as_ref(), None::<&str>)
             .map_err(|e| format!("Failed to open log: {e}"))
     } else {
-        Err(format!("companion.log not found in {}", dir.display()))
+        Err(format!("launcher.log not found in {}", log_dir.display()))
     }
 }

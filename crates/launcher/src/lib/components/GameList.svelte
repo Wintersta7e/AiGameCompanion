@@ -1,71 +1,92 @@
 <script lang="ts">
   import GameListItem from './GameListItem.svelte';
   import {
+    getGames,
     getFilteredGames,
-    getFilterSource,
     getSearchQuery,
     getSelectedGameId,
     getIsLoading,
     getError,
     scanGames,
-    setFilterSource,
+    setSearchQuery,
   } from '../stores/games.svelte';
-  import type { FilterSource } from '../stores/games.svelte';
-
-  const filters: readonly { label: string; value: FilterSource }[] = [
-    { label: 'All', value: 'all' },
-    { label: 'Steam', value: 'steam' },
-    { label: 'Epic', value: 'epic' },
-    { label: 'GOG', value: 'gog' },
-  ] as const;
 
   let filteredGames = $derived(getFilteredGames());
-  let activeFilter = $derived(getFilterSource());
+  let totalGames = $derived(getGames().length);
   let selectedId = $derived(getSelectedGameId());
   let currentSearch = $derived(getSearchQuery());
   let isLoading = $derived(getIsLoading());
   let errorMsg = $derived(getError());
 
-  function handleFilterClick(value: FilterSource): void {
-    setFilterSource(value);
+  let searchFocused = $state(false);
+
+  function onSearch(e: Event): void {
+    setSearchQuery((e.target as HTMLInputElement).value);
   }
 </script>
 
 <aside
-  class="w-[300px] shrink-0 flex flex-col overflow-hidden border-r border-border-subtle"
-  style="background: rgba(17, 21, 34, 0.7); backdrop-filter: blur(10px);"
+  class="w-[290px] shrink-0 flex flex-col overflow-hidden border-r border-line"
+  style="background: rgba(11, 11, 14, 0.55);"
 >
-  <!-- Filter tabs -->
-  <div class="p-4 shrink-0 border-b border-border-subtle">
-    <div class="flex gap-0.5 rounded-md p-0.5" style="background: rgba(255, 255, 255, 0.03);">
-      {#each filters as filter (filter.value)}
-        <button
-          class="flex-1 py-1.5 px-1 font-display text-[0.72rem] font-semibold tracking-wide uppercase text-center border-none rounded cursor-pointer transition-all duration-150"
-          class:text-accent={activeFilter === filter.value}
-          class:bg-[rgba(99,140,255,0.12)]={activeFilter === filter.value}
-          class:text-text-muted={activeFilter !== filter.value}
-          class:bg-transparent={activeFilter !== filter.value}
-          class:hover:text-text-secondary={activeFilter !== filter.value}
-          aria-pressed={activeFilter === filter.value}
-          onclick={() => handleFilterClick(filter.value)}
-        >
-          {filter.label}
-        </button>
-      {/each}
+  <!-- header -->
+  <div class="px-[15px] pt-[18px] pb-3 shrink-0">
+    <div class="flex items-center justify-between mb-[13px]">
+      <span class="font-display text-[10.5px] font-semibold tracking-[0.2em] text-t-lo"
+        >LINKED GAMES</span
+      >
+      <span
+        class="font-mono text-[10px] text-t-mid px-2 py-0.5 rounded-[7px]"
+        style="background: rgba(255,255,255,0.045);"
+      >
+        {totalGames}
+      </span>
+    </div>
+    <div
+      class="flex items-center gap-2 px-3 py-2 rounded-[10px] border transition-all duration-200"
+      style="
+        background: {searchFocused ? 'rgba(255,255,255,0.055)' : 'rgba(255,255,255,0.035)'};
+        border-color: {searchFocused
+        ? 'color-mix(in oklab, var(--accent) 30%, transparent)'
+        : 'var(--color-line)'};
+      "
+    >
+      <svg
+        width="14"
+        height="14"
+        viewBox="0 0 24 24"
+        fill="none"
+        stroke="currentColor"
+        stroke-width="2.4"
+        stroke-linecap="round"
+        class="text-t-lo shrink-0"
+      >
+        <circle cx="11" cy="11" r="8" /><line x1="21" y1="21" x2="16.65" y2="16.65" />
+      </svg>
+      <input
+        type="text"
+        placeholder="Search library…"
+        value={currentSearch}
+        oninput={onSearch}
+        onfocus={() => (searchFocused = true)}
+        onblur={() => (searchFocused = false)}
+        aria-label="Search games"
+        class="bg-transparent border-none outline-none text-t-hi font-body text-[12.5px] w-full placeholder:text-t-lo"
+      />
     </div>
   </div>
 
-  <!-- Game list -->
-  <div class="flex-1 overflow-y-auto p-2">
+  <!-- list -->
+  <div class="flex-1 overflow-y-auto px-[9px] pb-2 flex flex-col gap-[3px]">
     {#if isLoading}
-      <div class="flex items-center justify-center h-full">
-        <div class="text-text-muted text-sm font-display">Scanning games...</div>
+      <div class="flex items-center justify-center h-full text-t-lo text-sm font-display">
+        Scanning…
       </div>
     {:else if errorMsg}
-      <div class="flex items-center justify-center h-full">
-        <div class="text-center px-4">
-          <div class="text-accent-warm text-sm font-display mb-2">Failed to scan games</div>
-          <div class="text-text-muted text-xs font-mono">{errorMsg}</div>
+      <div class="flex items-center justify-center h-full text-center px-4">
+        <div>
+          <div class="text-err text-sm font-display mb-2">Scan failed</div>
+          <div class="text-t-lo text-xs font-mono">{errorMsg}</div>
         </div>
       </div>
     {:else if filteredGames.length > 0}
@@ -73,34 +94,55 @@
         <GameListItem {game} selected={game.id === selectedId} index={i} />
       {/each}
     {:else}
-      <div class="flex items-center justify-center h-full">
-        <div class="text-center px-4">
-          {#if currentSearch}
-            <div class="text-text-muted text-sm font-display">No games match your search</div>
-          {:else if activeFilter !== 'all'}
-            <div class="text-text-muted text-sm font-display">No {activeFilter} games found</div>
-          {:else}
-            <div class="text-text-muted text-sm font-display mb-3">No games found</div>
+      <div class="flex items-center justify-center h-full text-center px-4">
+        {#if currentSearch}
+          <div class="text-t-lo text-sm font-display">No games match “{currentSearch}”.</div>
+        {:else}
+          <div>
+            <div class="text-t-lo text-sm font-display mb-3">No games bound yet.</div>
             <button
-              class="py-2 px-4 border border-border-subtle rounded-[10px] bg-transparent text-accent font-display text-[0.8rem] font-semibold tracking-wide uppercase cursor-pointer transition-all duration-150 hover:border-border-glow hover:bg-[rgba(99,140,255,0.08)]"
               onclick={() => scanGames()}
+              class="py-2 px-4 rounded-[10px] bg-transparent text-[0.8rem] font-display font-semibold tracking-wide uppercase cursor-pointer transition-all duration-150"
+              style="border: 1px solid var(--color-line); color: var(--accent);"
             >
-              Scan for Games
+              Scan for games
             </button>
-          {/if}
-        </div>
+          </div>
+        {/if}
       </div>
     {/if}
   </div>
 
-  <!-- Rescan button -->
+  <!-- bind -->
   <button
-    class="m-2 py-2.5 px-3 border border-dashed border-border-subtle rounded-[10px] bg-transparent text-text-muted font-display text-[0.8rem] font-semibold tracking-wide uppercase transition-all duration-150 text-center cursor-pointer hover:text-accent hover:border-border-glow hover:bg-[rgba(99,140,255,0.05)]"
     onclick={() => scanGames()}
     disabled={isLoading}
-    class:opacity-50={isLoading}
-    class:cursor-not-allowed={isLoading}
+    class="m-3 py-[11px] rounded-[11px] bg-transparent font-display text-[11.5px] font-medium tracking-[0.06em] flex items-center justify-center gap-2 cursor-pointer transition-all duration-150 shrink-0"
+    style="border: 1px dashed var(--color-line); color: var(--color-t-lo);"
+    onmouseenter={(e) => {
+      const el = e.currentTarget as HTMLElement;
+      el.style.color = 'var(--accent)';
+      el.style.borderColor = 'color-mix(in oklab, var(--accent) 45%, transparent)';
+      el.style.background = 'color-mix(in oklab, var(--accent) 6%, transparent)';
+    }}
+    onmouseleave={(e) => {
+      const el = e.currentTarget as HTMLElement;
+      el.style.color = 'var(--color-t-lo)';
+      el.style.borderColor = 'var(--color-line)';
+      el.style.background = 'transparent';
+    }}
   >
-    {isLoading ? 'Scanning...' : 'Rescan Games'}
+    <svg
+      width="13"
+      height="13"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      stroke-width="2.4"
+      stroke-linecap="round"
+    >
+      <line x1="12" y1="5" x2="12" y2="19" /><line x1="5" y1="12" x2="19" y2="12" />
+    </svg>
+    {isLoading ? 'Scanning…' : 'Bind a new game'}
   </button>
 </aside>
