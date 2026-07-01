@@ -208,7 +208,10 @@
 
 <div class="overlay-root">
   <div class="panel">
-    <div class="brand">SAGE -- spike</div>
+    <div class="titlebar" data-tauri-drag-region>
+      <span class="brand">SAGE</span>
+      <span class="drag-hint dim">drag to move</span>
+    </div>
     <div class="detected">
       {#if game}
         <strong>{game.title || game.exe}</strong>
@@ -285,10 +288,24 @@
     gap: 8px;
     box-sizing: border-box;
   }
+  .titlebar {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 8px;
+    cursor: move;
+    user-select: none;
+    /* Stretch the grab area to the panel padding edges. */
+    margin: -6px -8px 2px -8px;
+    padding: 6px 10px 4px;
+  }
   .brand {
     color: #e0a23c;
     font-weight: 700;
     letter-spacing: 0.08em;
+  }
+  .drag-hint {
+    font-size: 10px;
   }
   .detected {
     display: flex;
