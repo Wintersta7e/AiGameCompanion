@@ -63,13 +63,11 @@
   );
   const canAttach = $derived(!!game && provider !== 'openai');
   const canSend = $derived(!!game && available.length > 0);
-  const captureHint = $derived(
-    provider === 'openai'
-      ? 'screenshots unsupported on OpenAI'
-      : attach && canAttach
-        ? 'screenshot attached · WGC'
-        : 'screenshot attaches via WGC',
-  );
+  const captureHint = $derived.by(() => {
+    if (provider === 'openai') return 'screenshots unsupported on OpenAI';
+    if (attach && canAttach) return 'screenshot attached · WGC';
+    return 'screenshot attaches via WGC';
+  });
 
   // Re-query availability (CLI detection can lag startup); restore the saved
   // provider once it's known-available, else fall back to the first available.

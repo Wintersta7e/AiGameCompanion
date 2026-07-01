@@ -19,8 +19,6 @@ export const PROVIDERS: Record<Provider, ProviderMeta> = {
   openai: { label: 'OpenAI', model: 'gpt-5-codex', dot: '#10a37f' },
 };
 
-const ORDER: Provider[] = ['gemini', 'claude', 'openai'];
-
 let provider = $state<Provider>('gemini');
 
 export function getProvider(): Provider {
@@ -47,8 +45,4 @@ export async function loadProvider(): Promise<void> {
   } catch {
     /* keep the default */
   }
-}
-
-export function cycleProvider(): void {
-  setProvider(ORDER[(ORDER.indexOf(provider) + 1) % ORDER.length]);
 }

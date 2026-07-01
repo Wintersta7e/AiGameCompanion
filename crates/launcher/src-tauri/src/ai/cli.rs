@@ -28,9 +28,10 @@ const CODEX_WORKDIR: &str = "aigc-codex-workdir";
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 
 /// How to invoke a CLI tool.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub enum CliMode {
     /// Not available on this system.
+    #[default]
     Unavailable,
     /// Available directly on the Windows PATH.
     Native,
@@ -54,21 +55,11 @@ impl CliMode {
 }
 
 /// Cached CLI availability, detected once at startup on a background thread.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct CliConfig {
     pub claude: CliMode,
     pub codex: CliMode,
     pub codex_workdir: String,
-}
-
-impl Default for CliConfig {
-    fn default() -> Self {
-        Self {
-            claude: CliMode::Unavailable,
-            codex: CliMode::Unavailable,
-            codex_workdir: String::new(),
-        }
-    }
 }
 
 /// Which content the parser decoded from one CLI stdout line.

@@ -173,10 +173,8 @@ impl AiState {
     /// Cancel `request_id` if it is the active request (Stop button).
     pub fn cancel(&self, request_id: u64) {
         let mut guard = self.active.lock();
-        if matches!(&*guard, Some(active) if active.request_id == request_id) {
-            if let Some(active) = guard.take() {
-                active.handle.abort();
-            }
+        if let Some(active) = guard.take_if(|active| active.request_id == request_id) {
+            active.handle.abort();
         }
     }
 
@@ -184,9 +182,7 @@ impl AiState {
     /// replaced by a newer request.
     fn clear_if(&self, request_id: u64) {
         let mut guard = self.active.lock();
-        if matches!(&*guard, Some(active) if active.request_id == request_id) {
-            *guard = None;
-        }
+        guard.take_if(|active| active.request_id == request_id);
     }
 }
 

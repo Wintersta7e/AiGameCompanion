@@ -42,33 +42,34 @@
   let playTime = $derived(formatPlayTime(game?.play_time_minutes ?? 0, true));
   let lastPlayed = $derived(formatLastPlayed(game?.last_played ?? null));
 
-  // Status → label/colour, mirroring the launch lifecycle.
+  // Status → label/colour/copy, mirroring the launch lifecycle. 'idle' and any
+  // unknown status fall through to the defaults below.
   let status = $derived(game ? getGameStatus(game.id) : 'idle');
-  let statusLabel = $derived(
-    status === 'launching'
-      ? 'Launching…'
-      : status === 'error'
-        ? 'Error'
-        : status === 'linked'
-          ? 'Linked · Active'
-          : 'Ready',
-  );
-  let statusColor = $derived(
-    status === 'error'
-      ? 'var(--color-err)'
-      : status === 'launching'
-        ? 'var(--color-warn)'
-        : status === 'linked'
-          ? 'var(--color-ok)'
-          : 'var(--accent)',
-  );
+
+  const STATUS_LABELS: Record<string, string> = {
+    launching: 'Launching…',
+    error: 'Error',
+    linked: 'Linked · Active',
+  };
+  const STATUS_COLORS: Record<string, string> = {
+    error: 'var(--color-err)',
+    launching: 'var(--color-warn)',
+    linked: 'var(--color-ok)',
+  };
+  const LAUNCH_LABELS: Record<string, string> = {
+    launching: 'Launching…',
+    linked: 'Relaunch',
+  };
+  const BEAM_LABELS: Record<string, string> = {
+    linked: 'LINKED',
+    launching: 'DETECTING…',
+  };
+
+  let statusLabel = $derived(STATUS_LABELS[status] ?? 'Ready');
+  let statusColor = $derived(STATUS_COLORS[status] ?? 'var(--accent)');
   let launchBusy = $derived(status === 'launching');
-  let launchLabel = $derived(
-    status === 'launching' ? 'Launching…' : status === 'linked' ? 'Relaunch' : 'Launch',
-  );
-  let beamLabel = $derived(
-    status === 'linked' ? 'LINKED' : launchBusy ? 'DETECTING…' : 'CTRL+SHIFT+G ⇄ OVERLAY',
-  );
+  let launchLabel = $derived(LAUNCH_LABELS[status] ?? 'Launch');
+  let beamLabel = $derived(BEAM_LABELS[status] ?? 'CTRL+SHIFT+G ⇄ OVERLAY');
 
   function capSource(s: string): string {
     return s === 'gog' ? 'GOG' : s.charAt(0).toUpperCase() + s.slice(1);
