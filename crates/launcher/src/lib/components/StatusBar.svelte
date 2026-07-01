@@ -31,7 +31,6 @@
       ></span>
       Watcher active
     </span>
-    <span>proxy localhost:8765</span>
     <span>{gameCount} {gameCount === 1 ? 'game' : 'games'}</span>
   </div>
   <span>Sage v{version}</span>

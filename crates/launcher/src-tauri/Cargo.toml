@@ -18,17 +18,15 @@ serde_json = "1"
 steamlocate = "2"
 chrono = { version = "0.4", features = ["serde"] }
 parking_lot = "0.12"
-tokio = { version = "1", features = ["rt", "sync", "net", "process", "io-util", "macros"] }
+tokio = { version = "1", features = ["rt", "sync", "net", "process", "io-util", "macros", "time"] }
 tokio-stream = { version = "0.1", features = ["io-util"] }
-axum = { version = "0.8", features = ["json"] }
-rand = "0.10"
 futures-util = "0.3"
-hex = "0.4"
 tracing = "0.1"
 tracing-subscriber = "0.3"
 png = "0.17"
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "stream"] }
 toml = "1.0"
+base64 = "0.22"
 
 # Win32 foreground-window detection + focus handoff (overlay companion). Only
 # compiled for Windows targets; the launcher's pure-logic tests run on Linux.

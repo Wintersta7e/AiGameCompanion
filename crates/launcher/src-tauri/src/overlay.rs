@@ -25,36 +25,6 @@ pub struct OverlayState {
     pub game: parking_lot::Mutex<Option<GameInfo>>,
 }
 
-/// Start a Gemini request and stream its result back to the overlay window.
-#[tauri::command]
-#[allow(clippy::needless_pass_by_value)] // Tauri commands deserialize owned values.
-pub fn ask_sage(app: AppHandle, prompt: String) {
-    tauri::async_runtime::spawn(async move {
-        let result = async {
-            let config = crate::ai::load_gemini_config()?;
-            crate::ai::stream_gemini(prompt, config.api_key, config.model, |chunk| {
-                app.emit_to("overlay", "sage-token", chunk)
-                    .map_err(|error| format!("failed to emit response token: {error}"))
-            })
-            .await
-        }
-        .await;
-
-        match result {
-            Ok(()) => {
-                if let Err(error) = app.emit_to("overlay", "sage-done", ()) {
-                    tracing::warn!("failed to emit sage-done: {error}");
-                }
-            }
-            Err(message) => {
-                if let Err(error) = app.emit_to("overlay", "sage-error", message) {
-                    tracing::warn!("failed to emit sage-error: {error}");
-                }
-            }
-        }
-    });
-}
-
 /// Capture the last foreground game window to a temporary PNG file.
 #[tauri::command]
 #[allow(clippy::needless_pass_by_value)] // Tauri command state is injected as an owned handle.

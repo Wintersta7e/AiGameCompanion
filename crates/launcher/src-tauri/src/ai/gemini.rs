@@ -1,14 +1,21 @@
-//! Direct AI-provider clients used by the external overlay companion.
+//! Direct Gemini streaming client (no proxy). Builds a `streamGenerateContent`
+//! request from the chat history, an optional system instruction, and an
+//! optional inline PNG screenshot, then forwards each decoded text chunk to a
+//! caller-supplied callback.
 
 use std::time::Duration;
 
 use futures_util::StreamExt;
 use serde::{Deserialize, Serialize};
 
+use super::ChatMessage;
+
 const GEMINI_ENDPOINT: &str = "https://generativelanguage.googleapis.com/v1beta/models";
 const MAX_STREAM_BYTES: usize = 2 * 1024 * 1024;
 const MAX_OUTPUT_TOKENS: u32 = 4_096;
 
+/// Gemini API key + model, read transitionally from `config.toml` next to the
+/// executable (Phase 6 replaces this with the Settings UI + secret storage).
 #[derive(Debug)]
 pub struct GeminiConfig {
     pub api_key: String,
@@ -35,23 +42,41 @@ struct FileGeminiConfig {
     model: String,
 }
 
+/// A request content part: either text or inline base64 image data. Serialized
+/// untagged so each variant maps directly onto Gemini's `parts[]` schema.
+#[derive(Serialize)]
+#[serde(untagged)]
+enum Part {
+    Text { text: String },
+    InlineData { inline_data: InlineData },
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct InlineData {
+    mime_type: String,
+    data: String,
+}
+
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 struct GeminiRequest {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    system_instruction: Option<SystemInstruction>,
     contents: Vec<Content>,
     generation_config: GenerationConfig,
     tools: Vec<Tool>,
 }
 
 #[derive(Serialize)]
-struct Content {
-    role: &'static str,
-    parts: Vec<RequestPart>,
+struct SystemInstruction {
+    parts: Vec<Part>,
 }
 
 #[derive(Serialize)]
-struct RequestPart {
-    text: String,
+struct Content {
+    role: &'static str,
+    parts: Vec<Part>,
 }
 
 #[derive(Serialize)]
@@ -91,7 +116,7 @@ struct ResponsePart {
 }
 
 /// Read the transitional Gemini configuration stored next to the executable.
-pub fn load_gemini_config() -> Result<GeminiConfig, String> {
+pub fn load_config() -> Result<GeminiConfig, String> {
     let executable = std::env::current_exe()
         .map_err(|error| format!("failed to locate launcher executable: {error}"))?;
     let directory = executable
@@ -100,8 +125,12 @@ pub fn load_gemini_config() -> Result<GeminiConfig, String> {
     let path = directory.join("config.toml");
     let source = std::fs::read_to_string(&path)
         .map_err(|error| format!("failed to read {}: {error}", path.display()))?;
-    let config: LauncherConfig = toml::from_str(&source)
-        .map_err(|error| format!("failed to parse {}: {error}", path.display()))?;
+    let config: LauncherConfig = toml::from_str(&source).map_err(|error| {
+        // Never surface the raw toml error to the UI: it embeds the offending
+        // source line, which could be the api_key line. Log the detail locally.
+        tracing::warn!("failed to parse {}: {error}", path.display());
+        "config.toml is malformed. Check the api.gemini settings.".to_owned()
+    })?;
     let api_key = config.api.gemini.api_key.trim().to_owned();
     let model = config.api.gemini.model.trim().to_owned();
 
@@ -115,26 +144,67 @@ pub fn load_gemini_config() -> Result<GeminiConfig, String> {
     Ok(GeminiConfig { api_key, model })
 }
 
+/// Map a chat message role onto a Gemini content role (`user` / `model`).
+fn gemini_role(role: &str) -> &'static str {
+    match role {
+        "assistant" | "model" => "model",
+        _ => "user",
+    }
+}
+
 /// Stream a Gemini response, passing each complete Gemini text chunk to `on_chunk`.
-pub async fn stream_gemini<F>(
-    prompt: String,
-    api_key: String,
-    model: String,
+///
+/// `screenshot` is a base64-encoded PNG attached to the most recent user turn.
+pub async fn stream<F>(
+    messages: &[ChatMessage],
+    system_prompt: &str,
+    screenshot: Option<String>,
+    model: &str,
+    api_key: &str,
     mut on_chunk: F,
 ) -> Result<(), String>
 where
     F: FnMut(String) -> Result<(), String>,
 {
-    if prompt.trim().is_empty() {
+    if messages.iter().all(|message| message.content.trim().is_empty()) {
         return Err("Question cannot be empty.".to_owned());
     }
-    validate_model(&model)?;
+    validate_model(model)?;
+
+    let mut contents: Vec<Content> = messages
+        .iter()
+        .map(|message| Content {
+            role: gemini_role(&message.role),
+            parts: vec![Part::Text {
+                text: message.content.clone(),
+            }],
+        })
+        .collect();
+
+    if let Some(data) = screenshot {
+        if let Some(last_user) = contents.iter_mut().rev().find(|content| content.role == "user") {
+            last_user.parts.push(Part::InlineData {
+                inline_data: InlineData {
+                    mime_type: "image/png".to_owned(),
+                    data,
+                },
+            });
+        }
+    }
+
+    let system_instruction = if system_prompt.trim().is_empty() {
+        None
+    } else {
+        Some(SystemInstruction {
+            parts: vec![Part::Text {
+                text: system_prompt.to_owned(),
+            }],
+        })
+    };
 
     let request = GeminiRequest {
-        contents: vec![Content {
-            role: "user",
-            parts: vec![RequestPart { text: prompt }],
-        }],
+        system_instruction,
+        contents,
         generation_config: GenerationConfig {
             max_output_tokens: MAX_OUTPUT_TOKENS,
         },

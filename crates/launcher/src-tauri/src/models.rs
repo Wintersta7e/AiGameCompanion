@@ -32,6 +32,8 @@ pub struct LauncherSettings {
     pub scan_on_startup: bool,
     pub minimize_to_tray: bool,
     pub launch_on_startup: bool,
+    /// Overlay AI provider selection ("gemini" / "claude" / "openai").
+    pub active_provider: String,
 }
 
 impl Default for LauncherSettings {
@@ -41,6 +43,7 @@ impl Default for LauncherSettings {
             scan_on_startup: true,
             minimize_to_tray: true,
             launch_on_startup: false,
+            active_provider: "gemini".to_owned(),
         }
     }
 }
