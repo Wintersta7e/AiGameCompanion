@@ -616,7 +616,10 @@ mod tests {
     #[test]
     fn parse_claude_line_extracts_text_delta() {
         let line = r#"{"type":"stream_event","event":{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"PONG"}}}"#;
-        assert_eq!(parse_claude_line(line), Some(Parsed::Text("PONG".to_owned())));
+        assert_eq!(
+            parse_claude_line(line),
+            Some(Parsed::Text("PONG".to_owned()))
+        );
     }
 
     #[test]
@@ -669,7 +672,10 @@ mod tests {
 
     #[test]
     fn parse_codex_line_emits_plain_text_verbatim() {
-        assert_eq!(parse_codex_line("PONG"), Some(Parsed::Text("PONG".to_owned())));
+        assert_eq!(
+            parse_codex_line("PONG"),
+            Some(Parsed::Text("PONG".to_owned()))
+        );
     }
 
     #[test]
@@ -693,7 +699,10 @@ mod tests {
     #[test]
     fn parse_codex_line_extracts_top_level_text_field() {
         let line = r#"{"text":"hi there"}"#;
-        assert_eq!(parse_codex_line(line), Some(Parsed::Text("hi there".to_owned())));
+        assert_eq!(
+            parse_codex_line(line),
+            Some(Parsed::Text("hi there".to_owned()))
+        );
     }
 
     #[test]
@@ -707,7 +716,10 @@ mod tests {
         // A JSON answer with no protocol "type" is the model's output, not a
         // control frame -- emit it verbatim instead of dropping it.
         let object = r#"{"ok":true}"#;
-        assert_eq!(parse_codex_line(object), Some(Parsed::Text(object.to_owned())));
+        assert_eq!(
+            parse_codex_line(object),
+            Some(Parsed::Text(object.to_owned()))
+        );
         assert_eq!(parse_codex_line("42"), Some(Parsed::Text("42".to_owned())));
     }
 }

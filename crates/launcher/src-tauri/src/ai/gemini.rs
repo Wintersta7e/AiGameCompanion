@@ -169,7 +169,10 @@ pub async fn stream<F>(
 where
     F: FnMut(String) -> Result<(), String>,
 {
-    if messages.iter().all(|message| message.content.trim().is_empty()) {
+    if messages
+        .iter()
+        .all(|message| message.content.trim().is_empty())
+    {
         return Err("Question cannot be empty.".to_owned());
     }
     validate_model(model)?;
@@ -185,7 +188,11 @@ where
         .collect();
 
     if let Some(data) = screenshot {
-        if let Some(last_user) = contents.iter_mut().rev().find(|content| content.role == "user") {
+        if let Some(last_user) = contents
+            .iter_mut()
+            .rev()
+            .find(|content| content.role == "user")
+        {
             last_user.parts.push(Part::InlineData {
                 inline_data: InlineData {
                     mime_type: "image/png".to_owned(),

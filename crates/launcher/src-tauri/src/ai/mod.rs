@@ -208,7 +208,10 @@ async fn run(app: AppHandle, params: RequestParams, channel: Channel<SageEvent>)
     let (system_prompt, game_hwnd) = {
         let overlay = app.state::<OverlayState>();
         let game = overlay.game.lock();
-        (build_system_prompt(game.as_ref()), game.as_ref().map(|g| g.hwnd))
+        (
+            build_system_prompt(game.as_ref()),
+            game.as_ref().map(|g| g.hwnd),
+        )
     };
     let cli_cfg = app.state::<AiState>().cli.lock().clone();
 
@@ -223,7 +226,10 @@ async fn run(app: AppHandle, params: RequestParams, channel: Channel<SageEvent>)
     let chan_stream = channel.clone();
 
     let producer = async move {
-        let on_chunk = move |text: String| tx.send(text).map_err(|_| "overlay window closed".to_owned());
+        let on_chunk = move |text: String| {
+            tx.send(text)
+                .map_err(|_| "overlay window closed".to_owned())
+        };
         match provider {
             Provider::Gemini => {
                 let cfg = gemini::load_config()?;
@@ -248,7 +254,9 @@ async fn run(app: AppHandle, params: RequestParams, channel: Channel<SageEvent>)
                 )
                 .await
             }
-            Provider::Openai => cli::stream_codex(&cli_cfg, &system_prompt, &messages, on_chunk).await,
+            Provider::Openai => {
+                cli::stream_codex(&cli_cfg, &system_prompt, &messages, on_chunk).await
+            }
         }
     };
 
@@ -286,7 +294,8 @@ async fn run(app: AppHandle, params: RequestParams, channel: Channel<SageEvent>)
 /// Capture failures are non-fatal: the request proceeds without the screenshot.
 async fn capture_base64(game_hwnd: Option<i64>) -> Option<String> {
     let hwnd = game_hwnd?;
-    match tokio::task::spawn_blocking(move || crate::overlay_capture::capture_window_png(hwnd)).await
+    match tokio::task::spawn_blocking(move || crate::overlay_capture::capture_window_png(hwnd))
+        .await
     {
         Ok(Ok(png)) => Some(base64::engine::general_purpose::STANDARD.encode(png)),
         Ok(Err(error)) => {

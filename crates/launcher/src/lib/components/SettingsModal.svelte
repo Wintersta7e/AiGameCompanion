@@ -54,9 +54,21 @@
     { title: 'Quick ask', sub: 'Screenshot + ask your preset question', keys: 'A' },
   ];
   const TOGGLES: { key: keyof Settings; label: string; sub: string }[] = [
-    { key: 'scan_on_startup', label: 'Scan games on startup', sub: 'Refresh the library when Sage launches' },
-    { key: 'minimize_to_tray', label: 'Minimize to tray', sub: 'Keep watching for games in the background' },
-    { key: 'launch_on_startup', label: 'Launch on system startup', sub: 'Start Sage when Windows boots' },
+    {
+      key: 'scan_on_startup',
+      label: 'Scan games on startup',
+      sub: 'Refresh the library when Sage launches',
+    },
+    {
+      key: 'minimize_to_tray',
+      label: 'Minimize to tray',
+      sub: 'Keep watching for games in the background',
+    },
+    {
+      key: 'launch_on_startup',
+      label: 'Launch on system startup',
+      sub: 'Start Sage when Windows boots',
+    },
   ];
 
   async function load() {
@@ -166,28 +178,61 @@
     >
       <!-- header -->
       <div class="flex items-center gap-3 px-[22px] py-[15px] border-b border-line">
-        <span class="relative w-[22px] h-[22px] rounded-full shrink-0" style="background: radial-gradient(circle at 50% 38%, #fff 0%, color-mix(in oklab, var(--accent) 85%, white) 26%, var(--accent) 60%, transparent 100%); box-shadow: 0 0 14px -3px var(--accent);"></span>
-        <span class="font-display text-[15px] font-semibold tracking-[0.04em] text-t-hi">Settings</span>
-        <span class="font-mono text-[9px] text-t-lo px-[6px] py-[2px] rounded border border-line leading-tight">SAGE · {VERSION}</span>
+        <span
+          class="relative w-[22px] h-[22px] rounded-full shrink-0"
+          style="background: radial-gradient(circle at 50% 38%, #fff 0%, color-mix(in oklab, var(--accent) 85%, white) 26%, var(--accent) 60%, transparent 100%); box-shadow: 0 0 14px -3px var(--accent);"
+        ></span>
+        <span class="font-display text-[15px] font-semibold tracking-[0.04em] text-t-hi"
+          >Settings</span
+        >
+        <span
+          class="font-mono text-[9px] text-t-lo px-[6px] py-[2px] rounded border border-line leading-tight"
+          >SAGE · {VERSION}</span
+        >
         <button
           onclick={() => (open = false)}
           aria-label="Close settings"
           class="ml-auto w-[30px] h-[30px] grid place-items-center rounded-lg text-t-mid cursor-pointer transition-colors duration-150 hover:text-white hover:bg-white/[0.06]"
         >
-          <svg width="12" height="12" viewBox="0 0 12 12"><line x1="2.4" y1="2.4" x2="9.6" y2="9.6" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" /><line x1="9.6" y1="2.4" x2="2.4" y2="9.6" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" /></svg>
+          <svg width="12" height="12" viewBox="0 0 12 12"
+            ><line
+              x1="2.4"
+              y1="2.4"
+              x2="9.6"
+              y2="9.6"
+              stroke="currentColor"
+              stroke-width="1.4"
+              stroke-linecap="round"
+            /><line
+              x1="9.6"
+              y1="2.4"
+              x2="2.4"
+              y2="9.6"
+              stroke="currentColor"
+              stroke-width="1.4"
+              stroke-linecap="round"
+            /></svg
+          >
         </button>
       </div>
 
       <!-- body: nav + content -->
       <div class="flex flex-1 min-h-0">
         <!-- left nav -->
-        <div class="w-[178px] shrink-0 border-r border-line p-3 flex flex-col gap-1" style="background: rgba(255,255,255,0.012);">
+        <div
+          class="w-[178px] shrink-0 border-r border-line p-3 flex flex-col gap-1"
+          style="background: rgba(255,255,255,0.012);"
+        >
           {#each NAV as item (item.key)}
             {@const on = section === item.key}
             <button
               onclick={() => (section = item.key)}
               class="flex items-center gap-[10px] px-3 py-[9px] rounded-[9px] text-[13px] font-medium cursor-pointer transition-colors duration-150 text-left"
-              style="color: {on ? 'var(--accent)' : 'var(--color-t-mid)'}; background: {on ? 'color-mix(in oklab, var(--accent) 13%, transparent)' : 'transparent'}; border: 1px solid {on ? 'color-mix(in oklab, var(--accent) 26%, transparent)' : 'transparent'};"
+              style="color: {on ? 'var(--accent)' : 'var(--color-t-mid)'}; background: {on
+                ? 'color-mix(in oklab, var(--accent) 13%, transparent)'
+                : 'transparent'}; border: 1px solid {on
+                ? 'color-mix(in oklab, var(--accent) 26%, transparent)'
+                : 'transparent'};"
             >
               {item.label}
             </button>
@@ -207,12 +252,21 @@
             </p>
 
             <!-- Gemini -->
-            <div class="rounded-[13px] border border-line p-4 mb-3" style="background: rgba(255,255,255,0.014);">
+            <div
+              class="rounded-[13px] border border-line p-4 mb-3"
+              style="background: rgba(255,255,255,0.014);"
+            >
               <div class="flex items-center gap-[10px] mb-3">
-                <span class="w-[9px] h-[9px] rounded-full" style="background: {PROVIDERS.gemini.dot}; box-shadow: 0 0 6px {PROVIDERS.gemini.dot};"></span>
+                <span
+                  class="w-[9px] h-[9px] rounded-full"
+                  style="background: {PROVIDERS.gemini.dot}; box-shadow: 0 0 6px {PROVIDERS.gemini
+                    .dot};"
+                ></span>
                 <div class="min-w-0">
                   <div class="text-[13.5px] font-semibold text-t-hi">Gemini</div>
-                  <div class="font-mono text-[10.5px] text-t-lo">{PROVIDERS.gemini.model} · API</div>
+                  <div class="font-mono text-[10.5px] text-t-lo">
+                    {PROVIDERS.gemini.model} · API
+                  </div>
                 </div>
                 {#if availability.gemini}
                   <span class="ml-auto pill ok">Ready</span>
@@ -227,7 +281,9 @@
                   bind:value={geminiKey}
                   onblur={saveKey}
                   onkeydown={(e) => e.key === 'Enter' && saveKey()}
-                  placeholder={availability.gemini ? '•••••••••••••• (stored — type to replace)' : 'Paste your Gemini API key'}
+                  placeholder={availability.gemini
+                    ? '•••••••••••••• (stored — type to replace)'
+                    : 'Paste your Gemini API key'}
                   class="w-full pl-[13px] pr-[38px] py-[10px] rounded-[10px] border border-line text-t-hi font-mono text-[11.5px] outline-none transition-colors placeholder:text-t-lo focus:border-accent"
                   style="background: rgba(0,0,0,0.22);"
                 />
@@ -237,58 +293,127 @@
                   class="absolute right-2 top-1/2 -translate-y-1/2 w-[26px] h-[26px] grid place-items-center rounded-md text-t-lo hover:text-t-mid cursor-pointer"
                 >
                   {#if revealKey}
-                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M17.9 17.9A10.4 10.4 0 0 1 12 20C5 20 1 12 1 12a19 19 0 0 1 5.1-6M9.9 4.2A10.4 10.4 0 0 1 12 4c7 0 11 8 11 8a19 19 0 0 1-2.2 3.2M1 1l22 22" /></svg>
+                    <svg
+                      width="16"
+                      height="16"
+                      viewBox="0 0 24 24"
+                      fill="none"
+                      stroke="currentColor"
+                      stroke-width="1.6"
+                      stroke-linecap="round"
+                      stroke-linejoin="round"
+                      ><path
+                        d="M17.9 17.9A10.4 10.4 0 0 1 12 20C5 20 1 12 1 12a19 19 0 0 1 5.1-6M9.9 4.2A10.4 10.4 0 0 1 12 4c7 0 11 8 11 8a19 19 0 0 1-2.2 3.2M1 1l22 22"
+                      /></svg
+                    >
                   {:else}
-                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z" /><circle cx="12" cy="12" r="3" /></svg>
+                    <svg
+                      width="16"
+                      height="16"
+                      viewBox="0 0 24 24"
+                      fill="none"
+                      stroke="currentColor"
+                      stroke-width="1.6"
+                      stroke-linecap="round"
+                      stroke-linejoin="round"
+                      ><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z" /><circle
+                        cx="12"
+                        cy="12"
+                        r="3"
+                      /></svg
+                    >
                   {/if}
                 </button>
               </div>
               <div class="flex items-center justify-between mt-1.5">
-                <span class="font-mono text-[9.5px] text-t-lo">stored locally · sent only to Google{keySaving ? ' · saving…' : ''}</span>
-                <button onclick={() => openUrl(KEY_URL)} class="text-[11px] cursor-pointer" style="color: var(--accent);">Get a key ↗</button>
+                <span class="font-mono text-[9.5px] text-t-lo"
+                  >stored locally · sent only to Google{keySaving ? ' · saving…' : ''}</span
+                >
+                <button
+                  onclick={() => openUrl(KEY_URL)}
+                  class="text-[11px] cursor-pointer"
+                  style="color: var(--accent);">Get a key ↗</button
+                >
               </div>
             </div>
 
             <!-- Claude -->
-            <div class="rounded-[13px] border border-line px-4 py-[13px] mb-3 flex items-center gap-[10px]" style="background: rgba(255,255,255,0.014);">
-              <span class="w-[9px] h-[9px] rounded-full" style="background: {PROVIDERS.claude.dot}; box-shadow: 0 0 6px {PROVIDERS.claude.dot};"></span>
+            <div
+              class="rounded-[13px] border border-line px-4 py-[13px] mb-3 flex items-center gap-[10px]"
+              style="background: rgba(255,255,255,0.014);"
+            >
+              <span
+                class="w-[9px] h-[9px] rounded-full"
+                style="background: {PROVIDERS.claude.dot}; box-shadow: 0 0 6px {PROVIDERS.claude
+                  .dot};"
+              ></span>
               <div class="min-w-0">
                 <div class="text-[13.5px] font-semibold text-t-hi">Claude</div>
                 <div class="font-mono text-[10.5px] text-t-lo">
-                  {PROVIDERS.claude.model} · CLI{availability.claude_where ? ` · ${availability.claude_where}` : ''}
+                  {PROVIDERS.claude.model} · CLI{availability.claude_where
+                    ? ` · ${availability.claude_where}`
+                    : ''}
                 </div>
               </div>
-              <span class="ml-auto pill {availability.claude ? 'ok' : 'off'}">{availability.claude ? 'Detected' : 'Not found'}</span>
+              <span class="ml-auto pill {availability.claude ? 'ok' : 'off'}"
+                >{availability.claude ? 'Detected' : 'Not found'}</span
+              >
             </div>
 
             <!-- Codex -->
-            <div class="rounded-[13px] border border-line px-4 py-[13px] mb-3 flex items-center gap-[10px]" style="background: rgba(255,255,255,0.014);">
-              <span class="w-[9px] h-[9px] rounded-full" style="background: {PROVIDERS.openai.dot}; box-shadow: 0 0 6px {PROVIDERS.openai.dot};"></span>
+            <div
+              class="rounded-[13px] border border-line px-4 py-[13px] mb-3 flex items-center gap-[10px]"
+              style="background: rgba(255,255,255,0.014);"
+            >
+              <span
+                class="w-[9px] h-[9px] rounded-full"
+                style="background: {PROVIDERS.openai.dot}; box-shadow: 0 0 6px {PROVIDERS.openai
+                  .dot};"
+              ></span>
               <div class="min-w-0">
                 <div class="text-[13.5px] font-semibold text-t-hi">OpenAI · Codex</div>
                 <div class="font-mono text-[10.5px] text-t-lo">
-                  {PROVIDERS.openai.model} · CLI{availability.openai_where ? ` · ${availability.openai_where}` : ''} · no screenshots
+                  {PROVIDERS.openai.model} · CLI{availability.openai_where
+                    ? ` · ${availability.openai_where}`
+                    : ''} · no screenshots
                 </div>
               </div>
-              <span class="ml-auto pill {availability.openai ? 'ok' : 'off'}">{availability.openai ? 'Detected' : 'Not found'}</span>
+              <span class="ml-auto pill {availability.openai ? 'ok' : 'off'}"
+                >{availability.openai ? 'Detected' : 'Not found'}</span
+              >
             </div>
 
             <!-- CLI detail + recheck -->
             <div class="flex items-center justify-between mb-5">
-              <span class="font-mono text-[9.5px] text-t-lo max-w-[60%]">CLIs detected on PATH, then inside WSL.</span>
+              <span class="font-mono text-[9.5px] text-t-lo max-w-[60%]"
+                >CLIs detected on PATH, then inside WSL.</span
+              >
               <button
                 onclick={recheck}
                 disabled={rechecking}
                 class="flex items-center gap-[7px] px-[13px] py-[8px] rounded-[9px] border border-line text-[12px] text-t-mid cursor-pointer transition-colors hover:text-t-hi disabled:opacity-60"
                 style="background: var(--color-ink-2);"
               >
-                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" style={rechecking ? 'animation: spin 0.9s linear infinite;' : ''}><path d="M3 12a9 9 0 1 0 3-6.7L3 8" /><path d="M3 3v5h5" /></svg>
+                <svg
+                  width="13"
+                  height="13"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="1.8"
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                  style={rechecking ? 'animation: spin 0.9s linear infinite;' : ''}
+                  ><path d="M3 12a9 9 0 1 0 3-6.7L3 8" /><path d="M3 3v5h5" /></svg
+                >
                 {rechecking ? 'Re-checking…' : 'Re-check CLIs'}
               </button>
             </div>
 
             <!-- default provider -->
-            <div class="text-[12.5px] text-t-mid mb-2">Default provider <span class="text-t-lo">— used when the overlay opens</span></div>
+            <div class="text-[12.5px] text-t-mid mb-2">
+              Default provider <span class="text-t-lo">— used when the overlay opens</span>
+            </div>
             <div class="flex gap-[7px]">
               {#each ['gemini', 'claude', 'openai'] as p (p)}
                 {@const key = p as Provider}
@@ -301,16 +426,28 @@
                   class="flex-1 flex items-center justify-center gap-[7px] py-[10px] rounded-[9px] text-[12.5px] font-medium transition-colors duration-150"
                   class:cursor-pointer={avail}
                   class:cursor-not-allowed={!avail}
-                  style="border: 1px solid {active ? 'color-mix(in oklab, var(--accent) 34%, transparent)' : 'var(--color-line)'}; background: {active ? 'color-mix(in oklab, var(--accent) 16%, transparent)' : 'rgba(255,255,255,0.02)'}; color: {active ? 'var(--color-t-hi)' : 'var(--color-t-mid)'}; opacity: {avail ? 1 : 0.4};"
+                  style="border: 1px solid {active
+                    ? 'color-mix(in oklab, var(--accent) 34%, transparent)'
+                    : 'var(--color-line)'}; background: {active
+                    ? 'color-mix(in oklab, var(--accent) 16%, transparent)'
+                    : 'rgba(255,255,255,0.02)'}; color: {active
+                    ? 'var(--color-t-hi)'
+                    : 'var(--color-t-mid)'}; opacity: {avail ? 1 : 0.4};"
                 >
-                  <span class="w-[7px] h-[7px] rounded-full" style="background: {PROVIDERS[key].dot}; box-shadow: 0 0 6px {PROVIDERS[key].dot};"></span>
+                  <span
+                    class="w-[7px] h-[7px] rounded-full"
+                    style="background: {PROVIDERS[key].dot}; box-shadow: 0 0 6px {PROVIDERS[key]
+                      .dot};"
+                  ></span>
                   {PROVIDERS[key].label}
                 </button>
               {/each}
             </div>
           {:else if section === 'hotkeys'}
             <h2 class="font-display text-[16px] font-semibold text-t-hi mb-1">Global hotkeys</h2>
-            <p class="text-[12.5px] text-t-mid mb-5">Work from inside any game while Sage runs in the background.</p>
+            <p class="text-[12.5px] text-t-mid mb-5">
+              Work from inside any game while Sage runs in the background.
+            </p>
             {#each HOTKEYS as h (h.title)}
               <div class="flex items-center py-[15px] border-b border-line-2">
                 <div class="min-w-0">
@@ -324,9 +461,27 @@
                 </div>
               </div>
             {/each}
-            <div class="mt-5 flex items-start gap-[9px] px-[14px] py-[11px] rounded-[11px] border" style="border-color: color-mix(in oklab, var(--color-warn) 28%, transparent); background: color-mix(in oklab, var(--color-warn) 8%, transparent);">
-              <svg class="shrink-0 mt-[1px]" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="var(--color-warn)" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9" /><path d="M12 8v5M12 16.5v.01" /></svg>
-              <span class="text-[12px] text-t-mid leading-relaxed">Chords are fixed in this build (they avoid <span class="font-mono text-[11px]">Ctrl+Alt</span> / AltGr conflicts). Rebinding lands in a later update.</span>
+            <div
+              class="mt-5 flex items-start gap-[9px] px-[14px] py-[11px] rounded-[11px] border"
+              style="border-color: color-mix(in oklab, var(--color-warn) 28%, transparent); background: color-mix(in oklab, var(--color-warn) 8%, transparent);"
+            >
+              <svg
+                class="shrink-0 mt-[1px]"
+                width="15"
+                height="15"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="var(--color-warn)"
+                stroke-width="1.7"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+                ><circle cx="12" cy="12" r="9" /><path d="M12 8v5M12 16.5v.01" /></svg
+              >
+              <span class="text-[12px] text-t-mid leading-relaxed"
+                >Chords are fixed in this build (they avoid <span class="font-mono text-[11px]"
+                  >Ctrl+Alt</span
+                > / AltGr conflicts). Rebinding lands in a later update.</span
+              >
             </div>
           {:else if section === 'launcher'}
             <h2 class="font-display text-[16px] font-semibold text-t-hi mb-1">Launcher</h2>
@@ -346,15 +501,23 @@
                   class="ml-auto relative w-[42px] h-[23px] rounded-full border-none cursor-pointer transition-colors duration-200 shrink-0"
                   style="background: {on ? 'var(--accent)' : 'rgba(255,255,255,0.13)'};"
                 >
-                  <span class="absolute top-[3px] w-[17px] h-[17px] rounded-full bg-white transition-all duration-200" style="left: {on ? '22px' : '3px'};"></span>
+                  <span
+                    class="absolute top-[3px] w-[17px] h-[17px] rounded-full bg-white transition-all duration-200"
+                    style="left: {on ? '22px' : '3px'};"
+                  ></span>
                 </button>
               </div>
             {/each}
           {:else}
             <div class="flex items-center gap-[14px] mb-4">
-              <span class="relative w-[46px] h-[46px] rounded-full shrink-0" style="background: radial-gradient(circle at 50% 38%, #fff 0%, color-mix(in oklab, var(--accent) 85%, white) 26%, var(--accent) 60%, transparent 100%); box-shadow: 0 0 26px -4px var(--accent);"></span>
+              <span
+                class="relative w-[46px] h-[46px] rounded-full shrink-0"
+                style="background: radial-gradient(circle at 50% 38%, #fff 0%, color-mix(in oklab, var(--accent) 85%, white) 26%, var(--accent) 60%, transparent 100%); box-shadow: 0 0 26px -4px var(--accent);"
+              ></span>
               <div>
-                <div class="font-display text-[20px] font-bold tracking-[0.06em] text-t-hi">SAGE</div>
+                <div class="font-display text-[20px] font-bold tracking-[0.06em] text-t-hi">
+                  SAGE
+                </div>
                 <div class="font-mono text-[10.5px] text-t-lo">{VERSION} · external overlay</div>
               </div>
             </div>
@@ -364,9 +527,13 @@
               Claude / Codex CLI.
             </p>
             <div class="rounded-[11px] border border-line overflow-hidden mb-4">
-              <div class="flex items-center justify-between px-[15px] py-[11px] border-b border-line-2">
+              <div
+                class="flex items-center justify-between px-[15px] py-[11px] border-b border-line-2"
+              >
                 <span class="text-[12.5px] text-t-mid">Data folder</span>
-                <span class="font-mono text-[10.5px] text-t-lo">%APPDATA%\com.aigamecompanion.launcher</span>
+                <span class="font-mono text-[10.5px] text-t-lo"
+                  >%APPDATA%\com.aigamecompanion.launcher</span
+                >
               </div>
               <div class="flex items-center justify-between px-[15px] py-[11px]">
                 <span class="text-[12.5px] text-t-mid">Capture backend</span>
@@ -374,8 +541,16 @@
               </div>
             </div>
             <div class="flex gap-[10px]">
-              <button onclick={openConfigFolder} class="flex-1 py-[11px] rounded-[10px] border border-line text-[12.5px] text-t-mid cursor-pointer transition-colors hover:text-t-hi" style="background: var(--color-ink-2);">Open config folder</button>
-              <button onclick={openLogs} class="flex-1 py-[11px] rounded-[10px] border border-line text-[12.5px] text-t-mid cursor-pointer transition-colors hover:text-t-hi" style="background: var(--color-ink-2);">Open logs</button>
+              <button
+                onclick={openConfigFolder}
+                class="flex-1 py-[11px] rounded-[10px] border border-line text-[12.5px] text-t-mid cursor-pointer transition-colors hover:text-t-hi"
+                style="background: var(--color-ink-2);">Open config folder</button
+              >
+              <button
+                onclick={openLogs}
+                class="flex-1 py-[11px] rounded-[10px] border border-line text-[12.5px] text-t-mid cursor-pointer transition-colors hover:text-t-hi"
+                style="background: var(--color-ink-2);">Open logs</button
+              >
             </div>
           {/if}
         </div>
@@ -389,8 +564,17 @@
           <span class="font-mono text-[10px] text-t-lo mr-auto">changes apply immediately</span>
         {/if}
         <div class="flex gap-[10px]">
-          <button onclick={() => (open = false)} class="px-4 py-2 rounded-[9px] text-[12.5px] font-medium text-t-mid cursor-pointer transition-colors hover:text-t-hi hover:bg-white/[0.05]">Cancel</button>
-          <button onclick={save} disabled={saving} class="px-[18px] py-2 rounded-[9px] text-[12.5px] font-semibold cursor-pointer transition-all enabled:hover:brightness-110 disabled:opacity-60" style="background: var(--accent); color: #0b0b0d;">
+          <button
+            onclick={() => (open = false)}
+            class="px-4 py-2 rounded-[9px] text-[12.5px] font-medium text-t-mid cursor-pointer transition-colors hover:text-t-hi hover:bg-white/[0.05]"
+            >Cancel</button
+          >
+          <button
+            onclick={save}
+            disabled={saving}
+            class="px-[18px] py-2 rounded-[9px] text-[12.5px] font-semibold cursor-pointer transition-all enabled:hover:brightness-110 disabled:opacity-60"
+            style="background: var(--accent); color: #0b0b0d;"
+          >
             {saving ? 'Saving…' : 'Save changes'}
           </button>
         </div>

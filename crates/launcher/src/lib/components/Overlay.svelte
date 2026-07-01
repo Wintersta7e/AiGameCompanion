@@ -293,10 +293,33 @@
       <span class="drag-chip">drag</span>
       <div class="title-actions">
         <button class="icon-btn" onclick={newChat} title="New chat" aria-label="New chat">
-          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 1 0 3-6.7L3 8" /><path d="M3 3v5h5" /></svg>
+          <svg
+            width="15"
+            height="15"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="1.7"
+            stroke-linecap="round"
+            stroke-linejoin="round"><path d="M3 12a9 9 0 1 0 3-6.7L3 8" /><path d="M3 3v5h5" /></svg
+          >
         </button>
-        <button class="icon-btn" onclick={hideOverlay} title="Hide (Ctrl+Shift+G)" aria-label="Hide">
-          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M6 9l6 6 6-6" /></svg>
+        <button
+          class="icon-btn"
+          onclick={hideOverlay}
+          title="Hide (Ctrl+Shift+G)"
+          aria-label="Hide"
+        >
+          <svg
+            width="15"
+            height="15"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="1.9"
+            stroke-linecap="round"
+            stroke-linejoin="round"><path d="M6 9l6 6 6-6" /></svg
+          >
         </button>
       </div>
     </div>
@@ -322,11 +345,33 @@
     <div class="tabrow">
       <div class="tabs">
         <button class="tab" class:active={tab === 'chat'} onclick={() => (tab = 'chat')}>
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" /></svg>
+          <svg
+            width="14"
+            height="14"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="1.7"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+            ><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" /></svg
+          >
           Chat
         </button>
         <button class="tab" class:active={tab === 'translate'} onclick={() => (tab = 'translate')}>
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9" /><path d="M3 12h18M12 3a15 15 0 0 1 0 18M12 3a15 15 0 0 0 0 18" /></svg>
+          <svg
+            width="14"
+            height="14"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="1.7"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+            ><circle cx="12" cy="12" r="9" /><path
+              d="M3 12h18M12 3a15 15 0 0 1 0 18M12 3a15 15 0 0 0 0 18"
+            /></svg
+          >
           Translate
         </button>
       </div>
@@ -335,7 +380,8 @@
         onclick={() => (dropdownOpen = !dropdownOpen)}
         disabled={available.length === 0 || asking}
       >
-        <span class="prov-dot" style="background: {meta.dot}; box-shadow: 0 0 6px {meta.dot};"></span>
+        <span class="prov-dot" style="background: {meta.dot}; box-shadow: 0 0 6px {meta.dot};"
+        ></span>
         {available.length === 0 ? 'No providers' : meta.label}
         <span class="caret">{dropdownOpen ? '▴' : '▾'}</span>
       </button>
@@ -352,7 +398,16 @@
               </span>
               {#if p === provider}
                 <span class="pcheck">
-                  <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 13l4 4L19 7" /></svg>
+                  <svg
+                    width="15"
+                    height="15"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    stroke-width="2.2"
+                    stroke-linecap="round"
+                    stroke-linejoin="round"><path d="M5 13l4 4L19 7" /></svg
+                  >
                 </span>
               {/if}
             </button>
@@ -407,7 +462,9 @@
                   <span class="avatar"></span>
                   <div>
                     <div class="bubble">
-                      {#if m.content}{m.content}{/if}{#if m.streaming && m.content}<span class="caret-blink"></span>{/if}
+                      {#if m.content}{m.content}{/if}{#if m.streaming && m.content}<span
+                          class="caret-blink"
+                        ></span>{/if}
                       {#if m.streaming && !m.content}
                         <span class="thinking"><i></i><i></i><i></i></span>
                       {/if}
@@ -434,7 +491,21 @@
                 : 'Attach a screenshot of the game'}
               aria-label="Attach screenshot"
             >
-              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2" /><circle cx="8.5" cy="8.5" r="1.5" /><path d="M21 15l-5-5L5 21" /></svg>
+              <svg
+                width="18"
+                height="18"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="1.7"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+                ><rect x="3" y="3" width="18" height="18" rx="2" /><circle
+                  cx="8.5"
+                  cy="8.5"
+                  r="1.5"
+                /><path d="M21 15l-5-5L5 21" /></svg
+              >
             </button>
             <input
               class="text-input"
@@ -445,7 +516,9 @@
             />
             {#if asking}
               <button class="send-btn" onclick={stop} title="Stop" aria-label="Stop">
-                <svg width="13" height="13" viewBox="0 0 24 24" fill="currentColor"><rect x="5" y="5" width="14" height="14" rx="2" /></svg>
+                <svg width="13" height="13" viewBox="0 0 24 24" fill="currentColor"
+                  ><rect x="5" y="5" width="14" height="14" rx="2" /></svg
+                >
               </button>
             {:else}
               <button
@@ -455,7 +528,9 @@
                 title="Send"
                 aria-label="Send"
               >
-                <svg width="17" height="17" viewBox="0 0 24 24" fill="currentColor"><path d="M3 11l18-8-8 18-2-7-8-3z" /></svg>
+                <svg width="17" height="17" viewBox="0 0 24 24" fill="currentColor"
+                  ><path d="M3 11l18-8-8 18-2-7-8-3z" /></svg
+                >
               </button>
             {/if}
           </div>
@@ -500,7 +575,8 @@
           <button
             class="recapture live"
             onclick={runTranslate}
-            disabled={translateBusy || !game || !availability.gemini}>Re-capture · Ctrl+Shift+T</button
+            disabled={translateBusy || !game || !availability.gemini}
+            >Re-capture · Ctrl+Shift+T</button
           >
           <button class="recapture live" onclick={copyTranslation} disabled={!translateText}
             >Copy</button
@@ -1036,7 +1112,11 @@
   .capture-box {
     border-radius: 13px;
     border: 1px solid var(--color-line);
-    background: linear-gradient(135deg, color-mix(in oklab, var(--accent) 10%, var(--color-ink-2)), var(--color-ink-1));
+    background: linear-gradient(
+      135deg,
+      color-mix(in oklab, var(--accent) 10%, var(--color-ink-2)),
+      var(--color-ink-1)
+    );
     padding: 12px;
   }
   .capture-head {
