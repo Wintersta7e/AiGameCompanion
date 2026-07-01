@@ -31,7 +31,8 @@ fn main() {
     // Overlay toggle hotkey (Ctrl+Alt+G): a modifier chord, not a bare F-key, so
     // it does not collide with common in-game bindings.
     let toggle = Shortcut::new(Some(Modifiers::CONTROL | Modifiers::ALT), Code::KeyG);
-    let handler_toggle = toggle;
+    let translate = Shortcut::new(Some(Modifiers::CONTROL | Modifiers::ALT), Code::KeyT);
+    let quick_ask = Shortcut::new(Some(Modifiers::CONTROL | Modifiers::ALT), Code::KeyA);
 
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
@@ -42,8 +43,15 @@ fn main() {
         .plugin(
             tauri_plugin_global_shortcut::Builder::new()
                 .with_handler(move |app, shortcut, event| {
-                    if shortcut == &handler_toggle && event.state() == ShortcutState::Pressed {
+                    if event.state() != ShortcutState::Pressed {
+                        return;
+                    }
+                    if shortcut == &toggle {
                         overlay::toggle(app);
+                    } else if shortcut == &translate {
+                        overlay::trigger(app, "translate-request");
+                    } else if shortcut == &quick_ask {
+                        overlay::trigger(app, "quick-ask");
                     }
                 })
                 .build(),
@@ -76,9 +84,11 @@ fn main() {
                 let _ = autostart.disable();
             }
 
-            // Register the overlay toggle hotkey (log + continue on conflict).
-            if let Err(e) = app.global_shortcut().register(toggle) {
-                tracing::warn!("overlay toggle hotkey registration failed: {e}");
+            // Register the overlay hotkeys (log + continue on conflict).
+            for shortcut in [toggle, translate, quick_ask] {
+                if let Err(e) = app.global_shortcut().register(shortcut) {
+                    tracing::warn!("hotkey registration failed: {e}");
+                }
             }
 
             // Detect CLI provider availability off the main thread (probing the
@@ -168,6 +178,7 @@ fn main() {
             commands::ai::cancel_sage,
             commands::ai::available_providers,
             commands::ai::set_active_provider,
+            commands::ai::translate_screen,
             overlay::capture_game,
         ])
         .run(tauri::generate_context!())

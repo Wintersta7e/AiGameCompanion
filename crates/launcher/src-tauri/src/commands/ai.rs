@@ -59,3 +59,25 @@ pub fn set_active_provider(provider: Provider, state: State<'_, AppState>) -> Re
     }
     state.save()
 }
+
+#[derive(serde::Serialize)]
+pub struct TranslateResult {
+    pub text: String,
+}
+
+/// Capture the detected game window and translate its on-screen foreign text to
+/// English. One-shot (not part of the streaming chat slot).
+#[tauri::command]
+#[allow(clippy::needless_pass_by_value)]
+pub async fn translate_screen(
+    overlay: State<'_, crate::overlay::OverlayState>,
+) -> Result<TranslateResult, String> {
+    let hwnd = overlay
+        .game
+        .lock()
+        .as_ref()
+        .map(|game| game.hwnd)
+        .ok_or_else(|| "No game detected -- open the overlay over a game first.".to_owned())?;
+    let text = crate::ai::translate_capture(hwnd).await?;
+    Ok(TranslateResult { text })
+}

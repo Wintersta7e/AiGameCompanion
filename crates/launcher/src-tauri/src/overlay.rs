@@ -45,11 +45,8 @@ pub fn capture_game(app: AppHandle) -> Result<String, String> {
     Ok(format!("captured {byte_count} bytes -> {}", path.display()))
 }
 
-/// Toggle the overlay window hidden <-> interactive.
-///
-/// On show: capture the current foreground window (the game) BEFORE the overlay
-/// steals focus, store it, then show + focus the overlay and report what we
-/// detected to the overlay UI. On hide: hand focus back to the stored game.
+/// Toggle the overlay window hidden <-> interactive. On hide, hand focus back to
+/// the stored game.
 pub fn toggle(app: &AppHandle) {
     let Some(overlay) = app.get_webview_window("overlay") else {
         return;
@@ -63,15 +60,37 @@ pub fn toggle(app: &AppHandle) {
             }
         }
     } else {
-        let game = foreground_game(std::process::id());
-        if let Some(state) = app.try_state::<OverlayState>() {
-            (*state.game.lock()).clone_from(&game);
-        }
-        let _ = overlay.show();
-        let _ = overlay.set_focus();
-        // A null payload tells the overlay UI "no game detected".
-        let _ = app.emit_to("overlay", "overlay-status", game);
+        show_overlay(app);
     }
+}
+
+/// Show the overlay (if hidden) and fire an action event to the overlay UI, e.g.
+/// `translate-request` or `quick-ask` from a global hotkey. When already visible,
+/// keep the stored game HWND (re-detecting would find the overlay itself).
+pub fn trigger(app: &AppHandle, event: &str) {
+    let Some(overlay) = app.get_webview_window("overlay") else {
+        return;
+    };
+    if !overlay.is_visible().unwrap_or(false) {
+        show_overlay(app);
+    }
+    let _ = app.emit_to("overlay", event, ());
+}
+
+/// Capture the current foreground window (the game) BEFORE the overlay steals
+/// focus, store it, then show + focus the overlay and report detection to the UI.
+fn show_overlay(app: &AppHandle) {
+    let Some(overlay) = app.get_webview_window("overlay") else {
+        return;
+    };
+    let game = foreground_game(std::process::id());
+    if let Some(state) = app.try_state::<OverlayState>() {
+        (*state.game.lock()).clone_from(&game);
+    }
+    let _ = overlay.show();
+    let _ = overlay.set_focus();
+    // A null payload tells the overlay UI "no game detected".
+    let _ = app.emit_to("overlay", "overlay-status", game);
 }
 
 #[cfg(windows)]

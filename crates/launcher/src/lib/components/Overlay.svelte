@@ -43,6 +43,12 @@
   let asking = $state(false);
   let messages = $state<Msg[]>([]);
 
+  let translateText = $state('');
+  let translateBusy = $state(false);
+  let translateError = $state('');
+
+  const QUICK_ASK = 'What should I do next here?';
+
   // Plain counters (not reactive): real request ids start at 1, so 0 = "none".
   let nextRequestId = 0;
   let conversationId = 1;
@@ -201,6 +207,47 @@
     }
   }
 
+  async function runTranslate() {
+    if (translateBusy) return;
+    if (!availability.gemini) {
+      translateText = '';
+      translateError = 'Translation requires a Gemini API key.';
+      return;
+    }
+    translateBusy = true;
+    translateError = '';
+    try {
+      const res = await invoke<{ text: string }>('translate_screen');
+      translateText = res.text;
+    } catch (err) {
+      translateError = String(err);
+      translateText = '';
+    } finally {
+      translateBusy = false;
+    }
+  }
+
+  async function runQuickAsk() {
+    tab = 'chat';
+    if (asking) await stop();
+    if (!canSend) return;
+    // Attach a frame for this one-shot without leaving the toggle on.
+    const prev = attach;
+    attach = canAttach;
+    const pending = send(QUICK_ASK);
+    attach = prev;
+    await pending;
+  }
+
+  async function copyTranslation() {
+    if (!translateText) return;
+    try {
+      await navigator.clipboard.writeText(translateText);
+    } catch {
+      /* clipboard may be unavailable */
+    }
+  }
+
   onMount(() => {
     // Only the overlay window mounts this; keep its surface transparent.
     document.documentElement.style.background = 'transparent';
@@ -217,13 +264,22 @@
       await refreshProviders();
     })();
 
-    const status = listen<GameInfo>('overlay-status', (event) => {
-      game = event.payload;
-      // The overlay just became visible: CLI detection has had time to finish.
-      if (savedProviderLoaded) void refreshProviders();
-    });
+    const listeners = [
+      listen<GameInfo>('overlay-status', (event) => {
+        game = event.payload;
+        // The overlay just became visible: CLI detection has had time to finish.
+        if (savedProviderLoaded) void refreshProviders();
+      }),
+      listen('translate-request', () => {
+        tab = 'translate';
+        void runTranslate();
+      }),
+      listen('quick-ask', () => {
+        void runQuickAsk();
+      }),
+    ];
     return () => {
-      status.then((unlisten) => unlisten());
+      for (const listener of listeners) listener.then((unlisten) => unlisten());
     };
   });
 </script>
@@ -412,24 +468,45 @@
         </div>
       </div>
     {:else}
-      <!-- translate (backend lands in Phase 5) -->
+      <!-- translate -->
       <div class="body translate">
         <div class="capture-box">
           <div class="capture-head">CAPTURED · Windows.Graphics.Capture</div>
-          <div class="capture-frame"></div>
+          <div class="capture-frame" class:busy={translateBusy}></div>
         </div>
         <div class="lang-row">
           <span class="lang-chip">Auto-detect</span>
           <span class="lang-arrow">→</span>
           <span class="lang-chip accent">English</span>
         </div>
-        <div class="translate-empty">
-          <div class="te-title">No foreign text captured yet.</div>
-          <div class="te-sub">Aim at on-screen text and press Ctrl+Alt+T.</div>
+        <div class="translate-result">
+          {#if translateBusy}
+            <div class="thinking"><i></i><i></i><i></i></div>
+          {:else if translateError}
+            <div class="te-title" style="color: var(--color-err);">{translateError}</div>
+          {:else if translateText}
+            <div class="translate-text">{translateText}</div>
+          {:else}
+            <div class="translate-empty">
+              {#if !availability.gemini}
+                <div class="te-title">Translation needs a Gemini key.</div>
+                <div class="te-sub">Set api.gemini.api_key in config.toml.</div>
+              {:else}
+                <div class="te-title">No foreign text captured yet.</div>
+                <div class="te-sub">Aim at on-screen text and press Ctrl+Alt+T.</div>
+              {/if}
+            </div>
+          {/if}
         </div>
         <div class="translate-actions">
-          <button class="recapture" title="Re-capture (Phase 5)" disabled>Re-capture · Ctrl+Alt+T</button>
-          <button class="recapture" title="Copy translation (Phase 5)" disabled>Copy</button>
+          <button
+            class="recapture live"
+            onclick={runTranslate}
+            disabled={translateBusy || !game || !availability.gemini}>Re-capture · Ctrl+Alt+T</button
+          >
+          <button class="recapture live" onclick={copyTranslation} disabled={!translateText}
+            >Copy</button
+          >
         </div>
       </div>
     {/if}
@@ -1030,5 +1107,34 @@
     font-weight: 500;
     cursor: not-allowed;
     opacity: 0.7;
+  }
+  .recapture.live {
+    cursor: pointer;
+    opacity: 1;
+    color: var(--color-t-hi);
+  }
+  .recapture.live:hover {
+    border-color: color-mix(in oklab, var(--accent) 34%, transparent);
+  }
+  .recapture.live:disabled {
+    cursor: default;
+    opacity: 0.45;
+  }
+  .translate-result {
+    flex: 1;
+    min-height: 0;
+    overflow-y: auto;
+    display: flex;
+    flex-direction: column;
+  }
+  .translate-text {
+    font-size: 13.5px;
+    line-height: 1.55;
+    color: var(--color-t-hi);
+    white-space: pre-wrap;
+    word-break: break-word;
+  }
+  .capture-frame.busy {
+    animation: pulse-soft 1.4s ease-in-out infinite;
   }
 </style>

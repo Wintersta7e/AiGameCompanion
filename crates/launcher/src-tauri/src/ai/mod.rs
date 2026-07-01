@@ -328,3 +328,39 @@ fn default_system_prompt() -> String {
      If no question is asked with a screenshot, give the single most useful observation."
         .to_owned()
 }
+
+const TRANSLATE_SYSTEM: &str =
+    "You are a screen translator for a gamer. Read the foreign text in the image and translate it \
+     into natural English. Be concise; do not add commentary.";
+
+/// Capture the game window and translate any foreign text in it to English via
+/// Gemini. A one-shot call, independent of the chat request slot.
+pub async fn translate_capture(game_hwnd: i64) -> Result<String, String> {
+    let png =
+        tokio::task::spawn_blocking(move || crate::overlay_capture::capture_window_png(game_hwnd))
+            .await
+            .map_err(|error| format!("capture task failed: {error}"))??;
+    let screenshot = base64::engine::general_purpose::STANDARD.encode(png);
+    let cfg = gemini::load_config()?;
+    let messages = [ChatMessage {
+        role: "user".to_owned(),
+        content: "Translate any non-English text visible in this screenshot into English. Output \
+                  only the translation. If there is no foreign text, reply exactly: No foreign \
+                  text found."
+            .to_owned(),
+    }];
+    let mut out = String::new();
+    gemini::stream(
+        &messages,
+        TRANSLATE_SYSTEM,
+        Some(screenshot),
+        &cfg.model,
+        &cfg.api_key,
+        |chunk| {
+            out.push_str(&chunk);
+            Ok(())
+        },
+    )
+    .await?;
+    Ok(out.trim().to_owned())
+}
