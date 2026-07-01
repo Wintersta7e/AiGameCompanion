@@ -117,33 +117,39 @@ fn do_launch(app: &tauri::AppHandle, game_id: &str) -> Result<(), String> {
         }
     }
 
-    // Resolve exe name on demand if not cached
-    let mut exe_name = game.exe_name.clone();
-    if exe_name.is_empty() {
-        if let Some(dir) = &game.install_dir {
-            let (resolved_name, resolved_path) =
-                discovery::steam::resolve_game_exe(std::path::Path::new(dir));
-            exe_name = resolved_name;
-            // Cache the resolved exe for next time
-            let mut launcher = state.launcher.lock();
-            if let Some(g) = launcher.games.iter_mut().find(|g| g.id == game_id) {
-                g.exe_name.clone_from(&exe_name);
-                g.exe_path = resolved_path;
-            }
-            drop(launcher);
-            if let Err(e) = state.save() {
-                tracing::warn!("Failed to cache resolved exe: {e}");
+    // Attach the session watcher. Steam games are watched via Steam's own
+    // running-flag (keyed by appid): authoritative, and no exe guessing. The
+    // launch branch above already validated the appid is present + all-digits.
+    if game.source == GameSource::Steam {
+        let app_id = game.source_id.clone().unwrap_or_default();
+        crate::process_watch::spawn_steam_watch(app.clone(), game_id.to_owned(), app_id);
+    } else {
+        // Non-Steam: watch by executable name, resolving it on demand if needed.
+        let mut exe_name = game.exe_name.clone();
+        if exe_name.is_empty() {
+            if let Some(dir) = &game.install_dir {
+                let (resolved_name, resolved_path) =
+                    discovery::steam::resolve_game_exe(std::path::Path::new(dir));
+                exe_name = resolved_name;
+                // Cache the resolved exe for next time.
+                let mut launcher = state.launcher.lock();
+                if let Some(g) = launcher.games.iter_mut().find(|g| g.id == game_id) {
+                    g.exe_name.clone_from(&exe_name);
+                    g.exe_path = resolved_path;
+                }
+                drop(launcher);
+                if let Err(e) = state.save() {
+                    tracing::warn!("Failed to cache resolved exe: {e}");
+                }
             }
         }
-    }
-
-    // Attach the playtime watcher, or -- if we have no process name to watch --
-    // reset the card to idle (the game itself did launch).
-    if exe_name.is_empty() {
-        let _ = app.emit("game-finished", game_id);
-        state.active_sessions.lock().remove(game_id);
-    } else {
-        crate::process_watch::spawn_game_watch(app.clone(), game_id.to_owned(), exe_name);
+        // No process name to watch -- reset to idle (the game did launch).
+        if exe_name.is_empty() {
+            let _ = app.emit("game-finished", game_id);
+            state.active_sessions.lock().remove(game_id);
+        } else {
+            crate::process_watch::spawn_game_watch(app.clone(), game_id.to_owned(), exe_name);
+        }
     }
 
     // Update last_played timestamp
