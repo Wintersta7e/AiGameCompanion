@@ -101,8 +101,8 @@ mod imp {
     }
 
     fn create_capture_item(hwnd: i64) -> Result<GraphicsCaptureItem, String> {
-        let native_hwnd = isize::try_from(hwnd)
-            .map(HWND)
+        let native_hwnd = usize::try_from(hwnd)
+            .map(|handle| HWND(handle as *mut core::ffi::c_void))
             .map_err(|error| format!("invalid game window handle: {error}"))?;
         let interop = factory::<GraphicsCaptureItem, IGraphicsCaptureItemInterop>()
             .map_err(|error| format!("failed to get capture item factory: {error}"))?;
