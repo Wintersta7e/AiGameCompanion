@@ -127,7 +127,7 @@ mod imp {
     pub fn foreground_game(self_pid: u32) -> Option<GameInfo> {
         unsafe {
             let hwnd = GetForegroundWindow();
-            if hwnd.0 == 0 {
+            if hwnd.0.is_null() {
                 return None;
             }
             let mut pid = 0u32;
@@ -165,7 +165,8 @@ mod imp {
 
     pub fn focus_window(hwnd: i64) {
         unsafe {
-            let _ = SetForegroundWindow(HWND(isize::try_from(hwnd).unwrap_or(0)));
+            let handle = usize::try_from(hwnd).unwrap_or(0) as *mut core::ffi::c_void;
+            let _ = SetForegroundWindow(HWND(handle));
         }
     }
 }
