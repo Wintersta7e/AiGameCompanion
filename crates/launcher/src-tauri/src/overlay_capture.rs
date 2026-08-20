@@ -215,7 +215,7 @@ mod imp {
             let offset = row
                 .checked_mul(row_pitch)
                 .ok_or_else(|| "capture row offset overflowed".to_owned())?;
-            for bgra in source[offset..offset + row_bytes].chunks_exact(4) {
+            for bgra in source[offset..offset + row_bytes].as_chunks::<4>().0 {
                 rgba.extend_from_slice(&[bgra[2], bgra[1], bgra[0], bgra[3]]);
             }
         }
