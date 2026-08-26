@@ -3697,9 +3697,9 @@ checksum = "6ce2be8dc25455e1f91df71bfa12ad37d7af1092ae736f3a6cd0e37bc7810596"
 
 [[package]]
 name = "steamlocate"
-version = "2.1.0"
+version = "2.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3ed1252f0380a452cd131cc4847771917eeca7b612ec75bf1b735894c65399a0"
+checksum = "f1ad4e054e19e854821d66d67a38493220f2b75361fbe6c6e04bddd228d0e771"
 dependencies = [
  "crc",
  "keyvalues-parser",
