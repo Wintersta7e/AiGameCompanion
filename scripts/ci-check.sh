@@ -5,7 +5,7 @@
 #   ./scripts/ci-check.sh
 #
 # Covers the same checks CI enforces: cargo fmt --check, clippy (via cargo-xwin),
-# cargo test, prettier --check, svelte-check, vite build, and gitleaks.
+# cargo test, prettier --check, svelte-check, vite build, cargo-deny, and gitleaks.
 #
 # IMPORTANT: always re-run this AFTER `cargo fmt` -- reformatting can grow a
 # function past clippy::too_many_lines, which fmt alone will not report.
@@ -30,6 +30,10 @@ step "cargo test" cargo test -p launcher
 step "prettier --check" bash -c "cd crates/launcher && npx prettier --check ."
 step "svelte-check" bash -c "cd crates/launcher && node node_modules/svelte-check/bin/svelte-check --tsconfig ./tsconfig.json"
 step "vite build" bash -c "cd crates/launcher && node node_modules/vite/bin/vite.js build"
+# cargo-deny re-fetches the advisory DB on every run, so a lockfile that passed
+# yesterday can fail today. Skipping it locally let RUSTSEC-2026-0285 (rustls)
+# reach CI red on PR #124.
+command -v cargo-deny >/dev/null 2>&1 && step "cargo-deny" cargo deny check
 command -v gitleaks >/dev/null 2>&1 && step "gitleaks" gitleaks detect --source . --no-banner --redact
 
 echo
