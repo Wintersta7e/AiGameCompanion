@@ -4,6 +4,7 @@ use tauri::State;
 use tauri_plugin_opener::OpenerExt;
 
 use crate::discovery;
+use crate::discovery::steam::ScanOutcome;
 use crate::models::{Game, GameSource};
 use crate::state::AppState;
 
@@ -14,6 +15,49 @@ pub fn get_games(state: State<'_, AppState>) -> Vec<Game> {
     launcher.games.clone()
 }
 
+/// Fold a scan result into the stored library, always carrying `play_time` and
+/// `last_played` across.
+///
+/// A COMPLETE scan is authoritative: entries it omits really are uninstalled,
+/// so the result replaces the stored list. A PARTIAL scan is not -- Steam was
+/// unreachable, or a library on an unmounted drive failed to read -- so stored
+/// games it does not mention are kept. Replacing wholesale on a partial scan
+/// permanently erases playtime for every game on the drive that was missing,
+/// unattended, because `scan_on_startup` defaults to true.
+fn merge_scan(existing: &[Game], outcome: ScanOutcome) -> Vec<Game> {
+    let ScanOutcome {
+        mut games,
+        complete,
+    } = outcome;
+
+    for new_game in &mut games {
+        if let Some(prev) = existing.iter().find(|g| g.id == new_game.id) {
+            new_game.last_played.clone_from(&prev.last_played);
+            new_game.play_time_minutes = prev.play_time_minutes;
+        }
+    }
+
+    if !complete {
+        let scanned: std::collections::HashSet<&str> =
+            games.iter().map(|g| g.id.as_str()).collect();
+        let mut kept: Vec<Game> = existing
+            .iter()
+            .filter(|g| !scanned.contains(g.id.as_str()))
+            .cloned()
+            .collect();
+        if !kept.is_empty() {
+            tracing::warn!(
+                "Partial Steam scan -- keeping {} stored game(s) the scan did not reach",
+                kept.len()
+            );
+        }
+        games.append(&mut kept);
+        games.sort_by_key(|g| g.name.to_lowercase());
+    }
+
+    games
+}
+
 #[tauri::command]
 pub async fn scan_games(state: State<'_, AppState>) -> Result<Vec<Game>, String> {
     tracing::info!("scan_games: starting Steam discovery");
@@ -22,18 +66,15 @@ pub async fn scan_games(state: State<'_, AppState>) -> Result<Vec<Game>, String>
         let result = discovery::steam::discover_steam_games();
         let _ = tx.send(result);
     });
-    let mut steam_games = rx.await.map_err(|e| format!("Scan task failed: {e}"))?;
-    tracing::info!("scan_games: found {} games", steam_games.len());
+    let outcome = rx.await.map_err(|e| format!("Scan task failed: {e}"))?;
+    tracing::info!(
+        "scan_games: found {} games (complete: {})",
+        outcome.games.len(),
+        outcome.complete
+    );
 
     let mut launcher = state.launcher.lock();
-    // Merge: preserve play_time and last_played from existing state
-    for new_game in &mut steam_games {
-        if let Some(existing) = launcher.games.iter().find(|g| g.id == new_game.id) {
-            new_game.last_played.clone_from(&existing.last_played);
-            new_game.play_time_minutes = existing.play_time_minutes;
-        }
-    }
-    launcher.games = steam_games;
+    launcher.games = merge_scan(&launcher.games, outcome);
     let games = launcher.games.clone();
     drop(launcher);
     if let Err(e) = state.save() {
@@ -203,5 +244,97 @@ pub fn open_game_logs(app: tauri::AppHandle) -> Result<(), String> {
             .map_err(|e| format!("Failed to open log: {e}"))
     } else {
         Err(format!("launcher.log not found in {}", log_dir.display()))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{merge_scan, ScanOutcome};
+    use crate::models::{Game, GameSource};
+
+    fn game(id: &str, name: &str, minutes: u64) -> Game {
+        Game {
+            id: id.to_owned(),
+            name: name.to_owned(),
+            source: GameSource::Steam,
+            play_time_minutes: minutes,
+            last_played: Some("2026-09-15".to_owned()),
+            ..Game::default()
+        }
+    }
+
+    #[test]
+    fn complete_scan_carries_playtime_across() {
+        let stored = vec![game("steam_1", "One", 300)];
+        let merged = merge_scan(
+            &stored,
+            ScanOutcome {
+                games: vec![game("steam_1", "One", 0)],
+                complete: true,
+            },
+        );
+        assert_eq!(merged.len(), 1);
+        assert_eq!(merged[0].play_time_minutes, 300);
+        assert_eq!(merged[0].last_played.as_deref(), Some("2026-09-15"));
+    }
+
+    #[test]
+    fn complete_scan_drops_uninstalled_games() {
+        let stored = vec![game("steam_1", "One", 300), game("steam_2", "Two", 50)];
+        let merged = merge_scan(
+            &stored,
+            ScanOutcome {
+                games: vec![game("steam_1", "One", 0)],
+                complete: true,
+            },
+        );
+        assert_eq!(merged.len(), 1, "a complete scan is authoritative");
+        assert_eq!(merged[0].id, "steam_1");
+    }
+
+    /// The regression that matters: a library on an unavailable drive must not
+    /// erase those games or their playtime.
+    #[test]
+    fn partial_scan_keeps_games_it_did_not_reach() {
+        let stored = vec![game("steam_1", "One", 300), game("steam_2", "Two", 50)];
+        let merged = merge_scan(
+            &stored,
+            ScanOutcome {
+                games: vec![game("steam_1", "One", 0)],
+                complete: false,
+            },
+        );
+        assert_eq!(merged.len(), 2, "partial scan must not drop stored games");
+        let two = merged.iter().find(|g| g.id == "steam_2").unwrap();
+        assert_eq!(two.play_time_minutes, 50);
+    }
+
+    /// Steam entirely unreachable: the scan is empty AND partial, which is the
+    /// startup case that silently wiped the library.
+    #[test]
+    fn empty_partial_scan_keeps_the_whole_library() {
+        let stored = vec![game("steam_1", "One", 300), game("steam_2", "Two", 50)];
+        let merged = merge_scan(
+            &stored,
+            ScanOutcome {
+                games: Vec::new(),
+                complete: false,
+            },
+        );
+        assert_eq!(merged.len(), 2);
+        assert_eq!(merged.iter().map(|g| g.play_time_minutes).sum::<u64>(), 350);
+    }
+
+    #[test]
+    fn empty_complete_scan_clears_the_library() {
+        let stored = vec![game("steam_1", "One", 300)];
+        let merged = merge_scan(
+            &stored,
+            ScanOutcome {
+                games: Vec::new(),
+                complete: true,
+            },
+        );
+        assert!(merged.is_empty(), "a clean scan finding nothing is truth");
     }
 }

@@ -1,6 +1,12 @@
 <script lang="ts">
   import { invoke } from '@tauri-apps/api/core';
-  import { getSelectedGame, launchGame, getGameStatus, type Game } from '../stores/games.svelte';
+  import {
+    getSelectedGame,
+    launchGame,
+    getGameStatus,
+    getLaunchError,
+    type Game,
+  } from '../stores/games.svelte';
   import { setAccentFromGame } from '../stores/accent.svelte';
   import { getProviderMeta } from '../stores/companion.svelte';
   import { formatPlayTime, formatLastPlayed } from '../utils/format';
@@ -45,6 +51,7 @@
   // Status → label/colour/copy, mirroring the launch lifecycle. 'idle' and any
   // unknown status fall through to the defaults below.
   let status = $derived(game ? getGameStatus(game.id) : 'idle');
+  let launchError = $derived(game ? getLaunchError(game.id) : null);
 
   const STATUS_LABELS: Record<string, string> = {
     launching: 'Launching…',
@@ -306,12 +313,12 @@
         </div>
       </div>
 
-      {#if fileError}
+      {#if fileError || launchError}
         <div
           class="px-4 py-2.5 rounded-lg text-[0.82rem]"
           style="background: color-mix(in oklab, var(--color-err) 8%, transparent); border: 1px solid color-mix(in oklab, var(--color-err) 25%, transparent); color: var(--color-err);"
         >
-          {fileError}
+          {fileError ?? launchError}
         </div>
       {/if}
 

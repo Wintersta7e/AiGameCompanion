@@ -21,6 +21,18 @@ pub const DEFAULT_CLAUDE_MODEL: &str = "claude-haiku-4-5";
 /// Name of the Codex working directory (used as both the WSL `/tmp/<name>` path
 /// and the Windows `temp_dir().join(<name>)` path).
 const CODEX_WORKDIR: &str = "aigc-codex-workdir";
+/// Cap on total stdout bytes from a CLI child, matching the Gemini stream cap.
+const MAX_STREAM_BYTES: usize = 2 * 1024 * 1024;
+/// How many stderr lines to keep for the failure message.
+const STDERR_TAIL_LINES: usize = 5;
+/// Marker printed by the WSL shell immediately before the CLI runs.
+///
+/// `bash -ic` sources the user's interactive `.bashrc`, which is where many
+/// installs put the CLI on PATH -- but it is also where nvm/fastfetch/"you have
+/// mail" banners print, and Codex output is plain text, so those lines were
+/// parsed as the start of the model's answer. Everything up to and including
+/// this marker is discarded, which keeps the PATH without the noise.
+const WSL_SENTINEL: &str = "__AIGC_STREAM_BEGIN__";
 
 /// Windows `CREATE_NO_WINDOW` flag -- prevents console popups from `wsl.exe` and
 /// other console-subsystem processes.
@@ -94,7 +106,11 @@ fn shell_escape(s: &str) -> String {
 }
 
 /// Check if a CLI tool is available, first natively on the Windows PATH, then
-/// inside WSL (using `bash -ic` so nvm / profile PATH is sourced).
+/// inside WSL, using `bash -ic` so nvm / profile PATH is sourced. `-ic` is
+/// required, not incidental: many installs put the CLI on PATH only in
+/// `.bashrc`, and a login shell does not source it -- measured on this machine,
+/// `-lc` made Codex undetectable. See `WSL_SENTINEL` for how the interactive
+/// shell's banner output is kept out of the model stream.
 pub fn detect_cli(name: &str) -> CliMode {
     let native = silent(std::process::Command::new(name).arg("--version"))
         .status()
@@ -115,18 +131,30 @@ pub fn detect_cli(name: &str) -> CliMode {
     CliMode::Unavailable
 }
 
-/// Codex requires a git directory -- ensure a temp workdir with `git init` exists.
+/// Codex requires a git directory -- ensure a workdir with `git init` exists.
 pub fn ensure_codex_workdir(mode: CliMode) -> String {
     if let CliMode::Wsl = mode {
-        let dir = format!("/tmp/{CODEX_WORKDIR}");
-        let _ = silent(std::process::Command::new("wsl.exe").args([
-            "--",
-            "bash",
-            "-c",
-            &format!("[ -d {dir}/.git ] || (mkdir -p {dir} && git -C {dir} init)"),
-        ]))
-        .status();
-        return dir;
+        // Under the user's HOME, not shared /tmp. Codex reads instruction files
+        // (AGENTS.md) from its working directory, and a fixed
+        // `/tmp/aigc-codex-workdir` can be pre-created by any other local user
+        // -- the `[ -d dir/.git ]` guard then no-ops and every Codex answer is
+        // steered by their file. `-s read-only` blocks writes, not reads.
+        let script = format!(
+            "d=\"$HOME/.cache/{CODEX_WORKDIR}\"; mkdir -p \"$d\" && chmod 700 \"$d\" && \
+             {{ [ -d \"$d/.git\" ] || git -C \"$d\" init >/dev/null; }}; printf %s \"$d\""
+        );
+        let resolved =
+            silent(std::process::Command::new("wsl.exe").args(["--", "bash", "-ic", &script]))
+                .output()
+                .ok()
+                .filter(|out| out.status.success())
+                .map(|out| String::from_utf8_lossy(&out.stdout).trim().to_owned())
+                .filter(|path| !path.is_empty());
+
+        return resolved.unwrap_or_else(|| {
+            tracing::warn!("Could not resolve the WSL Codex workdir; falling back to /tmp");
+            format!("/tmp/{CODEX_WORKDIR}")
+        });
     }
 
     let dir = std::env::temp_dir().join(CODEX_WORKDIR);
@@ -349,7 +377,9 @@ where
     };
 
     let input = build_claude_input(messages, screenshot);
-    run_cli(&mut cmd, input, on_chunk, parse_claude_line, "Claude").await
+    // Claude emits stream-json and its parser drops non-JSON, so shell
+    // banners cannot reach the user -- no sentinel needed.
+    run_cli(&mut cmd, input, on_chunk, parse_claude_line, "Claude", None).await
 }
 
 /// Stream a Codex response by spawning the Codex CLI in `exec` mode.
@@ -369,7 +399,7 @@ where
     let work_dir = cfg.codex_workdir.as_str();
     let mut cmd = if let CliMode::Wsl = cfg.codex {
         let codex_cmd = format!(
-            "codex -a never -s read-only -C {} exec --skip-git-repo-check",
+            "printf '%s\\n' {WSL_SENTINEL}; codex -a never -s read-only -C {} exec --skip-git-repo-check",
             shell_escape(work_dir),
         );
         let mut c = Command::new("wsl.exe");
@@ -391,7 +421,16 @@ where
     };
 
     let input = build_codex_input(system_prompt, messages);
-    run_cli(&mut cmd, input, on_chunk, parse_codex_line, "Codex").await
+    let sentinel = matches!(cfg.codex, CliMode::Wsl).then_some(WSL_SENTINEL);
+    run_cli(
+        &mut cmd,
+        input,
+        on_chunk,
+        parse_codex_line,
+        "Codex",
+        sentinel,
+    )
+    .await
 }
 
 /// Spawn a CLI child, write `input` to stdin, and stream parsed stdout lines to
@@ -405,6 +444,7 @@ async fn run_cli<F, P>(
     mut on_chunk: F,
     parse_line: P,
     label: &str,
+    skip_until: Option<&str>,
 ) -> Result<(), String>
 where
     F: FnMut(String) -> Result<(), String>,
@@ -436,39 +476,98 @@ where
         // Dropping stdin closes the pipe so the CLI knows the input is complete.
     };
 
+    // Keep the last few stderr lines: when the child fails without writing any
+    // stdout, this is the only thing that can explain why.
     let stderr_fut = async move {
+        let mut tail: Vec<String> = Vec::new();
         if let Some(stderr) = stderr {
             let reader = BufReader::new(stderr);
             let mut lines = LinesStream::new(reader.lines());
             while let Some(Ok(line)) = lines.next().await {
                 if !line.trim().is_empty() {
                     tracing::warn!("{label} stderr: {line}");
+                    if tail.len() == STDERR_TAIL_LINES {
+                        tail.remove(0);
+                    }
+                    tail.push(line);
                 }
             }
         }
+        tail
     };
 
     let read_fut = async {
         let reader = BufReader::new(stdout);
         let mut lines = LinesStream::new(reader.lines());
+        let mut total_bytes: usize = 0;
+        let mut emitted = false;
+        // Set only when the command prints WSL_SENTINEL; everything the
+        // interactive shell emitted before it is profile noise, not output.
+        let mut waiting_for_sentinel = skip_until.is_some();
         while let Some(item) = lines.next().await {
             let line = item.map_err(|e| format!("Failed to read from {label} CLI: {e}"))?;
+            if waiting_for_sentinel {
+                if skip_until.is_some_and(|marker| line.trim() == marker) {
+                    waiting_for_sentinel = false;
+                } else if !line.trim().is_empty() {
+                    tracing::debug!("{label}: dropping pre-start shell output: {line}");
+                }
+                continue;
+            }
+            // Mirror the Gemini stream cap: `lines()` grows one buffer with no
+            // ceiling, so a child emitting a huge blob would otherwise grow the
+            // launcher's memory byte for byte.
+            total_bytes = total_bytes.saturating_add(line.len());
+            if total_bytes > MAX_STREAM_BYTES {
+                return Err(format!("{label} response exceeded the size limit."));
+            }
             if line.trim().is_empty() {
                 continue;
             }
             match parse_line(&line) {
-                Some(Parsed::Text(text)) => on_chunk(text)?,
+                Some(Parsed::Text(text)) => {
+                    emitted = true;
+                    on_chunk(text)?;
+                }
                 Some(Parsed::Error(message)) => return Err(message),
                 None => {}
             }
         }
-        Ok(())
+        Ok(emitted)
     };
 
-    let ((), (), read_result) = tokio::join!(write_fut, stderr_fut, read_fut);
-    // Drop the child last so `kill_on_drop` reaps it if it is still running.
+    let ((), stderr_tail, read_result) = tokio::join!(write_fut, stderr_fut, read_fut);
+    let emitted = read_result?;
+
+    // Stdout reaching EOF is NOT success. Without this, a CLI that fails before
+    // printing anything -- not logged in, binary missing, WSL distro down --
+    // reached the user as a completed, empty answer with no error at all.
+    let status = child.wait().await;
     drop(child);
-    read_result
+    match status {
+        Ok(status) if status.success() => {
+            if emitted {
+                Ok(())
+            } else {
+                Err(cli_failure_message(label, &stderr_tail))
+            }
+        }
+        Ok(status) => {
+            tracing::warn!("{label} CLI exited with {status}");
+            Err(cli_failure_message(label, &stderr_tail))
+        }
+        Err(e) => Err(format!("Failed to wait for {label} CLI: {e}")),
+    }
+}
+
+/// Surface the child's own stderr when it has any -- "Invalid API key, please
+/// run /login" is actionable in a way that a generic failure string is not.
+fn cli_failure_message(label: &str, stderr_tail: &[String]) -> String {
+    if stderr_tail.is_empty() {
+        format!("{label} CLI produced no output. Check the launcher log.")
+    } else {
+        format!("{label} CLI failed: {}", stderr_tail.join(" / "))
+    }
 }
 
 #[cfg(test)]

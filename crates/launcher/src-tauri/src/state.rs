@@ -24,25 +24,31 @@ impl AppState {
             let _ = std::fs::rename(&tmp_path, &state_path);
         }
 
-        let launcher = if state_path.exists() {
-            match std::fs::read_to_string(&state_path) {
-                Ok(contents) => match serde_json::from_str(&contents) {
-                    Ok(state) => state,
-                    Err(e) => {
-                        tracing::error!("Corrupt launcher state at {}: {e}", state_path.display());
-                        // Backup before overwriting with defaults
-                        let backup = state_path.with_extension("json.bak");
-                        let _ = std::fs::copy(&state_path, &backup);
-                        LauncherState::default()
-                    }
-                },
+        // `Path::exists()` reports false for any metadata error, including
+        // access-denied, which would silently take the "no state file" path and
+        // let the next save overwrite a perfectly good file. Distinguish the
+        // cases so only a genuine NotFound starts from defaults.
+        let launcher = match std::fs::read_to_string(&state_path) {
+            Ok(contents) => match serde_json::from_str(&contents) {
+                Ok(state) => state,
                 Err(e) => {
-                    tracing::error!("Failed to read launcher state: {e}");
+                    tracing::error!("Corrupt launcher state at {}: {e}", state_path.display());
+                    back_up(&state_path);
                     LauncherState::default()
                 }
+            },
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => LauncherState::default(),
+            Err(e) => {
+                // Unreadable but present (AV lock, permissions). Starting from
+                // defaults here would let the next save destroy the file, so
+                // preserve a copy first and refuse to treat this as "no state".
+                tracing::error!(
+                    "Failed to read launcher state at {}: {e}",
+                    state_path.display()
+                );
+                back_up(&state_path);
+                LauncherState::default()
             }
-        } else {
-            LauncherState::default()
         };
         Self {
             launcher: Mutex::new(launcher),
@@ -58,10 +64,28 @@ impl AppState {
         // Clone state and drop lock before file I/O
         let state = self.launcher.lock().clone();
         let json = serde_json::to_string_pretty(&state).map_err(|e| e.to_string())?;
-        // Atomic write: write to temp file, then rename
+        // Atomic write: write to temp file, flush it to disk, then rename.
+        // Without the fsync the rename can commit while the tmp file's data is
+        // still dirty, so a power loss leaves a directory entry pointing at
+        // unwritten bytes -- and the next start would back that garbage up as
+        // the "last good" copy.
         let tmp_path = self.state_path.with_extension("json.tmp");
-        std::fs::write(&tmp_path, json).map_err(|e| e.to_string())?;
+        {
+            use std::io::Write;
+            let mut file = std::fs::File::create(&tmp_path).map_err(|e| e.to_string())?;
+            file.write_all(json.as_bytes()).map_err(|e| e.to_string())?;
+            file.sync_all().map_err(|e| e.to_string())?;
+        }
         std::fs::rename(&tmp_path, &self.state_path).map_err(|e| e.to_string())
+    }
+}
+
+/// Copy the current state file aside before defaults overwrite it. Best effort:
+/// if this fails there is nothing useful left to do about it.
+fn back_up(state_path: &std::path::Path) {
+    let backup = state_path.with_extension("json.bak");
+    if let Err(e) = std::fs::copy(state_path, &backup) {
+        tracing::error!("Failed to back up launcher state: {e}");
     }
 }
 
@@ -141,6 +165,62 @@ mod tests {
         assert!(!st.settings.scan_on_startup); // explicit value preserved
         assert!(!st.settings.launch_on_startup); // defaulted to false
         assert!(st.settings.minimize_to_tray); // defaulted to true
+        drop(st);
+        cleanup(&path);
+    }
+
+    /// The previous schema-evolution test supplied BOTH top-level keys, so it
+    /// only ever exercised `Game` and `LauncherSettings` -- which were already
+    /// protected. The container was not, and that is where a real upgrade
+    /// breaks: adding one field made every existing file fail to parse.
+    #[test]
+    fn load_tolerates_missing_top_level_fields() {
+        let path = temp_state_path("toplevel_evo");
+        std::fs::write(&path, r#"{"games":[{"id":"g1","name":"Old"}]}"#).unwrap();
+        let app = AppState::load(path.clone());
+        let st = app.launcher.lock();
+        assert_eq!(st.games.len(), 1, "missing `settings` must not lose games");
+        assert!(
+            st.settings.scan_on_startup,
+            "settings fall back to defaults"
+        );
+        drop(st);
+        cleanup(&path);
+    }
+
+    #[test]
+    fn load_tolerates_unknown_game_source() {
+        let path = temp_state_path("unknown_source");
+        std::fs::write(
+            &path,
+            r#"{"games":[{"id":"g1","name":"Future","source":"xbox"}],"settings":{}}"#,
+        )
+        .unwrap();
+        let app = AppState::load(path.clone());
+        let st = app.launcher.lock();
+        assert_eq!(
+            st.games.len(),
+            1,
+            "a newer source must not wipe the library"
+        );
+        assert_eq!(st.games[0].source, GameSource::Manual);
+        drop(st);
+        cleanup(&path);
+    }
+
+    /// One malformed entry costs that entry, not the whole library.
+    #[test]
+    fn load_drops_only_the_unreadable_game_entry() {
+        let path = temp_state_path("bad_entry");
+        std::fs::write(
+            &path,
+            r#"{"games":[{"id":"ok","name":"Good"},{"id":"bad","play_time_minutes":"lots"}],"settings":{}}"#,
+        )
+        .unwrap();
+        let app = AppState::load(path.clone());
+        let st = app.launcher.lock();
+        assert_eq!(st.games.len(), 1);
+        assert_eq!(st.games[0].id, "ok");
         drop(st);
         cleanup(&path);
     }

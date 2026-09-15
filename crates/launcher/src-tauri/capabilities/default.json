@@ -9,7 +9,6 @@
     "core:window:allow-toggle-maximize",
     "core:window:allow-close",
     "core:window:allow-start-dragging",
-    "core:window:allow-set-focus",
-    "opener:default"
+    "core:window:allow-set-focus"
   ]
 }

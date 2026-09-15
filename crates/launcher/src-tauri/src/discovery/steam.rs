@@ -34,16 +34,32 @@ const SKIP_PATTERNS: &[&str] = &[
 /// Steam CDN base URL for app images.
 const STEAM_CDN: &str = "https://cdn.cloudflare.steamstatic.com/steam/apps";
 
+/// Outcome of a Steam scan.
+///
+/// `complete` is the load-bearing part: a scan that could not reach Steam or
+/// could not read one of its libraries still returns a plausible-looking list,
+/// and callers must not treat that as an authoritative view of what is
+/// installed -- overwriting the stored library with it destroys playtime for
+/// every game on the drive that happened to be unavailable.
+pub struct ScanOutcome {
+    pub games: Vec<Game>,
+    pub complete: bool,
+}
+
 /// Discover installed Steam games.
 ///
-/// Returns an alphabetically sorted list of games found across all Steam libraries.
+/// Returns an alphabetically sorted list of games found across all Steam
+/// libraries, plus whether every library was read successfully.
 /// Exe detection is deferred to launch time for speed.
-pub fn discover_steam_games() -> Vec<Game> {
+pub fn discover_steam_games() -> ScanOutcome {
     let steam_dir = match SteamDir::locate() {
         Ok(dir) => dir,
         Err(e) => {
             tracing::warn!("Failed to locate Steam: {e}");
-            return Vec::new();
+            return ScanOutcome {
+                games: Vec::new(),
+                complete: false,
+            };
         }
     };
 
@@ -53,17 +69,24 @@ pub fn discover_steam_games() -> Vec<Game> {
         Ok(iter) => iter,
         Err(e) => {
             tracing::warn!("Failed to read Steam libraries: {e}");
-            return Vec::new();
+            return ScanOutcome {
+                games: Vec::new(),
+                complete: false,
+            };
         }
     };
 
     let mut games: Vec<Game> = Vec::new();
+    let mut complete = true;
 
     for library_result in libraries {
         let library = match library_result {
             Ok(lib) => lib,
             Err(e) => {
+                // A library on an unmounted or slow drive. Anything installed
+                // there is missing from `games`, so this scan is partial.
                 tracing::warn!("Failed to read Steam library: {e}");
+                complete = false;
                 continue;
             }
         };
@@ -104,9 +127,12 @@ pub fn discover_steam_games() -> Vec<Game> {
         }
     }
 
-    tracing::info!("Discovery complete: {} games found", games.len());
+    tracing::info!(
+        "Discovery finished: {} games found (complete: {complete})",
+        games.len()
+    );
     games.sort_by_key(|g| g.name.to_lowercase());
-    games
+    ScanOutcome { games, complete }
 }
 
 /// Resolve the main exe for a game on demand (called at launch time).
@@ -139,12 +165,22 @@ fn find_main_exe(install_dir: &Path) -> (String, Option<String>) {
 }
 
 /// Max exe candidates to collect per game before stopping early.
-const MAX_EXE_CANDIDATES: usize = 20;
+const MAX_EXE_CANDIDATES: usize = 64;
+
+/// Max directory depth to search for the game executable.
+///
+/// Must reach 3: the standard Unreal layout puts the real binary at
+/// `<install>/<Game>/Binaries/Win64/<Game>-Win64-Shipping.exe`. At the previous
+/// limit of 2 that file was never seen, so the only candidate was the root
+/// launcher stub -- which spawns the real process and exits within seconds, so
+/// the watcher booked a zero-minute session and every such game recorded no
+/// playtime at all.
+const MAX_EXE_DEPTH: u32 = 4;
 
 /// Recursively collect `.exe` files, filtering out known non-game executables.
 fn collect_exes(dir: &Path, out: &mut Vec<(PathBuf, u64)>, depth: u32) {
     // Limit recursion depth to avoid traversing massive directory trees
-    if depth > 2 || out.len() >= MAX_EXE_CANDIDATES {
+    if depth > MAX_EXE_DEPTH || out.len() >= MAX_EXE_CANDIDATES {
         return;
     }
 

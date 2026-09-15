@@ -42,6 +42,7 @@ mod imp {
 
     use tauri::{AppHandle, Emitter, Manager};
     use windows::core::PCWSTR;
+    use windows::Win32::Foundation::WAIT_OBJECT_0;
     use windows::Win32::Foundation::{CloseHandle, ERROR_SUCCESS};
     use windows::Win32::System::Diagnostics::ToolHelp::{
         CreateToolhelp32Snapshot, Process32FirstW, Process32NextW, PROCESSENTRY32W,
@@ -62,6 +63,9 @@ mod imp {
     const EXIT_POLL: Duration = Duration::from_secs(2);
     /// `WaitForSingleObject` timeout meaning "wait forever" (0xFFFFFFFF).
     const INFINITE: u32 = u32::MAX;
+    /// Upper bound on a single tracked session, so a Steam running-flag that is
+    /// never cleared cannot strand the session reservation indefinitely.
+    const MAX_SESSION: Duration = Duration::from_hours(24);
 
     /// Watch a Steam game via `HKCU\Software\Valve\Steam\Apps\<appid>\Running`.
     pub fn watch_steam(app: &AppHandle, game_id: &str, app_id: &str) {
@@ -73,6 +77,17 @@ mod imp {
         let started = Instant::now();
         let _ = app.emit("game-linked", game_id);
         while steam_running(app_id) {
+            // Steam crashing or being force-killed leaves `Running` set to 1
+            // forever. Without this cap the loop never exits, the session
+            // reservation is never released, and the game can never be
+            // relaunched until the launcher restarts.
+            if started.elapsed() >= MAX_SESSION {
+                tracing::warn!(
+                    "Steam still reports {app_id} running after {}h; ending session",
+                    MAX_SESSION.as_secs() / 3600
+                );
+                break;
+            }
             std::thread::sleep(EXIT_POLL);
         }
         finish_session(app, game_id, elapsed_mins(started));
@@ -91,8 +106,11 @@ mod imp {
         finish_session(app, game_id, elapsed_mins(started));
     }
 
+    /// Elapsed whole minutes, rounded to nearest rather than truncated, so a
+    /// short session books 1 minute instead of vanishing. Truncating meant a
+    /// user who plays in sub-minute bursts stayed at zero playtime forever.
     fn elapsed_mins(started: Instant) -> u64 {
-        started.elapsed().as_secs() / 60
+        (started.elapsed().as_secs() + 30) / 60
     }
 
     /// Emit `game-finished`, release the session reservation, and -- if any time
@@ -183,11 +201,16 @@ mod imp {
     fn wait_for_exit(pid: u32, exe_name: &str) {
         unsafe {
             if let Ok(handle) = OpenProcess(PROCESS_SYNCHRONIZE, false, pid) {
-                if !handle.is_invalid() {
-                    WaitForSingleObject(handle, INFINITE);
-                    let _ = CloseHandle(handle);
+                // WAIT_FAILED would mean the wait never observed an exit; taking
+                // it as "game closed" ends the session instantly and books ~0
+                // minutes while the game is still running. Fall through to the
+                // polling path instead.
+                let wait = WaitForSingleObject(handle, INFINITE);
+                let _ = CloseHandle(handle);
+                if wait == WAIT_OBJECT_0 {
                     return;
                 }
+                tracing::warn!("WaitForSingleObject on pid {pid} returned {wait:?}; polling");
             }
         }
         // Fallback (process could not be opened): poll until a process with this

@@ -1,8 +1,7 @@
 <script lang="ts">
-  import { onMount } from 'svelte';
+  import { onMount, tick } from 'svelte';
   import { invoke, Channel } from '@tauri-apps/api/core';
   import { listen } from '@tauri-apps/api/event';
-  import { getCurrentWindow } from '@tauri-apps/api/window';
   import { hashHue } from '../utils/accent';
   import { PROVIDERS, type Provider } from '../stores/companion.svelte';
 
@@ -43,6 +42,9 @@
   let asking = $state(false);
   let messages = $state<Msg[]>([]);
 
+  let inputEl = $state<HTMLInputElement | null>(null);
+  let msglistEl = $state<HTMLDivElement | null>(null);
+
   let translateText = $state('');
   let translateBusy = $state(false);
   let translateError = $state('');
@@ -67,6 +69,20 @@
     if (provider === 'openai') return 'screenshots unsupported on OpenAI';
     if (attach && canAttach) return 'screenshot attached · WGC';
     return 'screenshot attaches via WGC';
+  });
+
+  // Follow a streaming answer, but only while the user is already at the bottom
+  // -- scrolling up to re-read history must not be yanked back down. The check
+  // has to happen before the DOM grows, hence $effect.pre.
+  $effect.pre(() => {
+    // Re-runs on every appended chunk and on every new message.
+    const growth = messages.length + (messages.at(-1)?.content.length ?? 0);
+    const el = msglistEl;
+    if (!el || growth === 0) return;
+    if (el.scrollHeight - el.scrollTop - el.clientHeight > 50) return;
+    void tick().then(() => {
+      el.scrollTop = el.scrollHeight;
+    });
   });
 
   // Re-query availability (CLI detection can lag startup); restore the saved
@@ -171,6 +187,9 @@
         channel,
       });
     } catch (err) {
+      // Same guard as the channel handler: a rejection that lands after New chat
+      // or a newer Send must not write into the current conversation's bubble.
+      if (id !== activeRequestId || convo !== conversationId) return;
       messages[idx].content = `[error] ${String(err)}`;
       messages[idx].streaming = false;
       asking = false;
@@ -198,10 +217,12 @@
   }
 
   async function hideOverlay() {
+    // Go through the backend: it hands focus back to the game, which a bare
+    // window.hide() skips.
     try {
-      await getCurrentWindow().hide();
+      await invoke('hide_overlay');
     } catch {
-      /* window may not exist in preview */
+      /* command may not exist in preview */
     }
   }
 
@@ -267,6 +288,11 @@
         game = event.payload;
         // The overlay just became visible: CLI detection has had time to finish.
         if (savedProviderLoaded) void refreshProviders();
+        // The window is shown and hidden, never remounted, so the input has to
+        // be focused on every show -- the Rust side only focuses the window.
+        // Wait for the DOM: `game` above flips canSend, and a still-disabled
+        // input silently refuses focus.
+        void tick().then(() => inputEl?.focus());
       }),
       listen('translate-request', () => {
         tab = 'translate';
@@ -419,7 +445,7 @@
     {#if tab === 'chat'}
       <!-- chat body -->
       <div class="body">
-        <div class="msglist">
+        <div class="msglist" bind:this={msglistEl}>
           {#if available.length === 0}
             <div class="msg sage">
               <span class="avatar"></span>
@@ -509,6 +535,7 @@
             </button>
             <input
               class="text-input"
+              bind:this={inputEl}
               bind:value={prompt}
               onkeydown={onKeydown}
               disabled={!canSend}

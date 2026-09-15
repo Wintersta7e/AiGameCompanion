@@ -97,14 +97,29 @@ struct GoogleSearch {}
 struct GeminiResponse {
     #[serde(default)]
     candidates: Vec<Candidate>,
+    #[serde(default, rename = "promptFeedback")]
+    prompt_feedback: Option<PromptFeedback>,
 }
 
 #[derive(Deserialize)]
 struct Candidate {
+    // A candidate carrying only `finishReason` (safety block, token limit) has
+    // no `content`. Making it required meant the frame failed to deserialize
+    // and was discarded as "unparseable", so a blocked prompt surfaced as the
+    // generic "Empty response from API." with no hint of why.
+    #[serde(default)]
     content: CandidateContent,
+    #[serde(default, rename = "finishReason")]
+    finish_reason: Option<String>,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Default)]
+struct PromptFeedback {
+    #[serde(rename = "blockReason")]
+    block_reason: Option<String>,
+}
+
+#[derive(Deserialize, Default)]
 struct CandidateContent {
     #[serde(default)]
     parts: Vec<ResponsePart>,
@@ -311,6 +326,25 @@ where
         };
 
         if let Ok(response) = serde_json::from_str::<GeminiResponse>(json) {
+            // Tell the user WHY nothing came back, rather than letting a safety
+            // block or a token-limit stop fall through to "Empty response".
+            if let Some(reason) = response
+                .prompt_feedback
+                .as_ref()
+                .and_then(|feedback| feedback.block_reason.as_deref())
+            {
+                return Err(format!("Gemini blocked this request ({reason})."));
+            }
+            let blocked = response
+                .candidates
+                .iter()
+                .filter_map(|candidate| candidate.finish_reason.as_deref())
+                .find(|reason| !matches!(*reason, "STOP" | "MAX_TOKENS"))
+                .map(str::to_owned);
+            let truncated = response
+                .candidates
+                .iter()
+                .any(|candidate| candidate.finish_reason.as_deref() == Some("MAX_TOKENS"));
             let text = response
                 .candidates
                 .into_iter()
@@ -320,6 +354,12 @@ where
             if text.is_empty() {
                 if let Some(message) = stream_error_message(json) {
                     return Err(format!("API error: {message}"));
+                }
+                if let Some(reason) = blocked {
+                    return Err(format!("Gemini stopped early ({reason})."));
+                }
+                if truncated {
+                    return Err("Gemini hit its output limit before writing anything.".to_owned());
                 }
             } else {
                 received_text = true;

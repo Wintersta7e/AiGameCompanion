@@ -45,6 +45,16 @@ fn main() {
     let quick_ask = Shortcut::new(Some(Modifiers::CONTROL | Modifiers::SHIFT), Code::KeyA);
 
     tauri::Builder::default()
+        // Must be registered first. Two instances would otherwise share one
+        // state file with only a per-process lock: their temp-file writes and
+        // renames interleave, one publishes the other's snapshot or a truncated
+        // file, and the next start treats it as corrupt and resets to defaults
+        // -- every game, playtime total and setting gone. `minimize_to_tray`
+        // defaults to true, so "closed the window, relaunched from the
+        // shortcut" is the normal way to end up here.
+        .plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| {
+            show_main_window(app);
+        }))
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_autostart::init(
             MacosLauncher::LaunchAgent,
@@ -69,18 +79,27 @@ fn main() {
         .manage(OverlayState::default())
         .manage(AiState::default())
         .setup(move |app| {
-            let app_dir = app
-                .path()
-                .app_data_dir()
-                .expect("Failed to get app data dir");
-            std::fs::create_dir_all(&app_dir).expect("Failed to create app data directory");
+            // Under `windows_subsystem = "windows"` there is no console and no
+            // dialog, so panicking here kills the launcher with no visible
+            // output at all. An unwritable %APPDATA% (roaming profile issues,
+            // disk full, AV lock) costs logging, not the whole app.
+            let app_dir = app.path().app_data_dir().map_err(|e| {
+                format!("Failed to resolve the app data directory: {e}. Cannot continue.")
+            })?;
+            if let Err(e) = std::fs::create_dir_all(&app_dir) {
+                eprintln!("Failed to create {}: {e}", app_dir.display());
+            }
 
-            let log_file = std::fs::File::create(app_dir.join("launcher.log"))
-                .expect("Failed to create log file");
-            tracing_subscriber::fmt()
-                .with_writer(std::sync::Mutex::new(log_file))
-                .with_ansi(false)
-                .init();
+            match std::fs::File::create(app_dir.join("launcher.log")) {
+                Ok(log_file) => tracing_subscriber::fmt()
+                    .with_writer(std::sync::Mutex::new(log_file))
+                    .with_ansi(false)
+                    .init(),
+                Err(e) => {
+                    eprintln!("Failed to open launcher.log: {e}; logging to stderr");
+                    tracing_subscriber::fmt().with_ansi(false).init();
+                }
+            }
 
             let state_path = app_dir.join("launcher-state.json");
             let app_state = AppState::load(state_path);
@@ -179,7 +198,7 @@ fn main() {
             commands::ai::translate_screen,
             commands::ai::set_gemini_key,
             commands::ai::recheck_clis,
-            overlay::capture_game,
+            overlay::hide_overlay,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

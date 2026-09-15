@@ -36,13 +36,7 @@
       }
     ],
     "security": {
-      "csp": "default-src 'self' https://tauri.localhost; img-src 'self' asset: https://asset.localhost https://cdn.cloudflare.steamstatic.com; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; script-src 'self' https://tauri.localhost; connect-src ipc: http://ipc.localhost https://tauri.localhost",
-      "assetProtocol": {
-        "enable": true,
-        "scope": {
-          "deny": ["**/*.toml", "**/*.key", "**/*.pem", "**/*.env"]
-        }
-      }
+      "csp": "default-src 'self' https://tauri.localhost; img-src 'self' https://cdn.cloudflare.steamstatic.com; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; script-src 'self' https://tauri.localhost; connect-src ipc: http://ipc.localhost https://tauri.localhost"
     }
   },
   "bundle": {
@@ -55,10 +49,5 @@
       "icons/icon.icns",
       "icons/icon.ico"
     ]
-  },
-  "plugins": {
-    "shell": {
-      "open": "steam://.*"
-    }
   }
 }
