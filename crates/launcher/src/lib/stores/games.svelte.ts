@@ -106,20 +106,40 @@ export function getSelectedGame(): Game | undefined {
 }
 
 let gameStatuses = $state<Record<string, string>>({});
+// Launch failures are per game and must not touch `error`, which the sidebar
+// reads as "the scan failed" and renders instead of the whole list.
+let launchErrors = $state<Record<string, string>>({});
 
 listen<string>('game-linked', (event) => {
   const gameId = event.payload;
   gameStatuses = { ...gameStatuses, [gameId]: 'linked' };
 });
 
-// Reset status when the watched game process exits (or was never found).
+// Refetch in the background: no isLoading flip and no `error` write, so a
+// refresh never replaces the list the user is looking at with a spinner or a
+// "Scan failed" panel.
+async function refreshGames(): Promise<void> {
+  try {
+    games = await invoke<Game[]>('get_games');
+  } catch (err) {
+    console.error('Failed to refresh games:', err);
+  }
+}
+
+// Reset status when the watched game process exits (or was never found), and
+// pick up the play time / last played the backend just recorded.
 listen<string>('game-finished', (event) => {
   const gameId = event.payload;
   gameStatuses = { ...gameStatuses, [gameId]: 'idle' };
+  void refreshGames();
 });
 
 export function getGameStatus(id: string): string {
   return gameStatuses[id] ?? 'idle';
+}
+
+export function getLaunchError(id: string): string | null {
+  return launchErrors[id] || null;
 }
 
 export async function launchGame(gameId: string): Promise<void> {
@@ -131,11 +151,12 @@ export async function launchGame(gameId: string): Promise<void> {
   // rest. Do not overwrite with the invoke result -- an event may already have
   // updated the status while we awaited.
   gameStatuses = { ...gameStatuses, [gameId]: 'launching' };
+  launchErrors = { ...launchErrors, [gameId]: '' };
   try {
     await invoke<string>('launch_game', { gameId });
   } catch (err) {
     console.error('Failed to launch game:', err);
     gameStatuses = { ...gameStatuses, [gameId]: 'error' };
-    error = String(err);
+    launchErrors = { ...launchErrors, [gameId]: String(err) };
   }
 }

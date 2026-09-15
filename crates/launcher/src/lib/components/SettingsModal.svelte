@@ -113,12 +113,31 @@
     }
   }
 
+  // The key field persists on blur, and unmounting the modal never fires blur --
+  // so every close path flushes a pending key first, and stays open on failure
+  // rather than dropping it silently. Escape reaches this twice (dialog +
+  // window handler), hence the re-entry guard.
+  let closing = false;
+  async function closeModal() {
+    if (closing) return;
+    closing = true;
+    try {
+      if (geminiKey.trim()) {
+        await saveKey();
+        if (saveError) return;
+      }
+      open = false;
+    } finally {
+      closing = false;
+    }
+  }
+
   async function save() {
     saving = true;
     saveError = null;
     try {
       await invoke('update_settings', { settings });
-      open = false;
+      await closeModal();
     } catch (e) {
       saveError = String(e);
     } finally {
@@ -152,10 +171,10 @@
   });
 
   function onBackdrop(e: MouseEvent) {
-    if (e.target === e.currentTarget) open = false;
+    if (e.target === e.currentTarget) void closeModal();
   }
   function onKeydown(e: KeyboardEvent) {
-    if (open && e.key === 'Escape') open = false;
+    if (open && e.key === 'Escape') void closeModal();
   }
 </script>
 
@@ -190,7 +209,7 @@
           >SAGE · {VERSION}</span
         >
         <button
-          onclick={() => (open = false)}
+          onclick={() => void closeModal()}
           aria-label="Close settings"
           class="ml-auto w-[30px] h-[30px] grid place-items-center rounded-lg text-t-mid cursor-pointer transition-colors duration-150 hover:text-white hover:bg-white/[0.06]"
         >
@@ -565,7 +584,7 @@
         {/if}
         <div class="flex gap-[10px]">
           <button
-            onclick={() => (open = false)}
+            onclick={() => void closeModal()}
             class="px-4 py-2 rounded-[9px] text-[12.5px] font-medium text-t-mid cursor-pointer transition-colors hover:text-t-hi hover:bg-white/[0.05]"
             >Cancel</button
           >

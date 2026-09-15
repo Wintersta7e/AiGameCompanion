@@ -25,6 +25,14 @@ const CODEX_WORKDIR: &str = "aigc-codex-workdir";
 const MAX_STREAM_BYTES: usize = 2 * 1024 * 1024;
 /// How many stderr lines to keep for the failure message.
 const STDERR_TAIL_LINES: usize = 5;
+/// Marker printed by the WSL shell immediately before the CLI runs.
+///
+/// `bash -ic` sources the user's interactive `.bashrc`, which is where many
+/// installs put the CLI on PATH -- but it is also where nvm/fastfetch/"you have
+/// mail" banners print, and Codex output is plain text, so those lines were
+/// parsed as the start of the model's answer. Everything up to and including
+/// this marker is discarded, which keeps the PATH without the noise.
+const WSL_SENTINEL: &str = "__AIGC_STREAM_BEGIN__";
 
 /// Windows `CREATE_NO_WINDOW` flag -- prevents console popups from `wsl.exe` and
 /// other console-subsystem processes.
@@ -92,16 +100,17 @@ fn no_window(cmd: &mut Command) {
     cmd.creation_flags(CREATE_NO_WINDOW);
 }
 
-/// Escape a string for use inside a `bash -c` / `bash -lc` command.
+/// Escape a string for use inside a `bash -c` / `bash -ic` command.
 fn shell_escape(s: &str) -> String {
     format!("'{}'", s.replace('\'', "'\\''"))
 }
 
 /// Check if a CLI tool is available, first natively on the Windows PATH, then
-/// inside WSL. Uses `bash -lc`, NOT `-ic`: a login shell still sources the
-/// profile so nvm/PATH resolve, but skips the interactive `.bashrc`, whose
-/// banners (nvm, fastfetch, "you have mail") were otherwise parsed as Codex
-/// output and shown to the user as the start of the model's answer.
+/// inside WSL, using `bash -ic` so nvm / profile PATH is sourced. `-ic` is
+/// required, not incidental: many installs put the CLI on PATH only in
+/// `.bashrc`, and a login shell does not source it -- measured on this machine,
+/// `-lc` made Codex undetectable. See `WSL_SENTINEL` for how the interactive
+/// shell's banner output is kept out of the model stream.
 pub fn detect_cli(name: &str) -> CliMode {
     let native = silent(std::process::Command::new(name).arg("--version"))
         .status()
@@ -112,7 +121,7 @@ pub fn detect_cli(name: &str) -> CliMode {
 
     let version_cmd = format!("{name} --version");
     let wsl =
-        silent(std::process::Command::new("wsl.exe").args(["--", "bash", "-lc", &version_cmd]))
+        silent(std::process::Command::new("wsl.exe").args(["--", "bash", "-ic", &version_cmd]))
             .status()
             .is_ok_and(|status| status.success());
     if wsl {
@@ -135,7 +144,7 @@ pub fn ensure_codex_workdir(mode: CliMode) -> String {
              {{ [ -d \"$d/.git\" ] || git -C \"$d\" init >/dev/null; }}; printf %s \"$d\""
         );
         let resolved =
-            silent(std::process::Command::new("wsl.exe").args(["--", "bash", "-lc", &script]))
+            silent(std::process::Command::new("wsl.exe").args(["--", "bash", "-ic", &script]))
                 .output()
                 .ok()
                 .filter(|out| out.status.success())
@@ -344,7 +353,7 @@ where
             shell_escape(system_prompt),
         );
         let mut c = Command::new("wsl.exe");
-        c.args(["--", "bash", "-lc", &claude_args]);
+        c.args(["--", "bash", "-ic", &claude_args]);
         c
     } else {
         let mut c = Command::new("claude");
@@ -368,7 +377,9 @@ where
     };
 
     let input = build_claude_input(messages, screenshot);
-    run_cli(&mut cmd, input, on_chunk, parse_claude_line, "Claude").await
+    // Claude emits stream-json and its parser drops non-JSON, so shell
+    // banners cannot reach the user -- no sentinel needed.
+    run_cli(&mut cmd, input, on_chunk, parse_claude_line, "Claude", None).await
 }
 
 /// Stream a Codex response by spawning the Codex CLI in `exec` mode.
@@ -388,11 +399,11 @@ where
     let work_dir = cfg.codex_workdir.as_str();
     let mut cmd = if let CliMode::Wsl = cfg.codex {
         let codex_cmd = format!(
-            "codex -a never -s read-only -C {} exec --skip-git-repo-check",
+            "printf '%s\\n' {WSL_SENTINEL}; codex -a never -s read-only -C {} exec --skip-git-repo-check",
             shell_escape(work_dir),
         );
         let mut c = Command::new("wsl.exe");
-        c.args(["--", "bash", "-lc", &codex_cmd]);
+        c.args(["--", "bash", "-ic", &codex_cmd]);
         c
     } else {
         let mut c = Command::new("codex");
@@ -410,7 +421,16 @@ where
     };
 
     let input = build_codex_input(system_prompt, messages);
-    run_cli(&mut cmd, input, on_chunk, parse_codex_line, "Codex").await
+    let sentinel = matches!(cfg.codex, CliMode::Wsl).then_some(WSL_SENTINEL);
+    run_cli(
+        &mut cmd,
+        input,
+        on_chunk,
+        parse_codex_line,
+        "Codex",
+        sentinel,
+    )
+    .await
 }
 
 /// Spawn a CLI child, write `input` to stdin, and stream parsed stdout lines to
@@ -424,6 +444,7 @@ async fn run_cli<F, P>(
     mut on_chunk: F,
     parse_line: P,
     label: &str,
+    skip_until: Option<&str>,
 ) -> Result<(), String>
 where
     F: FnMut(String) -> Result<(), String>,
@@ -480,8 +501,19 @@ where
         let mut lines = LinesStream::new(reader.lines());
         let mut total_bytes: usize = 0;
         let mut emitted = false;
+        // Set only when the command prints WSL_SENTINEL; everything the
+        // interactive shell emitted before it is profile noise, not output.
+        let mut waiting_for_sentinel = skip_until.is_some();
         while let Some(item) = lines.next().await {
             let line = item.map_err(|e| format!("Failed to read from {label} CLI: {e}"))?;
+            if waiting_for_sentinel {
+                if skip_until.is_some_and(|marker| line.trim() == marker) {
+                    waiting_for_sentinel = false;
+                } else if !line.trim().is_empty() {
+                    tracing::debug!("{label}: dropping pre-start shell output: {line}");
+                }
+                continue;
+            }
             // Mirror the Gemini stream cap: `lines()` grows one buffer with no
             // ceiling, so a child emitting a huge blob would otherwise grow the
             // launcher's memory byte for byte.
