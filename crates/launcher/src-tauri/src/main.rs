@@ -198,7 +198,7 @@ fn main() {
             commands::ai::translate_screen,
             commands::ai::set_gemini_key,
             commands::ai::recheck_clis,
-            overlay::capture_game,
+            overlay::hide_overlay,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

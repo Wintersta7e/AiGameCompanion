@@ -60,6 +60,13 @@ mod imp {
             .CreateCaptureSession(&item)
             .map_err(|error| format!("failed to create capture session: {error}"))?;
 
+        // Suppress the yellow WGC capture border, which otherwise flashes on the
+        // game on every translate/attach. Unsupported before Win10 2104, so a
+        // failure here is cosmetic and must not fail the capture.
+        if let Err(error) = session.SetIsBorderRequired(false) {
+            tracing::debug!("could not disable the capture border: {error}");
+        }
+
         let result = session
             .StartCapture()
             .map_err(|error| format!("failed to start capture: {error}"))

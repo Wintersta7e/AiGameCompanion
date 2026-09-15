@@ -215,17 +215,20 @@ async fn run(app: AppHandle, params: RequestParams, channel: Channel<SageEvent>)
     };
     let cli_cfg = app.state::<AiState>().cli.lock().clone();
 
-    // Screenshots are skipped for OpenAI (Codex `--image` is broken upstream).
-    let screenshot = if attach_screenshot && provider != Provider::Openai {
-        capture_base64(game_hwnd).await
-    } else {
-        None
-    };
-
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<String>();
     let chan_stream = channel.clone();
 
     let producer = async move {
+        // Capture INSIDE the timed section. A blocked GDI/WGC call cannot be
+        // cancelled once spawned, so awaiting it before the timeout wrapper
+        // left the UI stuck on "Streaming" with no done, no error and a leaked
+        // blocking-pool thread.
+        // Screenshots are skipped for OpenAI (Codex `--image` is broken upstream).
+        let screenshot = if attach_screenshot && provider != Provider::Openai {
+            capture_base64(game_hwnd).await
+        } else {
+            None
+        };
         let on_chunk = move |text: String| {
             tx.send(text)
                 .map_err(|_| "overlay window closed".to_owned())
@@ -268,7 +271,18 @@ async fn run(app: AppHandle, params: RequestParams, channel: Channel<SageEvent>)
             while let Ok(more) = rx.try_recv() {
                 batch.push_str(&more);
             }
-            let _ = chan_stream.send(SageEvent::chunk(request_id, conversation_id, batch));
+            // A send failure means the overlay webview is gone. Swallowing it
+            // kept the loop running and the CLI subprocess streaming (and
+            // billing) to nobody. Closing `rx` makes the producer's next
+            // `tx.send` fail, which ends the request and drops the child.
+            if chan_stream
+                .send(SageEvent::chunk(request_id, conversation_id, batch))
+                .is_err()
+            {
+                tracing::info!("Overlay channel closed; ending request {request_id}");
+                rx.close();
+                return;
+            }
         }
     };
 
