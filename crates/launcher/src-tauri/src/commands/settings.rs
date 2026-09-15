@@ -25,12 +25,17 @@ pub fn update_settings(
         launcher.settings = settings;
     }
 
-    // Sync autostart with OS
+    // Sync autostart with OS. Log failures: a registry write blocked by policy
+    // or AV would otherwise leave the toggle showing a state the OS does not
+    // actually have, with nothing anywhere to explain it.
     let autostart = app.autolaunch();
-    if launch_on_startup {
-        let _ = autostart.enable();
+    let synced = if launch_on_startup {
+        autostart.enable()
     } else {
-        let _ = autostart.disable();
+        autostart.disable()
+    };
+    if let Err(e) = synced {
+        tracing::warn!("Failed to set launch-on-startup to {launch_on_startup}: {e}");
     }
 
     state.save()
