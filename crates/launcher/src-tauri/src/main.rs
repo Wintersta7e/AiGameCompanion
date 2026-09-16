@@ -115,8 +115,10 @@ fn main() {
             let should_autostart = app_state.launcher.lock().settings.launch_on_startup;
             if should_autostart {
                 util::log_if_err("enable autostart", autostart.enable());
-            } else {
-                util::log_if_err("disable autostart", autostart.disable());
+            } else if let Err(err) = autostart.disable() {
+                // Disabling when no registry entry exists is the normal case on
+                // a fresh install, so this is not worth a warning on every start.
+                tracing::debug!("disable autostart: {err}");
             }
 
             // Register the overlay hotkeys (log + continue on conflict).
