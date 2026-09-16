@@ -65,8 +65,9 @@ export async function loadGames(): Promise<void> {
   try {
     const result = await invoke<Game[]>('get_games');
     games = result;
-    if (result.length > 0 && selectedGameId === null) {
-      selectedGameId = result[0].id;
+    const first = result[0];
+    if (first && selectedGameId === null) {
+      selectedGameId = first.id;
     }
   } catch (err) {
     console.error('Failed to load games:', err);
@@ -82,8 +83,9 @@ export async function scanGames(): Promise<void> {
   try {
     const result = await invoke<Game[]>('scan_games');
     games = result;
-    if (result.length > 0 && selectedGameId === null) {
-      selectedGameId = result[0].id;
+    const first = result[0];
+    if (first && selectedGameId === null) {
+      selectedGameId = first.id;
     }
   } catch (err) {
     console.error('Failed to scan games:', err);
@@ -110,7 +112,7 @@ let gameStatuses = $state<Record<string, string>>({});
 // reads as "the scan failed" and renders instead of the whole list.
 let launchErrors = $state<Record<string, string>>({});
 
-listen<string>('game-linked', (event) => {
+void listen<string>('game-linked', (event) => {
   const gameId = event.payload;
   gameStatuses = { ...gameStatuses, [gameId]: 'linked' };
 });
@@ -128,7 +130,7 @@ async function refreshGames(): Promise<void> {
 
 // Reset status when the watched game process exits (or was never found), and
 // pick up the play time / last played the backend just recorded.
-listen<string>('game-finished', (event) => {
+void listen<string>('game-finished', (event) => {
   const gameId = event.payload;
   gameStatuses = { ...gameStatuses, [gameId]: 'idle' };
   void refreshGames();
@@ -139,7 +141,7 @@ export function getGameStatus(id: string): string {
 }
 
 export function getLaunchError(id: string): string | null {
-  return launchErrors[id] || null;
+  return launchErrors[id] ?? null;
 }
 
 export async function launchGame(gameId: string): Promise<void> {

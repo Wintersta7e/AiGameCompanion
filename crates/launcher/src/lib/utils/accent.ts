@@ -24,7 +24,9 @@ function loadImage(src: string): Promise<HTMLImageElement> {
   return new Promise((resolve, reject) => {
     const img = new Image();
     img.crossOrigin = 'anonymous';
-    img.onload = () => resolve(img);
+    img.onload = () => {
+      resolve(img);
+    };
     img.onerror = reject;
     img.src = src;
   });
@@ -75,9 +77,9 @@ export async function dominantAccent(src: string): Promise<string> {
     b = 0,
     n = 0;
   for (let i = 0; i < data.length; i += 4) {
-    const R = data[i],
-      G = data[i + 1],
-      B = data[i + 2];
+    const R = data[i] ?? 0,
+      G = data[i + 1] ?? 0,
+      B = data[i + 2] ?? 0;
     const max = Math.max(R, G, B),
       min = Math.min(R, G, B);
     const sat = max === 0 ? 0 : (max - min) / max;

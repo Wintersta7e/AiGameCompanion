@@ -1,8 +1,18 @@
 [package]
 name = "launcher"
-version = "2.0.0"
+version = "2.0.1"
 edition = "2021"
 license = "MIT"
+description = "Desktop launcher and in-game AI companion overlay."
+repository = "https://github.com/Wintersta7e/AiGameCompanion"
+documentation = "https://github.com/Wintersta7e/AiGameCompanion#readme"
+readme = "../../../README.md"
+keywords = ["overlay", "launcher", "tauri", "assistant"]
+categories = ["gui"]
+publish = false
+
+[lints]
+workspace = true
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }

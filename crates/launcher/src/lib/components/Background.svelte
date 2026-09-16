@@ -5,12 +5,12 @@
 -->
 <div class="fixed inset-0 z-0 pointer-events-none overflow-hidden">
   <div
-    class="absolute -top-[220px] -right-[180px] w-[760px] h-[760px] rounded-full"
     style="background: radial-gradient(circle, color-mix(in oklab, var(--accent) 10%, transparent) 0%, transparent 70%); animation: drift 26s ease-in-out infinite;"
+    class="absolute -top-[220px] -right-[180px] w-[760px] h-[760px] rounded-full"
   ></div>
   <div
-    class="absolute -bottom-[180px] -left-[140px] w-[620px] h-[620px] rounded-full"
     style="background: radial-gradient(circle, rgba(255,255,255,0.025) 0%, transparent 70%); animation: drift 32s ease-in-out infinite reverse;"
+    class="absolute -bottom-[180px] -left-[140px] w-[620px] h-[620px] rounded-full"
   ></div>
 </div>
 

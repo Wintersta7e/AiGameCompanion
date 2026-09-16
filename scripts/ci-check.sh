@@ -5,7 +5,8 @@
 #   ./scripts/ci-check.sh
 #
 # Covers the same checks CI enforces: cargo fmt --check, clippy (via cargo-xwin),
-# cargo test, prettier --check, svelte-check, vite build, cargo-deny, and gitleaks.
+# cargo test, eslint, prettier --check, svelte-check, vite build, npm audit,
+# cargo-deny, and gitleaks.
 #
 # IMPORTANT: always re-run this AFTER `cargo fmt` -- reformatting can grow a
 # function past clippy::too_many_lines, which fmt alone will not report.
@@ -25,11 +26,13 @@ step() {
 }
 
 step "cargo fmt --all --check" cargo fmt --all --check
-step "clippy (xwin)" cargo xwin clippy -p launcher --target "$TARGET" -- -D warnings
+step "clippy (xwin)" cargo xwin clippy -p launcher --all-targets --target "$TARGET" -- -D warnings
 step "cargo test" cargo test -p launcher
+step "eslint" bash -c "cd crates/launcher && npx eslint ."
 step "prettier --check" bash -c "cd crates/launcher && npx prettier --check ."
-step "svelte-check" bash -c "cd crates/launcher && node node_modules/svelte-check/bin/svelte-check --tsconfig ./tsconfig.json"
+step "svelte-check" bash -c "cd crates/launcher && node node_modules/svelte-check/bin/svelte-check --tsconfig ./tsconfig.json --fail-on-warnings"
 step "vite build" bash -c "cd crates/launcher && node node_modules/vite/bin/vite.js build"
+step "npm audit" bash -c "cd crates/launcher && npm audit --audit-level=high"
 # cargo-deny re-fetches the advisory DB on every run, so a lockfile that passed
 # yesterday can fail today. Skipping it locally let RUSTSEC-2026-0285 (rustls)
 # reach CI red on PR #124.

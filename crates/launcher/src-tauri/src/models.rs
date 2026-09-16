@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 // newer build, then opened by an older one) degrades to `Manual` instead of
 // failing the whole file and resetting the user's library.
 #[serde(rename_all = "snake_case", from = "String")]
-pub enum GameSource {
+pub(crate) enum GameSource {
     Steam,
     Epic,
     Gog,
@@ -31,7 +31,7 @@ impl From<String> for GameSource {
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(default)]
-pub struct Game {
+pub(crate) struct Game {
     pub id: String,
     pub name: String,
     pub source: GameSource,
@@ -46,7 +46,7 @@ pub struct Game {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
-pub struct LauncherSettings {
+pub(crate) struct LauncherSettings {
     pub scan_on_startup: bool,
     pub minimize_to_tray: bool,
     pub launch_on_startup: bool,
@@ -90,7 +90,7 @@ where
 // any new top-level field makes every existing state file fail to parse, which
 // resets the library on upgrade.
 #[serde(default)]
-pub struct LauncherState {
+pub(crate) struct LauncherState {
     #[serde(deserialize_with = "games_lenient")]
     pub games: Vec<Game>,
     pub settings: LauncherSettings,

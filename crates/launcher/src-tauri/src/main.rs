@@ -1,10 +1,4 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
-#![deny(clippy::all, clippy::pedantic)]
-#![allow(
-    clippy::module_name_repetitions,
-    clippy::missing_errors_doc,
-    clippy::missing_panics_doc
-)]
 
 mod ai;
 mod commands;
@@ -15,6 +9,7 @@ mod overlay_capture;
 mod process_watch;
 mod secrets;
 mod state;
+mod util;
 
 use ai::AiState;
 use overlay::OverlayState;
@@ -30,13 +25,24 @@ use tauri_plugin_global_shortcut::{Code, GlobalShortcutExt, Modifiers, Shortcut,
 /// Bring the main launcher window to the foreground (restore + focus).
 fn show_main_window(app: &tauri::AppHandle) {
     if let Some(window) = app.get_webview_window("main") {
-        let _ = window.show();
-        let _ = window.unminimize();
-        let _ = window.set_focus();
+        util::log_if_err("show main window", window.show());
+        util::log_if_err("unminimize main window", window.unminimize());
+        util::log_if_err("focus main window", window.set_focus());
     }
 }
 
-#[allow(clippy::too_many_lines)] // Tauri builder + setup is one long, linear wiring.
+#[expect(
+    clippy::too_many_lines,
+    reason = "Tauri builder + setup is one long, linear wiring"
+)]
+#[expect(
+    clippy::exit,
+    reason = "background threads (CLI detection, global-shortcut) keep the process alive unless it force-exits"
+)]
+#[expect(
+    clippy::print_stderr,
+    reason = "these two sites run before the tracing logger is initialised"
+)]
 fn main() {
     // Overlay hotkeys (Ctrl+Shift+G/T/A): modifier chords, not bare F-keys, and
     // not Ctrl+Alt (which equals AltGr on international keyboards).
@@ -44,7 +50,7 @@ fn main() {
     let translate = Shortcut::new(Some(Modifiers::CONTROL | Modifiers::SHIFT), Code::KeyT);
     let quick_ask = Shortcut::new(Some(Modifiers::CONTROL | Modifiers::SHIFT), Code::KeyA);
 
-    tauri::Builder::default()
+    let run_result = tauri::Builder::default()
         // Must be registered first. Two instances would otherwise share one
         // state file with only a per-process lock: their temp-file writes and
         // renames interleave, one publishes the other's snapshot or a truncated
@@ -108,9 +114,11 @@ fn main() {
             let autostart = app.autolaunch();
             let should_autostart = app_state.launcher.lock().settings.launch_on_startup;
             if should_autostart {
-                let _ = autostart.enable();
-            } else {
-                let _ = autostart.disable();
+                util::log_if_err("enable autostart", autostart.enable());
+            } else if let Err(err) = autostart.disable() {
+                // Disabling when no registry entry exists is the normal case on
+                // a fresh install, so this is not worth a warning on every start.
+                tracing::debug!("disable autostart: {err}");
             }
 
             // Register the overlay hotkeys (log + continue on conflict).
@@ -124,15 +132,13 @@ fn main() {
             // claude/codex binaries can take a moment, especially via WSL).
             let detect_handle = app.handle().clone();
             std::thread::spawn(move || {
-                let claude = ai::detect_cli("claude");
-                let codex = ai::detect_cli("codex");
-                let codex_workdir = ai::ensure_codex_workdir(codex);
-                tracing::info!("CLI availability -- claude: {claude:?}, codex: {codex:?}");
-                detect_handle.state::<AiState>().set_cli(ai::CliConfig {
-                    claude,
-                    codex,
-                    codex_workdir,
-                });
+                let cfg = ai::detect_all();
+                tracing::info!(
+                    "CLI availability -- claude: {:?}, codex: {:?}",
+                    cfg.claude,
+                    cfg.codex
+                );
+                detect_handle.state::<AiState>().set_cli(cfg);
             });
 
             // Build system tray (always present, shown/hidden based on setting)
@@ -141,7 +147,11 @@ fn main() {
             let menu = MenuBuilder::new(app).items(&[&show, &quit]).build()?;
 
             TrayIconBuilder::new()
-                .icon(app.default_window_icon().cloned().expect("No app icon"))
+                .icon(
+                    app.default_window_icon()
+                        .cloned()
+                        .ok_or("the bundled window icon is missing")?,
+                )
                 .tooltip("AI Game Companion")
                 .menu(&menu)
                 .on_menu_event(|app, event| match event.id().as_ref() {
@@ -165,7 +175,7 @@ fn main() {
                 // launcher's tray / exit behaviour.
                 if window.label() == "overlay" {
                     api.prevent_close();
-                    let _ = window.hide();
+                    util::log_if_err("hide overlay window", window.hide());
                     return;
                 }
                 let state = window.state::<AppState>();
@@ -173,7 +183,7 @@ fn main() {
                 if minimize_to_tray {
                     // Hide to tray instead of closing.
                     api.prevent_close();
-                    let _ = window.hide();
+                    util::log_if_err("hide main window", window.hide());
                 } else {
                     // Real close: force exit so any background threads (CLI
                     // detection, global-shortcut) do not keep the process alive.
@@ -200,10 +210,17 @@ fn main() {
             commands::ai::recheck_clis,
             overlay::hide_overlay,
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .run(tauri::generate_context!());
+
+    let code = match run_result {
+        Ok(()) => 0,
+        Err(err) => {
+            tracing::error!("the Tauri runtime exited with an error: {err}");
+            1
+        }
+    };
 
     // Tauri's event loop has exited (all windows closed). Force-terminate so no
     // background thread keeps the process alive.
-    std::process::exit(0);
+    std::process::exit(code);
 }

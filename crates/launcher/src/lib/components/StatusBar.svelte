@@ -20,14 +20,14 @@
 </script>
 
 <footer
-  class="h-[34px] flex items-center justify-between px-[18px] shrink-0 border-t border-line font-mono text-[10.5px] text-t-lo"
   style="background: rgba(9, 9, 11, 0.78); backdrop-filter: blur(10px);"
+  class="h-[34px] flex items-center justify-between px-[18px] shrink-0 border-t border-line font-mono text-[10.5px] text-t-lo"
 >
   <div class="flex items-center gap-[14px]">
     <span class="flex items-center gap-1.5">
       <span
-        class="w-1.5 h-1.5 rounded-full"
         style="background: var(--color-ok); box-shadow: 0 0 6px var(--color-ok);"
+        class="w-1.5 h-1.5 rounded-full"
       ></span>
       Watcher active
     </span>

@@ -16,7 +16,7 @@ use super::ChatMessage;
 
 /// Default Claude model when the user has not configured one. Codex ignores the
 /// model (that CLI rejects an explicit `-m`), so no default is needed there.
-pub const DEFAULT_CLAUDE_MODEL: &str = "claude-haiku-4-5";
+pub(super) const DEFAULT_CLAUDE_MODEL: &str = "claude-haiku-4-5";
 
 /// Name of the Codex working directory (used as both the WSL `/tmp/<name>` path
 /// and the Windows `temp_dir().join(<name>)` path).
@@ -27,7 +27,7 @@ const MAX_STREAM_BYTES: usize = 2 * 1024 * 1024;
 const STDERR_TAIL_LINES: usize = 5;
 /// Marker printed by the WSL shell immediately before the CLI runs.
 ///
-/// `bash -ic` sources the user's interactive `.bashrc`, which is where many
+/// `bash -lic` sources the user's interactive `.bashrc`, which is where many
 /// installs put the CLI on PATH -- but it is also where nvm/fastfetch/"you have
 /// mail" banners print, and Codex output is plain text, so those lines were
 /// parsed as the start of the model's answer. Everything up to and including
@@ -41,7 +41,7 @@ const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 
 /// How to invoke a CLI tool.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
-pub enum CliMode {
+pub(crate) enum CliMode {
     /// Not available on this system.
     #[default]
     Unavailable,
@@ -52,12 +52,12 @@ pub enum CliMode {
 }
 
 impl CliMode {
-    pub fn is_available(self) -> bool {
+    pub(crate) const fn is_available(self) -> bool {
         !matches!(self, Self::Unavailable)
     }
 
     /// Human label for where the CLI was detected.
-    pub fn location(self) -> &'static str {
+    pub(crate) const fn location(self) -> &'static str {
         match self {
             Self::Native => "PATH",
             Self::Wsl => "WSL",
@@ -68,7 +68,7 @@ impl CliMode {
 
 /// Cached CLI availability, detected once at startup on a background thread.
 #[derive(Debug, Clone, Default)]
-pub struct CliConfig {
+pub(crate) struct CliConfig {
     pub claude: CliMode,
     pub codex: CliMode,
     pub codex_workdir: String,
@@ -92,6 +92,50 @@ fn silent(cmd: &mut std::process::Command) -> &mut std::process::Command {
     cmd
 }
 
+/// The WSL user's home directory, resolved once.
+///
+/// `wsl.exe -- <cmd>` launched from a Windows process gets no HOME: the shell is
+/// not a login shell and nothing on the Windows side supplies one. `$HOME` is
+/// therefore empty inside every probe, which silently broke two things -- the
+/// Codex workdir resolved to `""`, and `.bashrc` put `/.local/bin` on PATH
+/// instead of `~/.local/bin`, so Claude was reported "Not found" on machines
+/// that have it. The passwd database needs no environment to answer.
+fn wsl_home() -> Option<&'static str> {
+    static HOME: std::sync::OnceLock<Option<String>> = std::sync::OnceLock::new();
+    HOME.get_or_init(|| {
+        let out = windowless(std::process::Command::new("wsl.exe").args([
+            "--",
+            "sh",
+            "-c",
+            r#"getent passwd "$(id -u)" | cut -d: -f6"#,
+        ]))
+        .output()
+        .ok()?;
+        let home = String::from_utf8_lossy(&out.stdout).trim().to_owned();
+        if !out.status.success() || !home.starts_with('/') {
+            tracing::warn!(
+                "Could not resolve the WSL home (exit {}): stdout [{home}], stderr [{}]",
+                out.status,
+                String::from_utf8_lossy(&out.stderr).trim()
+            );
+            return None;
+        }
+        tracing::info!("WSL home resolved: {home}");
+        Some(home)
+    })
+    .as_deref()
+}
+
+/// Hide the console window without touching the pipes, for probes whose output
+/// we actually read. `silent` discards stdout, so a command whose result is read
+/// back through `output()` must use this instead -- that mix-up is what made the
+/// Codex workdir probe return an empty path on every run.
+fn windowless(cmd: &mut std::process::Command) -> &mut std::process::Command {
+    #[cfg(windows)]
+    cmd.creation_flags(CREATE_NO_WINDOW);
+    cmd
+}
+
 /// Apply the Windows no-window flag to a tokio `Command`. No-op on non-Windows
 /// so the launcher crate compiles for the Linux test runner.
 #[allow(unused_variables, clippy::needless_pass_by_ref_mut)]
@@ -100,18 +144,22 @@ fn no_window(cmd: &mut Command) {
     cmd.creation_flags(CREATE_NO_WINDOW);
 }
 
-/// Escape a string for use inside a `bash -c` / `bash -ic` command.
+/// Escape a string for use inside a `bash -c` / `bash -lic` command.
 fn shell_escape(s: &str) -> String {
     format!("'{}'", s.replace('\'', "'\\''"))
 }
 
 /// Check if a CLI tool is available, first natively on the Windows PATH, then
-/// inside WSL, using `bash -ic` so nvm / profile PATH is sourced. `-ic` is
-/// required, not incidental: many installs put the CLI on PATH only in
-/// `.bashrc`, and a login shell does not source it -- measured on this machine,
-/// `-lc` made Codex undetectable. See `WSL_SENTINEL` for how the interactive
-/// shell's banner output is kept out of the model stream.
-pub fn detect_cli(name: &str) -> CliMode {
+/// inside WSL, using `bash -lic`.
+///
+/// Both flags are required, and each was measured from the running launcher:
+/// `-i` sources `.bashrc`, where nvm puts Codex (plain `-lc` made Codex
+/// undetectable), and `-l` sources the profile, where `~/.local/bin` is added --
+/// without it Claude reported "Not found" on a machine that has it installed,
+/// because `wsl.exe -- bash` from a Windows process starts with no HOME and a
+/// bare PATH. See `WSL_SENTINEL` for how the interactive shell's banner output
+/// is kept out of the model stream.
+pub(crate) fn detect_cli(name: &str) -> CliMode {
     let native = silent(std::process::Command::new(name).arg("--version"))
         .status()
         .is_ok_and(|status| status.success());
@@ -121,7 +169,7 @@ pub fn detect_cli(name: &str) -> CliMode {
 
     let version_cmd = format!("{name} --version");
     let wsl =
-        silent(std::process::Command::new("wsl.exe").args(["--", "bash", "-ic", &version_cmd]))
+        silent(std::process::Command::new("wsl.exe").args(["--", "bash", "-lic", &version_cmd]))
             .status()
             .is_ok_and(|status| status.success());
     if wsl {
@@ -131,43 +179,91 @@ pub fn detect_cli(name: &str) -> CliMode {
     CliMode::Unavailable
 }
 
+/// Detect both CLIs and resolve the Codex working directory in one pass.
+///
+/// Codex without a usable workdir is reported `Unavailable`: the binary is
+/// there but cannot answer, and offering it anyway surfaces as a bare "No such
+/// file or directory" from the CLI long after the user picked the provider.
+pub(crate) fn detect_all() -> CliConfig {
+    let claude = detect_cli("claude");
+    let detected_codex = detect_cli("codex");
+    let (codex, codex_workdir) = ensure_codex_workdir(detected_codex).map_or_else(
+        || (CliMode::Unavailable, String::new()),
+        |dir| (detected_codex, dir),
+    );
+    CliConfig {
+        claude,
+        codex,
+        codex_workdir,
+    }
+}
+
 /// Codex requires a git directory -- ensure a workdir with `git init` exists.
-pub fn ensure_codex_workdir(mode: CliMode) -> String {
-    if let CliMode::Wsl = mode {
-        // Under the user's HOME, not shared /tmp. Codex reads instruction files
+///
+/// `None` means no usable directory: the caller must then treat Codex as
+/// unavailable rather than spawn it with a path that does not exist, which the
+/// CLI reports only as a bare "No such file or directory".
+pub(crate) fn ensure_codex_workdir(mode: CliMode) -> Option<String> {
+    if mode == CliMode::Wsl {
+        // Under the user's home, not shared /tmp. Codex reads instruction files
         // (AGENTS.md) from its working directory, and a fixed
         // `/tmp/aigc-codex-workdir` can be pre-created by any other local user
         // -- the `[ -d dir/.git ]` guard then no-ops and every Codex answer is
         // steered by their file. `-s read-only` blocks writes, not reads.
+        //
+        // The path is interpolated, never `$HOME`: a `$VAR` written into a
+        // `wsl.exe -- bash -lic` command line reaches bash empty (measured -- an
+        // `export HOME=...` in the same script does not even fix it), which is
+        // what made this resolve to "" and Codex die on a missing directory.
+        let home = wsl_home()?;
+        let dir = format!("{home}/.cache/{CODEX_WORKDIR}");
+        let quoted = shell_escape(&dir);
         let script = format!(
-            "d=\"$HOME/.cache/{CODEX_WORKDIR}\"; mkdir -p \"$d\" && chmod 700 \"$d\" && \
-             {{ [ -d \"$d/.git\" ] || git -C \"$d\" init >/dev/null; }}; printf %s \"$d\""
+            "mkdir -p {quoted} && chmod 700 {quoted} && \
+             {{ [ -d {quoted}/.git ] || git -C {quoted} init >/dev/null; }}"
         );
-        let resolved =
-            silent(std::process::Command::new("wsl.exe").args(["--", "bash", "-ic", &script]))
-                .output()
-                .ok()
-                .filter(|out| out.status.success())
-                .map(|out| String::from_utf8_lossy(&out.stdout).trim().to_owned())
-                .filter(|path| !path.is_empty());
-
-        return resolved.unwrap_or_else(|| {
-            tracing::warn!("Could not resolve the WSL Codex workdir; falling back to /tmp");
-            format!("/tmp/{CODEX_WORKDIR}")
-        });
+        // `windowless`, not `silent`: `silent` discards stderr, and a failure
+        // here must say why -- otherwise the only symptom is Codex exiting with
+        // "No such file or directory" long afterwards.
+        let output =
+            windowless(std::process::Command::new("wsl.exe").args(["--", "bash", "-lic", &script]))
+                .output();
+        return match output {
+            Ok(out) if out.status.success() => Some(dir),
+            Ok(out) => {
+                tracing::warn!(
+                    "Preparing the Codex workdir {dir} failed ({}): {}",
+                    out.status,
+                    String::from_utf8_lossy(&out.stderr).trim()
+                );
+                None
+            }
+            Err(err) => {
+                tracing::warn!("Could not run the Codex workdir setup: {err}");
+                None
+            }
+        };
     }
 
     let dir = std::env::temp_dir().join(CODEX_WORKDIR);
     if !dir.exists() {
-        let _ = std::fs::create_dir_all(&dir);
-        let _ = silent(
-            std::process::Command::new("git")
-                .args(["init"])
-                .current_dir(&dir),
-        )
-        .status();
+        crate::util::log_if_err("create the Codex workdir", std::fs::create_dir_all(&dir));
+        crate::util::log_if_err(
+            "git init the Codex workdir",
+            silent(
+                std::process::Command::new("git")
+                    .args(["init"])
+                    .current_dir(&dir),
+            )
+            .status(),
+        );
     }
-    dir.to_string_lossy().into_owned()
+    if dir.is_dir() {
+        Some(dir.to_string_lossy().into_owned())
+    } else {
+        tracing::warn!("Codex workdir {} could not be created", dir.display());
+        None
+    }
 }
 
 /// Validate a model name: ASCII alphanumeric + hyphens, dots, underscores.
@@ -328,7 +424,7 @@ fn parse_codex_line(line: &str) -> Option<Parsed> {
 }
 
 /// Stream a Claude response by spawning the Claude CLI in stream-json mode.
-pub async fn stream_claude<F>(
+pub(super) async fn stream_claude<F>(
     cfg: &CliConfig,
     model: &str,
     system_prompt: &str,
@@ -337,14 +433,14 @@ pub async fn stream_claude<F>(
     on_chunk: F,
 ) -> Result<(), String>
 where
-    F: FnMut(String) -> Result<(), String>,
+    F: FnMut(String) -> Result<(), String> + Send,
 {
     if !cfg.claude.is_available() {
         return Err("Claude CLI is not available on this system.".to_owned());
     }
     validate_model_name(model)?;
 
-    let mut cmd = if let CliMode::Wsl = cfg.claude {
+    let mut cmd = if cfg.claude == CliMode::Wsl {
         let claude_args = format!(
             "claude -p --input-format stream-json --output-format stream-json \
              --verbose --include-partial-messages --tools '' \
@@ -353,7 +449,7 @@ where
             shell_escape(system_prompt),
         );
         let mut c = Command::new("wsl.exe");
-        c.args(["--", "bash", "-ic", &claude_args]);
+        c.args(["--", "bash", "-lic", &claude_args]);
         c
     } else {
         let mut c = Command::new("claude");
@@ -383,27 +479,27 @@ where
 }
 
 /// Stream a Codex response by spawning the Codex CLI in `exec` mode.
-pub async fn stream_codex<F>(
+pub(super) async fn stream_codex<F>(
     cfg: &CliConfig,
     system_prompt: &str,
     messages: &[ChatMessage],
     on_chunk: F,
 ) -> Result<(), String>
 where
-    F: FnMut(String) -> Result<(), String>,
+    F: FnMut(String) -> Result<(), String> + Send,
 {
     if !cfg.codex.is_available() {
         return Err("Codex CLI is not available on this system.".to_owned());
     }
 
     let work_dir = cfg.codex_workdir.as_str();
-    let mut cmd = if let CliMode::Wsl = cfg.codex {
+    let mut cmd = if cfg.codex == CliMode::Wsl {
         let codex_cmd = format!(
             "printf '%s\\n' {WSL_SENTINEL}; codex -a never -s read-only -C {} exec --skip-git-repo-check",
             shell_escape(work_dir),
         );
         let mut c = Command::new("wsl.exe");
-        c.args(["--", "bash", "-ic", &codex_cmd]);
+        c.args(["--", "bash", "-lic", &codex_cmd]);
         c
     } else {
         let mut c = Command::new("codex");
@@ -447,8 +543,8 @@ async fn run_cli<F, P>(
     skip_until: Option<&str>,
 ) -> Result<(), String>
 where
-    F: FnMut(String) -> Result<(), String>,
-    P: Fn(&str) -> Option<Parsed>,
+    F: FnMut(String) -> Result<(), String> + Send,
+    P: Fn(&str) -> Option<Parsed> + Send + Sync,
 {
     cmd.stdin(std::process::Stdio::piped());
     cmd.stdout(std::process::Stdio::piped());
@@ -471,8 +567,11 @@ where
     let stderr = child.stderr.take();
 
     let write_fut = async move {
-        let _ = stdin.write_all(input.as_bytes()).await;
-        let _ = stdin.flush().await;
+        crate::util::log_if_err(
+            "write the CLI prompt",
+            stdin.write_all(input.as_bytes()).await,
+        );
+        crate::util::log_if_err("flush the CLI prompt", stdin.flush().await);
         // Dropping stdin closes the pipe so the CLI knows the input is complete.
     };
 
@@ -572,6 +671,11 @@ fn cli_failure_message(label: &str, stderr_tail: &[String]) -> String {
 
 #[cfg(test)]
 mod tests {
+    #![allow(
+        clippy::unwrap_used,
+        reason = "a panic is how a test reports a failed assumption"
+    )]
+
     use super::*;
 
     fn msg(role: &str, content: &str) -> ChatMessage {

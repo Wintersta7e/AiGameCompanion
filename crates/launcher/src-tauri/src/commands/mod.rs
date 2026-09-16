@@ -1,3 +1,3 @@
-pub mod ai;
-pub mod games;
-pub mod settings;
+pub(crate) mod ai;
+pub(crate) mod games;
+pub(crate) mod settings;

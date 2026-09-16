@@ -9,7 +9,21 @@
     "checkJs": true,
     "isolatedModules": true,
     "moduleDetection": "force",
-    "strict": true
+
+    "strict": true,
+    "noUncheckedIndexedAccess": true,
+    "exactOptionalPropertyTypes": true,
+    "noImplicitOverride": true,
+    "noImplicitReturns": true,
+    "noFallthroughCasesInSwitch": true,
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
+    "noPropertyAccessFromIndexSignature": true,
+    "allowUnreachableCode": false,
+    "allowUnusedLabels": false,
+    "verbatimModuleSyntax": true,
+    "erasableSyntaxOnly": true,
+    "forceConsistentCasingInFileNames": true
   },
   "include": ["src/**/*.ts", "src/**/*.svelte"]
 }

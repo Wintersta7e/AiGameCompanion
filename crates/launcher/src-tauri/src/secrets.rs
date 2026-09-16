@@ -10,7 +10,7 @@ const GEMINI_USER: &str = "gemini-api-key";
 
 /// Store the Gemini API key in OS secret storage. An empty key clears it.
 #[cfg(windows)]
-pub fn set_gemini_key(key: &str) -> Result<(), String> {
+pub(crate) fn set_gemini_key(key: &str) -> Result<(), String> {
     let entry = keyring::Entry::new(SERVICE, GEMINI_USER)
         .map_err(|e| format!("secret store error: {e}"))?;
     if key.is_empty() {
@@ -27,7 +27,7 @@ pub fn set_gemini_key(key: &str) -> Result<(), String> {
 
 /// Read the Gemini API key from OS secret storage, if one is stored.
 #[cfg(windows)]
-pub fn gemini_key() -> Option<String> {
+pub(crate) fn gemini_key() -> Option<String> {
     let entry = keyring::Entry::new(SERVICE, GEMINI_USER).ok()?;
     match entry.get_password() {
         // Return the TRIMMED key: a legacy credential stored with a trailing
@@ -48,11 +48,11 @@ pub fn gemini_key() -> Option<String> {
 }
 
 #[cfg(not(windows))]
-pub fn set_gemini_key(_key: &str) -> Result<(), String> {
+pub(crate) fn set_gemini_key(_key: &str) -> Result<(), String> {
     Err("Secret storage is only available on Windows.".to_owned())
 }
 
 #[cfg(not(windows))]
-pub fn gemini_key() -> Option<String> {
+pub(crate) fn gemini_key() -> Option<String> {
     None
 }

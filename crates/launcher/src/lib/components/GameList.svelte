@@ -26,8 +26,8 @@
 </script>
 
 <aside
-  class="w-[290px] shrink-0 flex flex-col overflow-hidden border-r border-line"
   style="background: rgba(11, 11, 14, 0.55);"
+  class="w-[290px] shrink-0 flex flex-col overflow-hidden border-r border-line"
 >
   <!-- header -->
   <div class="px-[15px] pt-[18px] pb-3 shrink-0">
@@ -36,42 +36,42 @@
         >LINKED GAMES</span
       >
       <span
-        class="font-mono text-[10px] text-t-mid px-2 py-0.5 rounded-[7px]"
         style="background: rgba(255,255,255,0.045);"
+        class="font-mono text-[10px] text-t-mid px-2 py-0.5 rounded-[7px]"
       >
         {totalGames}
       </span>
     </div>
     <div
-      class="flex items-center gap-2 px-3 py-2 rounded-[10px] border transition-all duration-200"
       style="
         background: {searchFocused ? 'rgba(255,255,255,0.055)' : 'rgba(255,255,255,0.035)'};
         border-color: {searchFocused
         ? 'color-mix(in oklab, var(--accent) 30%, transparent)'
         : 'var(--color-line)'};
       "
+      class="flex items-center gap-2 px-3 py-2 rounded-[10px] border transition-all duration-200"
     >
       <svg
-        width="14"
-        height="14"
-        viewBox="0 0 24 24"
-        fill="none"
-        stroke="currentColor"
-        stroke-width="2.4"
-        stroke-linecap="round"
         class="text-t-lo shrink-0"
+        fill="none"
+        height="14"
+        stroke="currentColor"
+        stroke-linecap="round"
+        stroke-width="2.4"
+        viewBox="0 0 24 24"
+        width="14"
       >
-        <circle cx="11" cy="11" r="8" /><line x1="21" y1="21" x2="16.65" y2="16.65" />
+        <circle cx="11" cy="11" r="8" /><line x1="21" x2="16.65" y1="21" y2="16.65" />
       </svg>
       <input
-        type="text"
-        placeholder="Search library…"
-        value={currentSearch}
-        oninput={onSearch}
-        onfocus={() => (searchFocused = true)}
-        onblur={() => (searchFocused = false)}
-        aria-label="Search games"
         class="bg-transparent border-none outline-none text-t-hi font-body text-[12.5px] w-full placeholder:text-t-lo"
+        aria-label="Search games"
+        onblur={() => (searchFocused = false)}
+        onfocus={() => (searchFocused = true)}
+        oninput={onSearch}
+        placeholder="Search library…"
+        type="text"
+        value={currentSearch}
       />
     </div>
   </div>
@@ -91,7 +91,7 @@
       </div>
     {:else if filteredGames.length > 0}
       {#each filteredGames as game, i (game.id)}
-        <GameListItem {game} selected={game.id === selectedId} index={i} />
+        <GameListItem {game} index={i} selected={game.id === selectedId} />
       {/each}
     {:else}
       <div class="flex items-center justify-center h-full text-center px-4">
@@ -101,9 +101,10 @@
           <div>
             <div class="text-t-lo text-sm font-display mb-3">No games bound yet.</div>
             <button
-              onclick={() => scanGames()}
-              class="py-2 px-4 rounded-[10px] bg-transparent text-[0.8rem] font-display font-semibold tracking-wide uppercase cursor-pointer transition-all duration-150"
               style="border: 1px solid var(--color-line); color: var(--accent);"
+              class="py-2 px-4 rounded-[10px] bg-transparent text-[0.8rem] font-display font-semibold tracking-wide uppercase cursor-pointer transition-all duration-150"
+              onclick={() => scanGames()}
+              type="button"
             >
               Scan for games
             </button>
@@ -115,10 +116,10 @@
 
   <!-- bind -->
   <button
-    onclick={() => scanGames()}
-    disabled={isLoading}
-    class="m-3 py-[11px] rounded-[11px] bg-transparent font-display text-[11.5px] font-medium tracking-[0.06em] flex items-center justify-center gap-2 cursor-pointer transition-all duration-150 shrink-0"
     style="border: 1px dashed var(--color-line); color: var(--color-t-lo);"
+    class="m-3 py-[11px] rounded-[11px] bg-transparent font-display text-[11.5px] font-medium tracking-[0.06em] flex items-center justify-center gap-2 cursor-pointer transition-all duration-150 shrink-0"
+    disabled={isLoading}
+    onclick={() => scanGames()}
     onmouseenter={(e) => {
       const el = e.currentTarget as HTMLElement;
       el.style.color = 'var(--accent)';
@@ -131,17 +132,18 @@
       el.style.borderColor = 'var(--color-line)';
       el.style.background = 'transparent';
     }}
+    type="button"
   >
     <svg
-      width="13"
-      height="13"
-      viewBox="0 0 24 24"
       fill="none"
+      height="13"
       stroke="currentColor"
-      stroke-width="2.4"
       stroke-linecap="round"
+      stroke-width="2.4"
+      viewBox="0 0 24 24"
+      width="13"
     >
-      <line x1="12" y1="5" x2="12" y2="19" /><line x1="5" y1="12" x2="19" y2="12" />
+      <line x1="12" x2="12" y1="5" y2="19" /><line x1="5" x2="19" y1="12" y2="12" />
     </svg>
     {isLoading ? 'Scanning…' : 'Bind a new game'}
   </button>

@@ -4,6 +4,30 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## 2.0.1 - 2026-09-16
+
+### Fixed
+
+- **Claude and Codex are reachable again.** Both CLI providers are launched
+  through WSL, and the launcher probed them with a shell that sources neither
+  the login profile nor, in one code path, anything usable: Claude was reported
+  "Not found" on machines that have it, and Codex failed on every request with
+  "No such file or directory". Codex under WSL had never worked. Probing now
+  uses a login + interactive shell, and its working directory is prepared from
+  an absolute path rather than one built from an environment variable that
+  arrives empty.
+- A provider whose working directory cannot be prepared is reported
+  unavailable, instead of being offered and then failing on the first question.
+- The launcher no longer warns on every start about disabling an autostart
+  entry that was never created.
+
+### Changed
+
+- Dependencies refreshed, and the project now builds under a much stricter lint
+  set (clippy pedantic/nursery/cargo plus type-aware linting for the UI). This
+  fixed several latent defects, including ignored errors that had been hiding
+  exactly the failures above.
+
 ## 2.0.0 - 2026-07-01
 
 A ground-up rewrite. The DLL-injection overlay is replaced by an external,

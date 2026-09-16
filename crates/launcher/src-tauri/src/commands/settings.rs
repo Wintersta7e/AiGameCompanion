@@ -7,14 +7,14 @@ use crate::state::AppState;
 
 #[tauri::command]
 #[allow(clippy::needless_pass_by_value)]
-pub fn get_settings(state: State<'_, AppState>) -> LauncherSettings {
+pub(crate) fn get_settings(state: State<'_, AppState>) -> LauncherSettings {
     let launcher = state.launcher.lock();
     launcher.settings.clone()
 }
 
 #[tauri::command]
 #[allow(clippy::needless_pass_by_value)]
-pub fn update_settings(
+pub(crate) fn update_settings(
     settings: LauncherSettings,
     state: State<'_, AppState>,
     app: AppHandle,
@@ -44,7 +44,7 @@ pub fn update_settings(
 /// Open an https URL in the default browser (Settings "Get a key" / docs links).
 #[tauri::command]
 #[allow(clippy::needless_pass_by_value)]
-pub fn open_url(app: AppHandle, url: String) -> Result<(), String> {
+pub(crate) fn open_url(app: AppHandle, url: String) -> Result<(), String> {
     if !url.starts_with("https://") {
         return Err("Only https links can be opened.".to_owned());
     }
@@ -56,7 +56,7 @@ pub fn open_url(app: AppHandle, url: String) -> Result<(), String> {
 /// Open the launcher's data folder (state + logs live here).
 #[tauri::command]
 #[allow(clippy::needless_pass_by_value)]
-pub fn open_config_folder(app: AppHandle) -> Result<(), String> {
+pub(crate) fn open_config_folder(app: AppHandle) -> Result<(), String> {
     let dir = app
         .path()
         .app_data_dir()
