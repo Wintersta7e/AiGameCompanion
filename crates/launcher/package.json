@@ -20,7 +20,7 @@
     "@tailwindcss/vite": "^4",
     "@tauri-apps/cli": "^2",
     "@tsconfig/svelte": "^5.0.8",
-    "@types/node": "^22.20.3",
+    "@types/node": "^26.5.1",
     "eslint": "^10.6.0",
     "eslint-plugin-svelte": "^3.20.0",
     "globals": "^17.7.0",
