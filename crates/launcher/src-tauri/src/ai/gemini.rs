@@ -17,7 +17,7 @@ const MAX_OUTPUT_TOKENS: u32 = 4_096;
 /// Gemini API key + model, read transitionally from `config.toml` next to the
 /// executable (Phase 6 replaces this with the Settings UI + secret storage).
 #[derive(Debug)]
-pub struct GeminiConfig {
+pub(super) struct GeminiConfig {
     pub api_key: String,
     pub model: String,
 }
@@ -135,7 +135,7 @@ const DEFAULT_MODEL: &str = "gemini-2.5-flash";
 /// Load the Gemini configuration. The API key prefers OS secret storage (set via
 /// Settings), falling back to a legacy `config.toml` next to the executable; the
 /// model falls back to a default. `config.toml` is therefore optional.
-pub fn load_config() -> Result<GeminiConfig, String> {
+pub(super) fn load_config() -> Result<GeminiConfig, String> {
     let file = read_config_file();
     let api_key = crate::secrets::gemini_key()
         .or_else(|| {
@@ -174,7 +174,7 @@ fn gemini_role(role: &str) -> &'static str {
 ///
 /// `screenshot` is a base64-encoded PNG attached to the most recent user turn.
 #[allow(clippy::too_many_lines)] // linear request-build + SSE-parse pipeline
-pub async fn stream<F>(
+pub(super) async fn stream<F>(
     messages: &[ChatMessage],
     system_prompt: &str,
     screenshot: Option<String>,
@@ -386,6 +386,11 @@ fn stream_error_message(json: &str) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
+    #![allow(
+        clippy::expect_used,
+        reason = "a panic is how a test reports a failed assumption"
+    )]
+
     use super::{process_sse_lines, stream_error_message, validate_model};
 
     #[test]

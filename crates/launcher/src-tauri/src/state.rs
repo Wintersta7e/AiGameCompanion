@@ -5,7 +5,7 @@ use parking_lot::Mutex;
 
 use crate::models::LauncherState;
 
-pub struct AppState {
+pub(crate) struct AppState {
     pub launcher: Mutex<LauncherState>,
     pub state_path: PathBuf,
     /// Game ids with an active play session (a running process being watched).
@@ -17,11 +17,14 @@ pub struct AppState {
 }
 
 impl AppState {
-    pub fn load(state_path: PathBuf) -> Self {
+    pub(crate) fn load(state_path: PathBuf) -> Self {
         // Recover from interrupted atomic write (tmp file left behind)
         let tmp_path = state_path.with_extension("json.tmp");
         if !state_path.exists() && tmp_path.exists() {
-            let _ = std::fs::rename(&tmp_path, &state_path);
+            crate::util::log_if_err(
+                "recover the interrupted state write",
+                std::fs::rename(&tmp_path, &state_path),
+            );
         }
 
         // `Path::exists()` reports false for any metadata error, including
@@ -58,7 +61,7 @@ impl AppState {
         }
     }
 
-    pub fn save(&self) -> Result<(), String> {
+    pub(crate) fn save(&self) -> Result<(), String> {
         // Serialize concurrent saves so they cannot clobber each other's temp file.
         let _write = self.save_lock.lock();
         // Clone state and drop lock before file I/O
@@ -91,6 +94,12 @@ fn back_up(state_path: &std::path::Path) {
 
 #[cfg(test)]
 mod tests {
+    #![allow(
+        clippy::unwrap_used,
+        let_underscore_drop,
+        reason = "a panic is how a test reports a failed assumption, and test cleanup is best-effort"
+    )]
+
     use super::*;
     use crate::models::{Game, GameSource};
     use std::path::Path;

@@ -10,7 +10,7 @@ use crate::state::AppState;
 
 #[tauri::command]
 #[allow(clippy::needless_pass_by_value)]
-pub fn get_games(state: State<'_, AppState>) -> Vec<Game> {
+pub(crate) fn get_games(state: State<'_, AppState>) -> Vec<Game> {
     let launcher = state.launcher.lock();
     launcher.games.clone()
 }
@@ -59,12 +59,14 @@ fn merge_scan(existing: &[Game], outcome: ScanOutcome) -> Vec<Game> {
 }
 
 #[tauri::command]
-pub async fn scan_games(state: State<'_, AppState>) -> Result<Vec<Game>, String> {
+pub(crate) async fn scan_games(state: State<'_, AppState>) -> Result<Vec<Game>, String> {
     tracing::info!("scan_games: starting Steam discovery");
     let (tx, rx) = tokio::sync::oneshot::channel();
     std::thread::spawn(move || {
         let result = discovery::steam::discover_steam_games();
-        let _ = tx.send(result);
+        if tx.send(result).is_err() {
+            tracing::warn!("Steam scan finished after the caller went away");
+        }
     });
     let outcome = rx.await.map_err(|e| format!("Scan task failed: {e}"))?;
     tracing::info!(
@@ -84,7 +86,7 @@ pub async fn scan_games(state: State<'_, AppState>) -> Result<Vec<Game>, String>
 }
 
 #[tauri::command]
-pub async fn launch_game(game_id: String, app: tauri::AppHandle) -> Result<String, String> {
+pub(crate) async fn launch_game(game_id: String, app: tauri::AppHandle) -> Result<String, String> {
     // Reserve the session slot atomically (guard + insert) so two rapid launches
     // cannot both start the same game.
     {
@@ -162,7 +164,7 @@ fn do_launch(app: &tauri::AppHandle, game_id: &str) -> Result<(), String> {
     // running-flag (keyed by appid): authoritative, and no exe guessing. The
     // launch branch above already validated the appid is present + all-digits.
     if game.source == GameSource::Steam {
-        let app_id = game.source_id.clone().unwrap_or_default();
+        let app_id = game.source_id.unwrap_or_default();
         crate::process_watch::spawn_steam_watch(app.clone(), game_id.to_owned(), app_id);
     } else {
         // Non-Steam: watch by executable name, resolving it on demand if needed.
@@ -186,7 +188,7 @@ fn do_launch(app: &tauri::AppHandle, game_id: &str) -> Result<(), String> {
         }
         // No process name to watch -- reset to idle (the game did launch).
         if exe_name.is_empty() {
-            let _ = app.emit("game-finished", game_id);
+            crate::util::log_if_err("emit game-finished", app.emit("game-finished", game_id));
             state.active_sessions.lock().remove(game_id);
         } else {
             crate::process_watch::spawn_game_watch(app.clone(), game_id.to_owned(), exe_name);
@@ -218,7 +220,7 @@ fn companion_dir() -> Result<std::path::PathBuf, String> {
 
 #[tauri::command]
 #[allow(clippy::needless_pass_by_value)]
-pub fn open_game_config(app: tauri::AppHandle) -> Result<(), String> {
+pub(crate) fn open_game_config(app: tauri::AppHandle) -> Result<(), String> {
     let dir = companion_dir()?;
     let config_path = dir.join("config.toml");
     if config_path.exists() {
@@ -232,7 +234,7 @@ pub fn open_game_config(app: tauri::AppHandle) -> Result<(), String> {
 
 #[tauri::command]
 #[allow(clippy::needless_pass_by_value)]
-pub fn open_game_logs(app: tauri::AppHandle) -> Result<(), String> {
+pub(crate) fn open_game_logs(app: tauri::AppHandle) -> Result<(), String> {
     let log_dir = app
         .path()
         .app_data_dir()
@@ -249,6 +251,11 @@ pub fn open_game_logs(app: tauri::AppHandle) -> Result<(), String> {
 
 #[cfg(test)]
 mod tests {
+    #![allow(
+        clippy::unwrap_used,
+        reason = "a panic is how a test reports a failed assumption"
+    )]
+
     use super::{merge_scan, ScanOutcome};
     use crate::models::{Game, GameSource};
 

@@ -16,7 +16,7 @@ use super::ChatMessage;
 
 /// Default Claude model when the user has not configured one. Codex ignores the
 /// model (that CLI rejects an explicit `-m`), so no default is needed there.
-pub const DEFAULT_CLAUDE_MODEL: &str = "claude-haiku-4-5";
+pub(super) const DEFAULT_CLAUDE_MODEL: &str = "claude-haiku-4-5";
 
 /// Name of the Codex working directory (used as both the WSL `/tmp/<name>` path
 /// and the Windows `temp_dir().join(<name>)` path).
@@ -41,7 +41,7 @@ const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 
 /// How to invoke a CLI tool.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
-pub enum CliMode {
+pub(crate) enum CliMode {
     /// Not available on this system.
     #[default]
     Unavailable,
@@ -52,12 +52,12 @@ pub enum CliMode {
 }
 
 impl CliMode {
-    pub fn is_available(self) -> bool {
+    pub(crate) const fn is_available(self) -> bool {
         !matches!(self, Self::Unavailable)
     }
 
     /// Human label for where the CLI was detected.
-    pub fn location(self) -> &'static str {
+    pub(crate) const fn location(self) -> &'static str {
         match self {
             Self::Native => "PATH",
             Self::Wsl => "WSL",
@@ -68,7 +68,7 @@ impl CliMode {
 
 /// Cached CLI availability, detected once at startup on a background thread.
 #[derive(Debug, Clone, Default)]
-pub struct CliConfig {
+pub(crate) struct CliConfig {
     pub claude: CliMode,
     pub codex: CliMode,
     pub codex_workdir: String,
@@ -111,7 +111,7 @@ fn shell_escape(s: &str) -> String {
 /// `.bashrc`, and a login shell does not source it -- measured on this machine,
 /// `-lc` made Codex undetectable. See `WSL_SENTINEL` for how the interactive
 /// shell's banner output is kept out of the model stream.
-pub fn detect_cli(name: &str) -> CliMode {
+pub(crate) fn detect_cli(name: &str) -> CliMode {
     let native = silent(std::process::Command::new(name).arg("--version"))
         .status()
         .is_ok_and(|status| status.success());
@@ -132,8 +132,8 @@ pub fn detect_cli(name: &str) -> CliMode {
 }
 
 /// Codex requires a git directory -- ensure a workdir with `git init` exists.
-pub fn ensure_codex_workdir(mode: CliMode) -> String {
-    if let CliMode::Wsl = mode {
+pub(crate) fn ensure_codex_workdir(mode: CliMode) -> String {
+    if mode == CliMode::Wsl {
         // Under the user's HOME, not shared /tmp. Codex reads instruction files
         // (AGENTS.md) from its working directory, and a fixed
         // `/tmp/aigc-codex-workdir` can be pre-created by any other local user
@@ -159,13 +159,16 @@ pub fn ensure_codex_workdir(mode: CliMode) -> String {
 
     let dir = std::env::temp_dir().join(CODEX_WORKDIR);
     if !dir.exists() {
-        let _ = std::fs::create_dir_all(&dir);
-        let _ = silent(
-            std::process::Command::new("git")
-                .args(["init"])
-                .current_dir(&dir),
-        )
-        .status();
+        crate::util::log_if_err("create the Codex workdir", std::fs::create_dir_all(&dir));
+        crate::util::log_if_err(
+            "git init the Codex workdir",
+            silent(
+                std::process::Command::new("git")
+                    .args(["init"])
+                    .current_dir(&dir),
+            )
+            .status(),
+        );
     }
     dir.to_string_lossy().into_owned()
 }
@@ -328,7 +331,7 @@ fn parse_codex_line(line: &str) -> Option<Parsed> {
 }
 
 /// Stream a Claude response by spawning the Claude CLI in stream-json mode.
-pub async fn stream_claude<F>(
+pub(super) async fn stream_claude<F>(
     cfg: &CliConfig,
     model: &str,
     system_prompt: &str,
@@ -337,14 +340,14 @@ pub async fn stream_claude<F>(
     on_chunk: F,
 ) -> Result<(), String>
 where
-    F: FnMut(String) -> Result<(), String>,
+    F: FnMut(String) -> Result<(), String> + Send,
 {
     if !cfg.claude.is_available() {
         return Err("Claude CLI is not available on this system.".to_owned());
     }
     validate_model_name(model)?;
 
-    let mut cmd = if let CliMode::Wsl = cfg.claude {
+    let mut cmd = if cfg.claude == CliMode::Wsl {
         let claude_args = format!(
             "claude -p --input-format stream-json --output-format stream-json \
              --verbose --include-partial-messages --tools '' \
@@ -383,21 +386,21 @@ where
 }
 
 /// Stream a Codex response by spawning the Codex CLI in `exec` mode.
-pub async fn stream_codex<F>(
+pub(super) async fn stream_codex<F>(
     cfg: &CliConfig,
     system_prompt: &str,
     messages: &[ChatMessage],
     on_chunk: F,
 ) -> Result<(), String>
 where
-    F: FnMut(String) -> Result<(), String>,
+    F: FnMut(String) -> Result<(), String> + Send,
 {
     if !cfg.codex.is_available() {
         return Err("Codex CLI is not available on this system.".to_owned());
     }
 
     let work_dir = cfg.codex_workdir.as_str();
-    let mut cmd = if let CliMode::Wsl = cfg.codex {
+    let mut cmd = if cfg.codex == CliMode::Wsl {
         let codex_cmd = format!(
             "printf '%s\\n' {WSL_SENTINEL}; codex -a never -s read-only -C {} exec --skip-git-repo-check",
             shell_escape(work_dir),
@@ -447,8 +450,8 @@ async fn run_cli<F, P>(
     skip_until: Option<&str>,
 ) -> Result<(), String>
 where
-    F: FnMut(String) -> Result<(), String>,
-    P: Fn(&str) -> Option<Parsed>,
+    F: FnMut(String) -> Result<(), String> + Send,
+    P: Fn(&str) -> Option<Parsed> + Send + Sync,
 {
     cmd.stdin(std::process::Stdio::piped());
     cmd.stdout(std::process::Stdio::piped());
@@ -471,8 +474,11 @@ where
     let stderr = child.stderr.take();
 
     let write_fut = async move {
-        let _ = stdin.write_all(input.as_bytes()).await;
-        let _ = stdin.flush().await;
+        crate::util::log_if_err(
+            "write the CLI prompt",
+            stdin.write_all(input.as_bytes()).await,
+        );
+        crate::util::log_if_err("flush the CLI prompt", stdin.flush().await);
         // Dropping stdin closes the pipe so the CLI knows the input is complete.
     };
 
@@ -572,6 +578,11 @@ fn cli_failure_message(label: &str, stderr_tail: &[String]) -> String {
 
 #[cfg(test)]
 mod tests {
+    #![allow(
+        clippy::unwrap_used,
+        reason = "a panic is how a test reports a failed assumption"
+    )]
+
     use super::*;
 
     fn msg(role: &str, content: &str) -> ChatMessage {

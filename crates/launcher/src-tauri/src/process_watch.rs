@@ -20,7 +20,7 @@ use tauri::AppHandle;
 
 /// Watch a Steam game by appid via Steam's registry running-flag.
 #[cfg(windows)]
-pub fn spawn_steam_watch(app: AppHandle, game_id: String, app_id: String) {
+pub(crate) fn spawn_steam_watch(app: AppHandle, game_id: String, app_id: String) {
     std::thread::spawn(move || imp::watch_steam(&app, &game_id, &app_id));
 }
 
@@ -29,7 +29,7 @@ pub fn spawn_steam_watch(_app: AppHandle, _game_id: String, _app_id: String) {}
 
 /// Watch a non-Steam game by finding its process by executable name.
 #[cfg(windows)]
-pub fn spawn_game_watch(app: AppHandle, game_id: String, exe_name: String) {
+pub(crate) fn spawn_game_watch(app: AppHandle, game_id: String, exe_name: String) {
     std::thread::spawn(move || imp::watch_exe(&app, &game_id, &exe_name));
 }
 
@@ -68,14 +68,14 @@ mod imp {
     const MAX_SESSION: Duration = Duration::from_hours(24);
 
     /// Watch a Steam game via `HKCU\Software\Valve\Steam\Apps\<appid>\Running`.
-    pub fn watch_steam(app: &AppHandle, game_id: &str, app_id: &str) {
+    pub(super) fn watch_steam(app: &AppHandle, game_id: &str, app_id: &str) {
         if !wait_until(FIND_TIMEOUT, FIND_POLL, || steam_running(app_id)) {
             // Never started (long update, or cancelled at the pre-launch dialog).
             finish_session(app, game_id, 0);
             return;
         }
         let started = Instant::now();
-        let _ = app.emit("game-linked", game_id);
+        crate::util::log_if_err("emit game-linked", app.emit("game-linked", game_id));
         while steam_running(app_id) {
             // Steam crashing or being force-killed leaves `Running` set to 1
             // forever. Without this cap the loop never exits, the session
@@ -94,14 +94,14 @@ mod imp {
     }
 
     /// Watch a non-Steam game by its executable image name.
-    pub fn watch_exe(app: &AppHandle, game_id: &str, exe_name: &str) {
+    pub(super) fn watch_exe(app: &AppHandle, game_id: &str, exe_name: &str) {
         let Some(pid) = wait_until_some(FIND_TIMEOUT, FIND_POLL, || find_pid(exe_name)) else {
             // The process never appeared (slow update, wrong exe, ...).
             finish_session(app, game_id, 0);
             return;
         };
         let started = Instant::now();
-        let _ = app.emit("game-linked", game_id);
+        crate::util::log_if_err("emit game-linked", app.emit("game-linked", game_id));
         wait_for_exit(pid, exe_name);
         finish_session(app, game_id, elapsed_mins(started));
     }
@@ -116,7 +116,7 @@ mod imp {
     /// Emit `game-finished`, release the session reservation, and -- if any time
     /// elapsed -- add the minutes to the game's playtime and persist.
     fn finish_session(app: &AppHandle, game_id: &str, elapsed_mins: u64) {
-        let _ = app.emit("game-finished", game_id);
+        crate::util::log_if_err("emit game-finished", app.emit("game-finished", game_id));
         let state = app.state::<AppState>();
         state.active_sessions.lock().remove(game_id);
         if elapsed_mins == 0 {
@@ -147,7 +147,9 @@ mod imp {
     /// Read a DWORD value under HKCU by subkey + value name; None if absent.
     fn hkcu_dword(subkey: &[u16], value: &[u16]) -> Option<u32> {
         let mut data: u32 = 0;
-        let mut size = u32::try_from(std::mem::size_of::<u32>()).ok()?;
+        let mut size = u32::try_from(size_of::<u32>()).ok()?;
+        // SAFETY: both name buffers are NUL-terminated wide strings owned by the
+        // caller, and `data`/`size` describe one live u32 for the whole call.
         let status = unsafe {
             RegGetValueW(
                 HKEY_CURRENT_USER,
@@ -199,6 +201,8 @@ mod imp {
     /// Block until the process `pid` exits. Uses a wait handle when available,
     /// otherwise falls back to polling the process list.
     fn wait_for_exit(pid: u32, exe_name: &str) {
+        // SAFETY: the handle comes from OpenProcess and is closed on every path
+        // out of the block; a pid that no longer exists fails the open instead.
         unsafe {
             if let Ok(handle) = OpenProcess(PROCESS_SYNCHRONIZE, false, pid) {
                 // WAIT_FAILED would mean the wait never observed an exit; taking
@@ -206,7 +210,7 @@ mod imp {
                 // minutes while the game is still running. Fall through to the
                 // polling path instead.
                 let wait = WaitForSingleObject(handle, INFINITE);
-                let _ = CloseHandle(handle);
+                crate::util::log_if_err("CloseHandle(process)", CloseHandle(handle));
                 if wait == WAIT_OBJECT_0 {
                     return;
                 }
@@ -227,10 +231,12 @@ mod imp {
 
     /// Walk the process snapshot, returning the first `Some` produced by `f`.
     fn for_each_process<T>(mut f: impl FnMut(u32, &str) -> Option<T>) -> Option<T> {
+        // SAFETY: the snapshot handle is closed before returning, and `entry`
+        // is a live, `dwSize`-initialised struct for every walk call.
         unsafe {
             let snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0).ok()?;
             let mut entry = PROCESSENTRY32W {
-                dwSize: u32::try_from(std::mem::size_of::<PROCESSENTRY32W>()).unwrap_or(0),
+                dwSize: u32::try_from(size_of::<PROCESSENTRY32W>()).unwrap_or(0),
                 ..Default::default()
             };
             let mut result = None;
@@ -246,7 +252,7 @@ mod imp {
                     }
                 }
             }
-            let _ = CloseHandle(snapshot);
+            crate::util::log_if_err("CloseHandle(snapshot)", CloseHandle(snapshot));
             result
         }
     }

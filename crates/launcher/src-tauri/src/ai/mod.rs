@@ -19,7 +19,7 @@ use tauri::{AppHandle, Manager};
 
 use crate::overlay::{GameInfo, OverlayState};
 
-pub use cli::{detect_cli, ensure_codex_workdir, CliConfig};
+pub(crate) use cli::{detect_cli, ensure_codex_workdir, CliConfig};
 
 /// Backstop timeout for a single request, covering a hung CLI that never closes
 /// stdout. Gemini has its own (shorter) HTTP timeout, so this is the CLI ceiling.
@@ -29,7 +29,7 @@ const REQUEST_TIMEOUT: std::time::Duration = std::time::Duration::from_mins(3);
 /// (`"gemini"` / `"claude"` / `"openai"`).
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "lowercase")]
-pub enum Provider {
+pub(crate) enum Provider {
     #[default]
     Gemini,
     Claude,
@@ -37,7 +37,7 @@ pub enum Provider {
 }
 
 impl Provider {
-    pub fn as_str(self) -> &'static str {
+    pub(crate) const fn as_str(self) -> &'static str {
         match self {
             Self::Gemini => "gemini",
             Self::Claude => "claude",
@@ -48,7 +48,7 @@ impl Provider {
 
 /// One chat turn sent from the overlay UI.
 #[derive(Debug, Clone, Deserialize)]
-pub struct ChatMessage {
+pub(crate) struct ChatMessage {
     pub role: String,
     pub content: String,
 }
@@ -58,7 +58,7 @@ pub struct ChatMessage {
 /// conversation IDs so the UI can ignore output from superseded requests.
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct SageEvent {
+pub(crate) struct SageEvent {
     kind: &'static str,
     request_id: u64,
     conversation_id: u64,
@@ -69,7 +69,7 @@ pub struct SageEvent {
 }
 
 impl SageEvent {
-    fn chunk(request_id: u64, conversation_id: u64, text: String) -> Self {
+    const fn chunk(request_id: u64, conversation_id: u64, text: String) -> Self {
         Self {
             kind: "chunk",
             request_id,
@@ -79,7 +79,7 @@ impl SageEvent {
         }
     }
 
-    fn done(request_id: u64, conversation_id: u64) -> Self {
+    const fn done(request_id: u64, conversation_id: u64) -> Self {
         Self {
             kind: "done",
             request_id,
@@ -89,7 +89,7 @@ impl SageEvent {
         }
     }
 
-    fn error(request_id: u64, conversation_id: u64, message: String) -> Self {
+    const fn error(request_id: u64, conversation_id: u64, message: String) -> Self {
         Self {
             kind: "error",
             request_id,
@@ -102,7 +102,7 @@ impl SageEvent {
 
 /// Which providers can currently serve a request.
 #[derive(Debug, Clone, Serialize)]
-pub struct ProviderAvailability {
+pub(crate) struct ProviderAvailability {
     pub gemini: bool,
     pub claude: bool,
     pub openai: bool,
@@ -112,7 +112,7 @@ pub struct ProviderAvailability {
 }
 
 /// Parameters of a chat request, deserialized from the `ask_sage` command.
-pub struct RequestParams {
+pub(crate) struct RequestParams {
     pub request_id: u64,
     pub conversation_id: u64,
     pub provider: Provider,
@@ -128,7 +128,7 @@ struct Active {
 }
 
 /// Backend AI state: cached CLI availability plus the active-request slot.
-pub struct AiState {
+pub(crate) struct AiState {
     cli: Mutex<CliConfig>,
     active: Mutex<Option<Active>>,
 }
@@ -144,13 +144,13 @@ impl Default for AiState {
 
 impl AiState {
     /// Store the CLI availability detected on the background startup thread.
-    pub fn set_cli(&self, cfg: CliConfig) {
+    pub(crate) fn set_cli(&self, cfg: CliConfig) {
         *self.cli.lock() = cfg;
     }
 
     /// Report which providers can currently serve a request. Gemini depends on a
     /// readable config with a key + model; Claude / Codex on a detected CLI.
-    pub fn availability(&self) -> ProviderAvailability {
+    pub(crate) fn availability(&self) -> ProviderAvailability {
         let cli = self.cli.lock();
         ProviderAvailability {
             gemini: gemini::load_config().is_ok(),
@@ -171,7 +171,7 @@ impl AiState {
     }
 
     /// Cancel `request_id` if it is the active request (Stop button).
-    pub fn cancel(&self, request_id: u64) {
+    pub(crate) fn cancel(&self, request_id: u64) {
         let mut guard = self.active.lock();
         if let Some(active) = guard.take_if(|active| active.request_id == request_id) {
             active.handle.abort();
@@ -187,7 +187,7 @@ impl AiState {
 }
 
 /// Spawn a chat request, cancelling and replacing any request already running.
-pub fn spawn_request(app: &AppHandle, params: RequestParams, channel: Channel<SageEvent>) {
+pub(crate) fn spawn_request(app: &AppHandle, params: RequestParams, channel: Channel<SageEvent>) {
     let request_id = params.request_id;
     let handle = tauri::async_runtime::spawn(run(app.clone(), params, channel));
     app.state::<AiState>().replace_active(request_id, handle);
@@ -290,16 +290,15 @@ async fn run(app: AppHandle, params: RequestParams, channel: Channel<SageEvent>)
     // otherwise leave the join pending forever, stranding the UI on "Streaming".
     // On elapse the futures drop -- killing any CLI child via kill_on_drop.
     let streamed = async { tokio::join!(producer, consumer).0 };
-    let result = match tokio::time::timeout(REQUEST_TIMEOUT, streamed).await {
-        Ok(result) => result,
-        Err(_) => Err("Request timed out. Try again.".to_owned()),
-    };
+    let result = tokio::time::timeout(REQUEST_TIMEOUT, streamed)
+        .await
+        .unwrap_or_else(|_elapsed| Err("Request timed out. Try again.".to_owned()));
 
     let event = match result {
         Ok(()) => SageEvent::done(request_id, conversation_id),
         Err(message) => SageEvent::error(request_id, conversation_id, message),
     };
-    let _ = channel.send(event);
+    crate::util::log_if_err("send the final sage event", channel.send(event));
 
     app.state::<AiState>().clear_if(request_id);
 }
@@ -359,7 +358,7 @@ const TRANSLATE_SYSTEM: &str =
 
 /// Capture the game window and translate any foreign text in it to English via
 /// Gemini. A one-shot call, independent of the chat request slot.
-pub async fn translate_capture(game_hwnd: i64) -> Result<String, String> {
+pub(crate) async fn translate_capture(game_hwnd: i64) -> Result<String, String> {
     let png =
         tokio::task::spawn_blocking(move || crate::overlay_capture::capture_window_png(game_hwnd))
             .await

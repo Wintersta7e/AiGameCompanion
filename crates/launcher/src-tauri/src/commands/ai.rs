@@ -10,7 +10,7 @@ use crate::state::AppState;
 /// Report which providers can currently serve a request (for the UI dropdown).
 #[tauri::command]
 #[allow(clippy::needless_pass_by_value)]
-pub fn available_providers(ai: State<'_, AiState>) -> ProviderAvailability {
+pub(crate) fn available_providers(ai: State<'_, AiState>) -> ProviderAvailability {
     ai.availability()
 }
 
@@ -18,7 +18,7 @@ pub fn available_providers(ai: State<'_, AiState>) -> ProviderAvailability {
 /// request cancels this one.
 #[tauri::command]
 #[allow(clippy::too_many_arguments, clippy::needless_pass_by_value)]
-pub fn ask_sage(
+pub(crate) fn ask_sage(
     app: AppHandle,
     request_id: u64,
     conversation_id: u64,
@@ -43,14 +43,17 @@ pub fn ask_sage(
 /// Cancel the in-flight request if it matches `request_id` (Stop button).
 #[tauri::command]
 #[allow(clippy::needless_pass_by_value)]
-pub fn cancel_sage(ai: State<'_, AiState>, request_id: u64) {
+pub(crate) fn cancel_sage(ai: State<'_, AiState>, request_id: u64) {
     ai.cancel(request_id);
 }
 
 /// Persist the user's selected provider so it survives restarts.
 #[tauri::command]
 #[allow(clippy::needless_pass_by_value)]
-pub fn set_active_provider(provider: Provider, state: State<'_, AppState>) -> Result<(), String> {
+pub(crate) fn set_active_provider(
+    provider: Provider,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
     {
         let mut launcher = state.launcher.lock();
         provider
@@ -61,7 +64,7 @@ pub fn set_active_provider(provider: Provider, state: State<'_, AppState>) -> Re
 }
 
 #[derive(serde::Serialize)]
-pub struct TranslateResult {
+pub(crate) struct TranslateResult {
     pub text: String,
 }
 
@@ -69,7 +72,7 @@ pub struct TranslateResult {
 /// English. One-shot (not part of the streaming chat slot).
 #[tauri::command]
 #[allow(clippy::needless_pass_by_value)]
-pub async fn translate_screen(app: tauri::AppHandle) -> Result<TranslateResult, String> {
+pub(crate) async fn translate_screen(app: AppHandle) -> Result<TranslateResult, String> {
     // Revalidated, not just read: capturing a recycled handle would screenshot
     // an unrelated window and upload it to a cloud provider.
     let hwnd = crate::overlay::live_game(&app)
@@ -84,7 +87,10 @@ pub async fn translate_screen(app: tauri::AppHandle) -> Result<TranslateResult, 
 /// restart. The key is never returned or logged.
 #[tauri::command]
 #[allow(clippy::needless_pass_by_value)]
-pub fn set_gemini_key(ai: State<'_, AiState>, key: String) -> Result<ProviderAvailability, String> {
+pub(crate) fn set_gemini_key(
+    ai: State<'_, AiState>,
+    key: String,
+) -> Result<ProviderAvailability, String> {
     crate::secrets::set_gemini_key(key.trim())?;
     Ok(ai.availability())
 }
@@ -93,7 +99,7 @@ pub fn set_gemini_key(ai: State<'_, AiState>, key: String) -> Result<ProviderAva
 /// availability.
 #[tauri::command]
 #[allow(clippy::needless_pass_by_value)]
-pub async fn recheck_clis(ai: State<'_, AiState>) -> Result<ProviderAvailability, String> {
+pub(crate) async fn recheck_clis(ai: State<'_, AiState>) -> Result<ProviderAvailability, String> {
     let cfg = tokio::task::spawn_blocking(|| {
         let claude = crate::ai::detect_cli("claude");
         let codex = crate::ai::detect_cli("codex");

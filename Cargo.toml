@@ -6,3 +6,53 @@ resolver = "2"
 lto = true
 strip = true
 codegen-units = 1
+
+# Strict lint gate. Every member opts in with `[lints] workspace = true`.
+# CI runs `cargo clippy --workspace --all-targets -- -D warnings`, so each
+# "warn" below is a hard error on a PR.
+[workspace.lints.rust]
+unsafe_op_in_unsafe_fn = "deny"
+non_ascii_idents = "deny"
+rust_2018_idioms = { level = "warn", priority = -1 }
+missing_debug_implementations = "warn"
+unreachable_pub = "warn"
+unused_qualifications = "warn"
+unused_lifetimes = "warn"
+unused_import_braces = "warn"
+unused_macro_rules = "warn"
+trivial_casts = "warn"
+trivial_numeric_casts = "warn"
+let_underscore_drop = "warn"
+single_use_lifetimes = "warn"
+variant_size_differences = "warn"
+meta_variable_misuse = "warn"
+
+[workspace.lints.clippy]
+all = { level = "warn", priority = -1 }
+pedantic = { level = "warn", priority = -1 }
+nursery = { level = "warn", priority = -1 }
+cargo = { level = "warn", priority = -1 }
+# Restriction lints worth having in a GUI app that must not abort on bad input.
+unwrap_used = "warn"
+expect_used = "warn"
+panic = "warn"
+todo = "warn"
+unimplemented = "warn"
+dbg_macro = "warn"
+print_stdout = "warn"
+print_stderr = "warn"
+exit = "warn"
+mem_forget = "warn"
+undocumented_unsafe_blocks = "warn"
+unwrap_in_result = "warn"
+string_slice = "warn"
+verbose_file_reads = "warn"
+rest_pat_in_fully_bound_structs = "warn"
+empty_enum_variants_with_brackets = "warn"
+# The tauri/windows dependency trees ship several versions of the same crate
+# (syn, windows-sys, bitflags, ...). Nothing first-party can collapse them.
+multiple_crate_versions = "allow"
+# Direct contradiction of rustc's `unreachable_pub`, which is kept above: this
+# one wants `pub` inside a private module, that one wants `pub(crate)`. Keeping
+# both makes `--fix` flip every item back and forth forever.
+redundant_pub_crate = "allow"

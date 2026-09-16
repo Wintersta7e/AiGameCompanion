@@ -1,7 +1,7 @@
 //! Single-frame Windows Graphics Capture for the external overlay companion.
 
 #[cfg(windows)]
-pub fn capture_window_png(hwnd: i64) -> Result<Vec<u8>, String> {
+pub(crate) fn capture_window_png(hwnd: i64) -> Result<Vec<u8>, String> {
     imp::capture_window_png(hwnd)
 }
 
@@ -36,7 +36,7 @@ mod imp {
     const FRAME_TIMEOUT: Duration = Duration::from_secs(2);
     const FRAME_POLL_INTERVAL: Duration = Duration::from_millis(16);
 
-    pub fn capture_window_png(hwnd: i64) -> Result<Vec<u8>, String> {
+    pub(super) fn capture_window_png(hwnd: i64) -> Result<Vec<u8>, String> {
         let (d3d_device, d3d_context, capture_device) = create_device()?;
         let item = create_capture_item(hwnd)?;
         let size = item
@@ -72,14 +72,16 @@ mod imp {
             .map_err(|error| format!("failed to start capture: {error}"))
             .and_then(|()| capture_first_frame(&pool, &d3d_device, &d3d_context));
 
-        let _ = session.Close();
-        let _ = pool.Close();
+        crate::util::log_if_err("close the capture session", session.Close());
+        crate::util::log_if_err("close the capture frame pool", pool.Close());
         result
     }
 
     fn create_device() -> Result<(ID3D11Device, ID3D11DeviceContext, IDirect3DDevice), String> {
         let mut device = None;
         let mut context = None;
+        // SAFETY: both out-parameters live for the whole call and are checked
+        // for None below; D3D11 reports any failure through the HRESULT.
         unsafe {
             D3D11CreateDevice(
                 None,
@@ -99,6 +101,7 @@ mod imp {
         let dxgi_device: IDXGIDevice = device
             .cast()
             .map_err(|error| format!("failed to get DXGI device: {error}"))?;
+        // SAFETY: `dxgi_device` is a live COM interface obtained just above.
         let inspectable = unsafe { CreateDirect3D11DeviceFromDXGIDevice(&dxgi_device) }
             .map_err(|error| format!("failed to create WinRT D3D11 device: {error}"))?;
         let capture_device = inspectable
@@ -113,6 +116,8 @@ mod imp {
             .map_err(|error| format!("invalid game window handle: {error}"))?;
         let interop = factory::<GraphicsCaptureItem, IGraphicsCaptureItemInterop>()
             .map_err(|error| format!("failed to get capture item factory: {error}"))?;
+        // SAFETY: a stale window handle is rejected by the interop factory with
+        // an error HRESULT rather than being dereferenced.
         unsafe { interop.CreateForWindow(native_hwnd) }
             .map_err(|error| format!("failed to create capture item: {error}"))
     }
@@ -124,7 +129,7 @@ mod imp {
     ) -> Result<Vec<u8>, String> {
         let frame = wait_for_frame(pool)?;
         let result = read_frame_png(&frame, device, context);
-        let _ = frame.Close();
+        crate::util::log_if_err("close the captured frame", frame.Close());
         result
     }
 
@@ -152,10 +157,13 @@ mod imp {
         let access = surface
             .cast::<IDirect3DDxgiInterfaceAccess>()
             .map_err(|error| format!("failed to access capture DXGI surface: {error}"))?;
+        // SAFETY: `access` is the DXGI interface of the frame surface we still
+        // hold, and the requested interface type is checked by QueryInterface.
         let texture: ID3D11Texture2D = unsafe { access.GetInterface() }
             .map_err(|error| format!("failed to get capture texture: {error}"))?;
 
         let mut desc = D3D11_TEXTURE2D_DESC::default();
+        // SAFETY: `desc` is a live, correctly sized out-parameter on this frame.
         unsafe { texture.GetDesc(&raw mut desc) };
         if desc.Width == 0 || desc.Height == 0 {
             return Err("capture frame has an empty texture".to_owned());
@@ -169,21 +177,28 @@ mod imp {
         staging_desc.MiscFlags = 0;
 
         let mut staging = None;
+        // SAFETY: the descriptor and the out-parameter live for the whole call,
+        // and a None result is treated as a failure below.
         unsafe {
             device
                 .CreateTexture2D(&raw const staging_desc, None, Some(&raw mut staging))
                 .map_err(|error| format!("failed to create staging texture: {error}"))?;
         }
         let staging = staging.ok_or_else(|| "D3D11 returned no staging texture".to_owned())?;
+        // SAFETY: both textures are live and were created on `device`, and the
+        // staging copy matches the source descriptor.
         unsafe { context.CopyResource(&staging, &texture) };
 
         let mut mapped = D3D11_MAPPED_SUBRESOURCE::default();
+        // SAFETY: subresource 0 of a staging texture created with CPU read
+        // access; the mapping is released by the Unmap below.
         unsafe {
             context
                 .Map(&staging, 0, D3D11_MAP_READ, 0, Some(&raw mut mapped))
                 .map_err(|error| format!("failed to map staging texture: {error}"))?;
         }
         let pixels = read_mapped_rgba(&mapped, desc.Width, desc.Height);
+        // SAFETY: pairs with the Map above on the same texture and subresource.
         unsafe { context.Unmap(&staging, 0) };
         encode_png(desc.Width, desc.Height, &pixels?)
     }
@@ -216,6 +231,8 @@ mod imp {
         let pixel_len = row_bytes
             .checked_mul(height)
             .ok_or_else(|| "capture pixel size overflowed".to_owned())?;
+        // SAFETY: `pData` points at `RowPitch * height` bytes owned by the live
+        // mapping, and `mapped_len` is that product, checked for overflow above.
         let source = unsafe { std::slice::from_raw_parts(mapped.pData.cast::<u8>(), mapped_len) };
         let mut rgba = Vec::with_capacity(pixel_len);
         for row in 0..height {

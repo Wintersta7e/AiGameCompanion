@@ -41,7 +41,7 @@ const STEAM_CDN: &str = "https://cdn.cloudflare.steamstatic.com/steam/apps";
 /// and callers must not treat that as an authoritative view of what is
 /// installed -- overwriting the stored library with it destroys playtime for
 /// every game on the drive that happened to be unavailable.
-pub struct ScanOutcome {
+pub(crate) struct ScanOutcome {
     pub games: Vec<Game>,
     pub complete: bool,
 }
@@ -51,7 +51,7 @@ pub struct ScanOutcome {
 /// Returns an alphabetically sorted list of games found across all Steam
 /// libraries, plus whether every library was read successfully.
 /// Exe detection is deferred to launch time for speed.
-pub fn discover_steam_games() -> ScanOutcome {
+pub(crate) fn discover_steam_games() -> ScanOutcome {
     let steam_dir = match SteamDir::locate() {
         Ok(dir) => dir,
         Err(e) => {
@@ -136,7 +136,7 @@ pub fn discover_steam_games() -> ScanOutcome {
 }
 
 /// Resolve the main exe for a game on demand (called at launch time).
-pub fn resolve_game_exe(install_dir: &Path) -> (String, Option<String>) {
+pub(crate) fn resolve_game_exe(install_dir: &Path) -> (String, Option<String>) {
     find_main_exe(install_dir)
 }
 

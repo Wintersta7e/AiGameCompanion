@@ -10,24 +10,24 @@ use tauri::{AppHandle, Emitter, Manager};
 
 /// Snapshot of the foreground game window at the moment the overlay was opened.
 #[derive(Clone, Debug, Default, Serialize)]
-pub struct GameInfo {
+pub(crate) struct GameInfo {
     /// Native window handle, stored as i64 so it crosses the serde/IPC boundary.
-    pub hwnd: i64,
-    pub pid: u32,
-    pub exe: String,
-    pub title: String,
+    pub(crate) hwnd: i64,
+    pub(crate) pid: u32,
+    pub(crate) exe: String,
+    pub(crate) title: String,
 }
 
 /// Remembers the game window that had focus before the overlay was shown, so
 /// focus can be handed back when the overlay hides.
 #[derive(Default)]
-pub struct OverlayState {
-    pub game: parking_lot::Mutex<Option<GameInfo>>,
+pub(crate) struct OverlayState {
+    pub(crate) game: parking_lot::Mutex<Option<GameInfo>>,
 }
 
 /// Toggle the overlay window hidden <-> interactive. On hide, hand focus back to
 /// the stored game.
-pub fn toggle(app: &AppHandle) {
+pub(crate) fn toggle(app: &AppHandle) {
     let Some(overlay) = app.get_webview_window("overlay") else {
         return;
     };
@@ -45,8 +45,11 @@ pub fn toggle(app: &AppHandle) {
 /// `getCurrentWindow().hide()` from JS: that path skips the handoff, so focus
 /// lands wherever Windows picks next instead of returning to the game.
 #[tauri::command]
-#[allow(clippy::needless_pass_by_value)] // Tauri injects the handle by value.
-pub fn hide_overlay(app: AppHandle) {
+#[expect(
+    clippy::needless_pass_by_value,
+    reason = "Tauri injects the handle by value"
+)]
+pub(crate) fn hide_overlay(app: AppHandle) {
     hide(&app);
 }
 
@@ -54,7 +57,7 @@ fn hide(app: &AppHandle) {
     let Some(overlay) = app.get_webview_window("overlay") else {
         return;
     };
-    let _ = overlay.hide();
+    crate::util::log_if_err("hide overlay", overlay.hide());
     if let Some(game) = live_game(app) {
         focus_window(game.hwnd);
     }
@@ -62,7 +65,7 @@ fn hide(app: &AppHandle) {
 
 /// Show the overlay (if hidden) and fire an action event to the overlay UI, e.g.
 /// `translate-request` or `quick-ask` from a global hotkey.
-pub fn trigger(app: &AppHandle, event: &str) {
+pub(crate) fn trigger(app: &AppHandle, event: &str) {
     let Some(overlay) = app.get_webview_window("overlay") else {
         return;
     };
@@ -71,15 +74,19 @@ pub fn trigger(app: &AppHandle, event: &str) {
         // so it stays on screen after the user clicks back into the game.
         // Without this the quick-ask input appears while keystrokes still go to
         // the game as movement keys.
-        let _ = overlay.set_focus();
+        crate::util::log_if_err("focus overlay", overlay.set_focus());
     } else {
         show_overlay(app);
     }
-    let _ = app.emit_to("overlay", event, ());
+    crate::util::log_if_err("emit overlay action", app.emit_to("overlay", event, ()));
 }
 
 /// Capture the current foreground window (the game) BEFORE the overlay steals
 /// focus, store it, then show + focus the overlay and report detection to the UI.
+#[expect(
+    clippy::option_if_let_else,
+    reason = "the suggested map_or_else needs a side-effecting closure and reads worse"
+)]
 fn show_overlay(app: &AppHandle) {
     let Some(overlay) = app.get_webview_window("overlay") else {
         return;
@@ -98,10 +105,13 @@ fn show_overlay(app: &AppHandle) {
         }
         None => live_game(app),
     };
-    let _ = overlay.show();
-    let _ = overlay.set_focus();
+    crate::util::log_if_err("show overlay", overlay.show());
+    crate::util::log_if_err("focus overlay", overlay.set_focus());
     // A null payload tells the overlay UI "no game detected".
-    let _ = app.emit_to("overlay", "overlay-status", game);
+    crate::util::log_if_err(
+        "emit overlay-status",
+        app.emit_to("overlay", "overlay-status", game),
+    );
 }
 
 #[cfg(windows)]
@@ -135,7 +145,7 @@ fn is_live_window(_hwnd: i64, _pid: u32) -> bool {
 /// The stored target, but only if its window is still alive and still owned by
 /// the process we recorded. Clears the slot otherwise, so a recycled handle can
 /// never be screenshotted, uploaded or handed focus.
-pub fn live_game(app: &AppHandle) -> Option<GameInfo> {
+pub(crate) fn live_game(app: &AppHandle) -> Option<GameInfo> {
     let state = app.try_state::<OverlayState>()?;
     let mut slot = state.game.lock();
     let game = slot.clone()?;
@@ -161,7 +171,10 @@ mod imp {
         SetForegroundWindow, ShowWindow, SW_RESTORE,
     };
 
-    pub fn foreground_game(self_pid: u32) -> Option<GameInfo> {
+    pub(super) fn foreground_game(self_pid: u32) -> Option<GameInfo> {
+        // SAFETY: all calls take the handle Windows just returned to us and
+        // buffers owned by this frame; GetForegroundWindow may return null,
+        // which is checked before the handle is used.
         unsafe {
             let hwnd = GetForegroundWindow();
             if hwnd.0.is_null() {
@@ -185,17 +198,23 @@ mod imp {
         }
     }
 
-    unsafe fn exe_path(pid: u32) -> Option<String> {
-        let handle = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid).ok()?;
+    fn exe_path(pid: u32) -> Option<String> {
+        // SAFETY: OpenProcess returns a handle we own and close below; the
+        // buffer and length live for the whole call.
+        let handle = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid) }.ok()?;
         let mut buf = [0u16; 1024];
         let mut len = u32::try_from(buf.len()).unwrap_or(0);
-        let res = QueryFullProcessImageNameW(
-            handle,
-            PROCESS_NAME_WIN32,
-            PWSTR(buf.as_mut_ptr()),
-            &raw mut len,
-        );
-        let _ = CloseHandle(handle);
+        // SAFETY: `handle` is live, and `buf`/`len` outlive the call.
+        let res = unsafe {
+            QueryFullProcessImageNameW(
+                handle,
+                PROCESS_NAME_WIN32,
+                PWSTR(buf.as_mut_ptr()),
+                &raw mut len,
+            )
+        };
+        // SAFETY: `handle` came from OpenProcess above and is not used again.
+        crate::util::log_if_err("CloseHandle(process)", unsafe { CloseHandle(handle) });
         res.ok()?;
         Some(String::from_utf16_lossy(&buf[..len as usize]))
     }
@@ -210,7 +229,9 @@ mod imp {
     /// can later name a completely different window -- which would then be the
     /// one screenshotted and uploaded, or the one handed focus. The pid was
     /// already captured alongside it and went unused; this is what it is for.
-    pub fn is_live_window(hwnd: i64, pid: u32) -> bool {
+    pub(super) fn is_live_window(hwnd: i64, pid: u32) -> bool {
+        // SAFETY: `handle` is a plain window handle; IsWindow tolerates a stale
+        // or recycled value, which is exactly what this check is for.
         unsafe {
             let handle = to_hwnd(hwnd);
             if !IsWindow(Some(handle)).as_bool() {
@@ -222,7 +243,9 @@ mod imp {
         }
     }
 
-    pub fn focus_window(hwnd: i64) {
+    pub(super) fn focus_window(hwnd: i64) {
+        // SAFETY: the window-manager calls below take a handle by value and
+        // report failure through their return value; a stale handle is not UB.
         unsafe {
             let handle = to_hwnd(hwnd);
             // A minimized target is not restored by SetForegroundWindow alone.
