@@ -100,18 +100,9 @@ pub(crate) fn set_gemini_key(
 #[tauri::command]
 #[allow(clippy::needless_pass_by_value)]
 pub(crate) async fn recheck_clis(ai: State<'_, AiState>) -> Result<ProviderAvailability, String> {
-    let cfg = tokio::task::spawn_blocking(|| {
-        let claude = crate::ai::detect_cli("claude");
-        let codex = crate::ai::detect_cli("codex");
-        let codex_workdir = crate::ai::ensure_codex_workdir(codex);
-        crate::ai::CliConfig {
-            claude,
-            codex,
-            codex_workdir,
-        }
-    })
-    .await
-    .map_err(|error| format!("CLI re-check failed: {error}"))?;
+    let cfg = tokio::task::spawn_blocking(crate::ai::detect_all)
+        .await
+        .map_err(|error| format!("CLI re-check failed: {error}"))?;
     ai.set_cli(cfg);
     Ok(ai.availability())
 }

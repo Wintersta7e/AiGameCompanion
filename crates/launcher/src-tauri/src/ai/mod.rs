@@ -19,7 +19,7 @@ use tauri::{AppHandle, Manager};
 
 use crate::overlay::{GameInfo, OverlayState};
 
-pub(crate) use cli::{detect_cli, ensure_codex_workdir, CliConfig};
+pub(crate) use cli::{detect_all, CliConfig};
 
 /// Backstop timeout for a single request, covering a hung CLI that never closes
 /// stdout. Gemini has its own (shorter) HTTP timeout, so this is the CLI ceiling.

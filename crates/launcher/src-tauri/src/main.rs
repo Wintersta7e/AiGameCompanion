@@ -130,15 +130,13 @@ fn main() {
             // claude/codex binaries can take a moment, especially via WSL).
             let detect_handle = app.handle().clone();
             std::thread::spawn(move || {
-                let claude = ai::detect_cli("claude");
-                let codex = ai::detect_cli("codex");
-                let codex_workdir = ai::ensure_codex_workdir(codex);
-                tracing::info!("CLI availability -- claude: {claude:?}, codex: {codex:?}");
-                detect_handle.state::<AiState>().set_cli(ai::CliConfig {
-                    claude,
-                    codex,
-                    codex_workdir,
-                });
+                let cfg = ai::detect_all();
+                tracing::info!(
+                    "CLI availability -- claude: {:?}, codex: {:?}",
+                    cfg.claude,
+                    cfg.codex
+                );
+                detect_handle.state::<AiState>().set_cli(cfg);
             });
 
             // Build system tray (always present, shown/hidden based on setting)
