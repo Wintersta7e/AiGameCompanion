@@ -18,7 +18,7 @@
 
   let { open = $bindable(false) }: { open: boolean } = $props();
 
-  const VERSION = 'v2.0.0'; // keep in sync with tauri.conf.json "version"
+  const VERSION = 'v2.0.1'; // keep in sync with tauri.conf.json "version"
   const KEY_URL = 'https://aistudio.google.com/apikey';
 
   let section = $state<'providers' | 'hotkeys' | 'launcher' | 'about'>('providers');

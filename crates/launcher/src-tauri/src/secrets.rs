@@ -48,11 +48,11 @@ pub(crate) fn gemini_key() -> Option<String> {
 }
 
 #[cfg(not(windows))]
-pub fn set_gemini_key(_key: &str) -> Result<(), String> {
+pub(crate) fn set_gemini_key(_key: &str) -> Result<(), String> {
     Err("Secret storage is only available on Windows.".to_owned())
 }
 
 #[cfg(not(windows))]
-pub fn gemini_key() -> Option<String> {
+pub(crate) fn gemini_key() -> Option<String> {
     None
 }

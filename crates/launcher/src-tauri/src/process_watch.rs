@@ -25,7 +25,7 @@ pub(crate) fn spawn_steam_watch(app: AppHandle, game_id: String, app_id: String)
 }
 
 #[cfg(not(windows))]
-pub fn spawn_steam_watch(_app: AppHandle, _game_id: String, _app_id: String) {}
+pub(crate) fn spawn_steam_watch(_app: AppHandle, _game_id: String, _app_id: String) {}
 
 /// Watch a non-Steam game by finding its process by executable name.
 #[cfg(windows)]
@@ -34,7 +34,7 @@ pub(crate) fn spawn_game_watch(app: AppHandle, game_id: String, exe_name: String
 }
 
 #[cfg(not(windows))]
-pub fn spawn_game_watch(_app: AppHandle, _game_id: String, _exe_name: String) {}
+pub(crate) fn spawn_game_watch(_app: AppHandle, _game_id: String, _exe_name: String) {}
 
 #[cfg(windows)]
 mod imp {

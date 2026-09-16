@@ -6,7 +6,7 @@ pub(crate) fn capture_window_png(hwnd: i64) -> Result<Vec<u8>, String> {
 }
 
 #[cfg(not(windows))]
-pub fn capture_window_png(_hwnd: i64) -> Result<Vec<u8>, String> {
+pub(crate) fn capture_window_png(_hwnd: i64) -> Result<Vec<u8>, String> {
     Err("screen capture is only supported on Windows".into())
 }
 
