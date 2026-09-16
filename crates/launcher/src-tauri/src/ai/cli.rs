@@ -130,6 +130,13 @@ fn wsl_home() -> Option<&'static str> {
 /// we actually read. `silent` discards stdout, so a command whose result is read
 /// back through `output()` must use this instead -- that mix-up is what made the
 /// Codex workdir probe return an empty path on every run.
+#[cfg_attr(
+    not(windows),
+    expect(
+        clippy::missing_const_for_fn,
+        reason = "the Windows build calls creation_flags, which is not const"
+    )
+)]
 fn windowless(cmd: &mut std::process::Command) -> &mut std::process::Command {
     #[cfg(windows)]
     cmd.creation_flags(CREATE_NO_WINDOW);
@@ -139,6 +146,13 @@ fn windowless(cmd: &mut std::process::Command) -> &mut std::process::Command {
 /// Apply the Windows no-window flag to a tokio `Command`. No-op on non-Windows
 /// so the launcher crate compiles for the Linux test runner.
 #[allow(unused_variables, clippy::needless_pass_by_ref_mut)]
+#[cfg_attr(
+    not(windows),
+    expect(
+        clippy::missing_const_for_fn,
+        reason = "the Windows build calls creation_flags, which is not const"
+    )
+)]
 fn no_window(cmd: &mut Command) {
     #[cfg(windows)]
     cmd.creation_flags(CREATE_NO_WINDOW);

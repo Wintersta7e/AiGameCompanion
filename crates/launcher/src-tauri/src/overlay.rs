@@ -120,7 +120,7 @@ fn foreground_game(self_pid: u32) -> Option<GameInfo> {
 }
 
 #[cfg(not(windows))]
-fn foreground_game(_self_pid: u32) -> Option<GameInfo> {
+const fn foreground_game(_self_pid: u32) -> Option<GameInfo> {
     None
 }
 
@@ -130,7 +130,7 @@ fn focus_window(hwnd: i64) {
 }
 
 #[cfg(not(windows))]
-fn focus_window(_hwnd: i64) {}
+const fn focus_window(_hwnd: i64) {}
 
 #[cfg(windows)]
 fn is_live_window(hwnd: i64, pid: u32) -> bool {
@@ -138,7 +138,7 @@ fn is_live_window(hwnd: i64, pid: u32) -> bool {
 }
 
 #[cfg(not(windows))]
-fn is_live_window(_hwnd: i64, _pid: u32) -> bool {
+const fn is_live_window(_hwnd: i64, _pid: u32) -> bool {
     false
 }
 

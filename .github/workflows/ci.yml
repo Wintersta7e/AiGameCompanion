@@ -13,6 +13,8 @@ concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
 
+# Actions are pinned to commit SHAs, not tags: a tag can be moved to point at
+# new code. Dependabot keeps them current (see .github/dependabot.yml).
 jobs:
   rust:
     name: Rust (fmt, clippy, test)
@@ -23,17 +25,38 @@ jobs:
       run:
         shell: bash
     steps:
-      - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
         with:
           components: rustfmt, clippy
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@49a0bdc70d2e1b713ca9e2869b211fcce03d3c1c # v2
       - name: Format check
         run: cargo fmt --all --check
+      # --all-targets covers tests and benches, --locked fails if Cargo.lock is
+      # stale rather than silently updating it.
       - name: Clippy
-        run: cargo clippy --workspace --all-targets -- -D warnings
+        run: cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
       - name: Tests
-        run: cargo test --workspace
+        run: cargo test --workspace --all-features --locked
+      - name: Docs
+        env:
+          RUSTDOCFLAGS: -D warnings
+        run: cargo doc --workspace --no-deps --all-features --locked
+
+  rust-host:
+    name: Rust (non-Windows build)
+    # The launcher is cfg-gated: everything behind cfg(not(windows)) is invisible
+    # to the Windows job, and stub functions drifted out of lint compliance there
+    # unnoticed. This is also the target `cargo test` runs on locally.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@49a0bdc70d2e1b713ca9e2869b211fcce03d3c1c # v2
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets --locked -- -D warnings
 
   frontend:
     name: Frontend (lint, types, build)
@@ -42,15 +65,15 @@ jobs:
       run:
         working-directory: crates/launcher
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-node@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
         with:
           node-version: 22
           cache: npm
           cache-dependency-path: crates/launcher/package-lock.json
       - run: npm ci
       - name: Lint (eslint)
-        run: npm run lint
+        run: npx eslint . --max-warnings 0
       - name: Format check (prettier)
         run: npm run format:check
       - name: Type check (svelte-check)
@@ -60,24 +83,82 @@ jobs:
       - name: Audit (npm)
         run: npm audit --audit-level=high
 
+  release-audit:
+    name: Release build + binary audit
+    # Builds the artifact users actually download, through the same script the
+    # maintainer runs, and fails if the binary carries build-host paths or
+    # anything key-shaped. A dependency compiling C put 83 such paths into a
+    # release binary once; source-level scanners cannot see that.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
+        with:
+          targets: x86_64-pc-windows-msvc
+      - uses: Swatinem/rust-cache@49a0bdc70d2e1b713ca9e2869b211fcce03d3c1c # v2
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: crates/launcher/package-lock.json
+      - uses: taiki-e/install-action@26e9283f268b880168bdbd2c545dfcd60ec2c6ab # v2
+        with:
+          tool: cargo-xwin
+      - name: Install LLVM
+        run: sudo apt-get update && sudo apt-get install -y clang llvm lld
+      - name: Install frontend deps
+        run: npm ci
+        working-directory: crates/launcher
+      - name: Release build
+        run: ./scripts/build.sh
+      - name: Audit the binary
+        run: |
+          set -euo pipefail
+          fail=0
+          for pattern in "/home/" "/mnt/c/" "C:\\\\Users" "/Users/"; do
+            n=$(strings -a release/launcher.exe | grep -cF "$pattern" || true)
+            echo "$pattern -> $n"
+            [ "$n" -eq 0 ] || fail=1
+          done
+          keys=$(strings -a release/launcher.exe |
+            grep -coE "AIza[0-9A-Za-z_-]{15,}|sk-[A-Za-z0-9]{20,}" || true)
+          echo "key-shaped strings -> ${keys:-0}"
+          [ "${keys:-0}" -eq 0 ] || fail=1
+          if [ "$fail" -ne 0 ]; then
+            echo "::error::the release binary leaks build-host paths or secrets"
+            exit 1
+          fi
+
   supply-chain:
     name: Supply chain (cargo-deny)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
-      - uses: taiki-e/install-action@v2
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: taiki-e/install-action@26e9283f268b880168bdbd2c545dfcd60ec2c6ab # v2
         with:
-          tool: cargo-deny
+          tool: cargo-deny,cargo-machete
       - name: cargo-deny
         run: cargo deny check
+      - name: Unused dependencies
+        run: cargo machete
+
+  workflows:
+    name: Workflows (actionlint)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: taiki-e/install-action@26e9283f268b880168bdbd2c545dfcd60ec2c6ab # v2
+        with:
+          tool: actionlint
+      - run: actionlint
 
   secrets:
     name: Secrets (gitleaks)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           fetch-depth: 0
-      - uses: gitleaks/gitleaks-action@v3
+      - uses: gitleaks/gitleaks-action@e0c47f4f8be36e29cdc102c57e68cb5cbf0e8d1e # v3
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
