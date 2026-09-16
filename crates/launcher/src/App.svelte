@@ -20,10 +20,10 @@
     void loadProvider();
     try {
       const settings = await invoke<{ scan_on_startup: boolean }>('get_settings');
-      if (settings.scan_on_startup) scanGames();
-      else loadGames();
+      if (settings.scan_on_startup) void scanGames();
+      else void loadGames();
     } catch {
-      scanGames();
+      void scanGames();
     }
   });
 

@@ -8,7 +8,7 @@
     "build": "vite build",
     "preview": "vite preview",
     "tauri": "tauri",
-    "check": "svelte-check --tsconfig ./tsconfig.json",
+    "check": "svelte-check --tsconfig ./tsconfig.json --fail-on-warnings",
     "lint": "eslint .",
     "lint:fix": "eslint . --fix",
     "format": "prettier --write .",

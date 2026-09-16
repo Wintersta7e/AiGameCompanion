@@ -2,13 +2,13 @@
   import { invoke } from '@tauri-apps/api/core';
   import { PROVIDERS, getProvider, setProvider, type Provider } from '../stores/companion.svelte';
 
-  type Availability = {
+  interface Availability {
     gemini: boolean;
     claude: boolean;
     openai: boolean;
     claude_where: string;
     openai_where: string;
-  };
+  }
   interface Settings {
     scan_on_startup: boolean;
     minimize_to_tray: boolean;
@@ -146,13 +146,19 @@
   }
 
   function openUrl(url: string) {
-    void invoke('open_url', { url }).catch(() => {});
+    void invoke('open_url', { url }).catch((err: unknown) => {
+      console.error('Failed to open the URL:', err);
+    });
   }
   function openConfigFolder() {
-    void invoke('open_config_folder').catch(() => {});
+    void invoke('open_config_folder').catch((err: unknown) => {
+      console.error('Failed to open the config folder:', err);
+    });
   }
   function openLogs() {
-    void invoke('open_game_logs').catch(() => {});
+    void invoke('open_game_logs').catch((err: unknown) => {
+      console.error('Failed to open the logs:', err);
+    });
   }
 
   function pickProvider(p: Provider) {
@@ -166,7 +172,7 @@
   $effect(() => {
     if (open) {
       section = 'providers';
-      load();
+      void load();
     }
   });
 
@@ -183,23 +189,23 @@
 {#if open}
   <!-- svelte-ignore a11y_interactive_supports_focus -->
   <div
-    role="dialog"
-    aria-modal="true"
-    aria-label="Settings"
+    style="background: rgba(6, 6, 8, 0.62); backdrop-filter: blur(6px);"
     class="absolute inset-0 z-[60] flex items-center justify-center"
+    aria-label="Settings"
+    aria-modal="true"
     onclick={onBackdrop}
     onkeydown={onKeydown}
-    style="background: rgba(6, 6, 8, 0.62); backdrop-filter: blur(6px);"
+    role="dialog"
   >
     <div
-      class="w-[680px] max-w-[92%] h-[560px] max-h-[92%] rounded-2xl border border-line overflow-hidden flex flex-col"
       style="background: var(--color-ink-1); box-shadow: 0 30px 70px rgba(0,0,0,0.6);"
+      class="w-[680px] max-w-[92%] h-[560px] max-h-[92%] rounded-2xl border border-line overflow-hidden flex flex-col"
     >
       <!-- header -->
       <div class="flex items-center gap-3 px-[22px] py-[15px] border-b border-line">
         <span
-          class="relative w-[22px] h-[22px] rounded-full shrink-0"
           style="background: radial-gradient(circle at 50% 38%, #fff 0%, color-mix(in oklab, var(--accent) 85%, white) 26%, var(--accent) 60%, transparent 100%); box-shadow: 0 0 14px -3px var(--accent);"
+          class="relative w-[22px] h-[22px] rounded-full shrink-0"
         ></span>
         <span class="font-display text-[15px] font-semibold tracking-[0.04em] text-t-hi"
           >Settings</span
@@ -209,27 +215,28 @@
           >SAGE · {VERSION}</span
         >
         <button
-          onclick={() => void closeModal()}
-          aria-label="Close settings"
           class="ml-auto w-[30px] h-[30px] grid place-items-center rounded-lg text-t-mid cursor-pointer transition-colors duration-150 hover:text-white hover:bg-white/[0.06]"
+          aria-label="Close settings"
+          onclick={() => void closeModal()}
+          type="button"
         >
-          <svg width="12" height="12" viewBox="0 0 12 12"
+          <svg height="12" viewBox="0 0 12 12" width="12"
             ><line
+              stroke="currentColor"
+              stroke-linecap="round"
+              stroke-width="1.4"
               x1="2.4"
-              y1="2.4"
               x2="9.6"
-              y2="9.6"
-              stroke="currentColor"
-              stroke-width="1.4"
-              stroke-linecap="round"
-            /><line
-              x1="9.6"
               y1="2.4"
-              x2="2.4"
               y2="9.6"
+            /><line
               stroke="currentColor"
-              stroke-width="1.4"
               stroke-linecap="round"
+              stroke-width="1.4"
+              x1="9.6"
+              x2="2.4"
+              y1="2.4"
+              y2="9.6"
             /></svg
           >
         </button>
@@ -239,19 +246,20 @@
       <div class="flex flex-1 min-h-0">
         <!-- left nav -->
         <div
-          class="w-[178px] shrink-0 border-r border-line p-3 flex flex-col gap-1"
           style="background: rgba(255,255,255,0.012);"
+          class="w-[178px] shrink-0 border-r border-line p-3 flex flex-col gap-1"
         >
           {#each NAV as item (item.key)}
-            {@const on = section === item.key}
+            {const on = $derived(section === item.key)}
             <button
-              onclick={() => (section = item.key)}
-              class="flex items-center gap-[10px] px-3 py-[9px] rounded-[9px] text-[13px] font-medium cursor-pointer transition-colors duration-150 text-left"
               style="color: {on ? 'var(--accent)' : 'var(--color-t-mid)'}; background: {on
                 ? 'color-mix(in oklab, var(--accent) 13%, transparent)'
                 : 'transparent'}; border: 1px solid {on
                 ? 'color-mix(in oklab, var(--accent) 26%, transparent)'
                 : 'transparent'};"
+              class="flex items-center gap-[10px] px-3 py-[9px] rounded-[9px] text-[13px] font-medium cursor-pointer transition-colors duration-150 text-left"
+              onclick={() => (section = item.key)}
+              type="button"
             >
               {item.label}
             </button>
@@ -272,14 +280,14 @@
 
             <!-- Gemini -->
             <div
-              class="rounded-[13px] border border-line p-4 mb-3"
               style="background: rgba(255,255,255,0.014);"
+              class="rounded-[13px] border border-line p-4 mb-3"
             >
               <div class="flex items-center gap-[10px] mb-3">
                 <span
-                  class="w-[9px] h-[9px] rounded-full"
                   style="background: {PROVIDERS.gemini.dot}; box-shadow: 0 0 6px {PROVIDERS.gemini
                     .dot};"
+                  class="w-[9px] h-[9px] rounded-full"
                 ></span>
                 <div class="min-w-0">
                   <div class="text-[13.5px] font-semibold text-t-hi">Gemini</div>
@@ -296,45 +304,46 @@
               <div class="text-[11.5px] text-t-mid mb-1.5">API key</div>
               <div class="relative">
                 <input
-                  type={revealKey ? 'text' : 'password'}
-                  bind:value={geminiKey}
+                  style="background: rgba(0,0,0,0.22);"
+                  class="w-full pl-[13px] pr-[38px] py-[10px] rounded-[10px] border border-line text-t-hi font-mono text-[11.5px] outline-none transition-colors placeholder:text-t-lo focus:border-accent"
                   onblur={saveKey}
                   onkeydown={(e) => e.key === 'Enter' && saveKey()}
                   placeholder={availability.gemini
                     ? '•••••••••••••• (stored — type to replace)'
                     : 'Paste your Gemini API key'}
-                  class="w-full pl-[13px] pr-[38px] py-[10px] rounded-[10px] border border-line text-t-hi font-mono text-[11.5px] outline-none transition-colors placeholder:text-t-lo focus:border-accent"
-                  style="background: rgba(0,0,0,0.22);"
+                  type={revealKey ? 'text' : 'password'}
+                  bind:value={geminiKey}
                 />
                 <button
-                  onclick={() => (revealKey = !revealKey)}
-                  aria-label={revealKey ? 'Hide key' : 'Reveal key'}
                   class="absolute right-2 top-1/2 -translate-y-1/2 w-[26px] h-[26px] grid place-items-center rounded-md text-t-lo hover:text-t-mid cursor-pointer"
+                  aria-label={revealKey ? 'Hide key' : 'Reveal key'}
+                  onclick={() => (revealKey = !revealKey)}
+                  type="button"
                 >
                   {#if revealKey}
                     <svg
-                      width="16"
-                      height="16"
-                      viewBox="0 0 24 24"
                       fill="none"
+                      height="16"
                       stroke="currentColor"
-                      stroke-width="1.6"
                       stroke-linecap="round"
                       stroke-linejoin="round"
+                      stroke-width="1.6"
+                      viewBox="0 0 24 24"
+                      width="16"
                       ><path
                         d="M17.9 17.9A10.4 10.4 0 0 1 12 20C5 20 1 12 1 12a19 19 0 0 1 5.1-6M9.9 4.2A10.4 10.4 0 0 1 12 4c7 0 11 8 11 8a19 19 0 0 1-2.2 3.2M1 1l22 22"
                       /></svg
                     >
                   {:else}
                     <svg
-                      width="16"
-                      height="16"
-                      viewBox="0 0 24 24"
                       fill="none"
+                      height="16"
                       stroke="currentColor"
-                      stroke-width="1.6"
                       stroke-linecap="round"
                       stroke-linejoin="round"
+                      stroke-width="1.6"
+                      viewBox="0 0 24 24"
+                      width="16"
                       ><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z" /><circle
                         cx="12"
                         cy="12"
@@ -349,22 +358,25 @@
                   >stored locally · sent only to Google{keySaving ? ' · saving…' : ''}</span
                 >
                 <button
-                  onclick={() => openUrl(KEY_URL)}
+                  style="color: var(--accent);"
                   class="text-[11px] cursor-pointer"
-                  style="color: var(--accent);">Get a key ↗</button
+                  onclick={() => {
+                    openUrl(KEY_URL);
+                  }}
+                  type="button">Get a key ↗</button
                 >
               </div>
             </div>
 
             <!-- Claude -->
             <div
-              class="rounded-[13px] border border-line px-4 py-[13px] mb-3 flex items-center gap-[10px]"
               style="background: rgba(255,255,255,0.014);"
+              class="rounded-[13px] border border-line px-4 py-[13px] mb-3 flex items-center gap-[10px]"
             >
               <span
-                class="w-[9px] h-[9px] rounded-full"
                 style="background: {PROVIDERS.claude.dot}; box-shadow: 0 0 6px {PROVIDERS.claude
                   .dot};"
+                class="w-[9px] h-[9px] rounded-full"
               ></span>
               <div class="min-w-0">
                 <div class="text-[13.5px] font-semibold text-t-hi">Claude</div>
@@ -381,13 +393,13 @@
 
             <!-- Codex -->
             <div
-              class="rounded-[13px] border border-line px-4 py-[13px] mb-3 flex items-center gap-[10px]"
               style="background: rgba(255,255,255,0.014);"
+              class="rounded-[13px] border border-line px-4 py-[13px] mb-3 flex items-center gap-[10px]"
             >
               <span
-                class="w-[9px] h-[9px] rounded-full"
                 style="background: {PROVIDERS.openai.dot}; box-shadow: 0 0 6px {PROVIDERS.openai
                   .dot};"
+                class="w-[9px] h-[9px] rounded-full"
               ></span>
               <div class="min-w-0">
                 <div class="text-[13.5px] font-semibold text-t-hi">OpenAI · Codex</div>
@@ -408,22 +420,22 @@
                 >CLIs detected on PATH, then inside WSL.</span
               >
               <button
-                onclick={recheck}
-                disabled={rechecking}
-                class="flex items-center gap-[7px] px-[13px] py-[8px] rounded-[9px] border border-line text-[12px] text-t-mid cursor-pointer transition-colors hover:text-t-hi disabled:opacity-60"
                 style="background: var(--color-ink-2);"
+                class="flex items-center gap-[7px] px-[13px] py-[8px] rounded-[9px] border border-line text-[12px] text-t-mid cursor-pointer transition-colors hover:text-t-hi disabled:opacity-60"
+                disabled={rechecking}
+                onclick={recheck}
+                type="button"
               >
                 <svg
-                  width="13"
-                  height="13"
-                  viewBox="0 0 24 24"
+                  class:spin={rechecking}
                   fill="none"
+                  height="13"
                   stroke="currentColor"
-                  stroke-width="1.8"
                   stroke-linecap="round"
                   stroke-linejoin="round"
-                  style={rechecking ? 'animation: spin 0.9s linear infinite;' : ''}
-                  ><path d="M3 12a9 9 0 1 0 3-6.7L3 8" /><path d="M3 3v5h5" /></svg
+                  stroke-width="1.8"
+                  viewBox="0 0 24 24"
+                  width="13"><path d="M3 12a9 9 0 1 0 3-6.7L3 8" /><path d="M3 3v5h5" /></svg
                 >
                 {rechecking ? 'Re-checking…' : 'Re-check CLIs'}
               </button>
@@ -435,16 +447,10 @@
             </div>
             <div class="flex gap-[7px]">
               {#each ['gemini', 'claude', 'openai'] as p (p)}
-                {@const key = p as Provider}
-                {@const avail = availability[key]}
-                {@const active = key === provider && avail}
+                {const key = $derived(p as Provider)}
+                {const avail = $derived(availability[key])}
+                {const active = $derived(key === provider && avail)}
                 <button
-                  onclick={() => pickProvider(key)}
-                  disabled={!avail}
-                  title={avail ? '' : 'Not available'}
-                  class="flex-1 flex items-center justify-center gap-[7px] py-[10px] rounded-[9px] text-[12.5px] font-medium transition-colors duration-150"
-                  class:cursor-pointer={avail}
-                  class:cursor-not-allowed={!avail}
                   style="border: 1px solid {active
                     ? 'color-mix(in oklab, var(--accent) 34%, transparent)'
                     : 'var(--color-line)'}; background: {active
@@ -452,11 +458,20 @@
                     : 'rgba(255,255,255,0.02)'}; color: {active
                     ? 'var(--color-t-hi)'
                     : 'var(--color-t-mid)'}; opacity: {avail ? 1 : 0.4};"
+                  class="flex-1 flex items-center justify-center gap-[7px] py-[10px] rounded-[9px] text-[12.5px] font-medium transition-colors duration-150"
+                  class:cursor-not-allowed={!avail}
+                  class:cursor-pointer={avail}
+                  disabled={!avail}
+                  onclick={() => {
+                    pickProvider(key);
+                  }}
+                  title={avail ? '' : 'Not available'}
+                  type="button"
                 >
                   <span
-                    class="w-[7px] h-[7px] rounded-full"
                     style="background: {PROVIDERS[key].dot}; box-shadow: 0 0 6px {PROVIDERS[key]
                       .dot};"
+                    class="w-[7px] h-[7px] rounded-full"
                   ></span>
                   {PROVIDERS[key].label}
                 </button>
@@ -481,20 +496,19 @@
               </div>
             {/each}
             <div
-              class="mt-5 flex items-start gap-[9px] px-[14px] py-[11px] rounded-[11px] border"
               style="border-color: color-mix(in oklab, var(--color-warn) 28%, transparent); background: color-mix(in oklab, var(--color-warn) 8%, transparent);"
+              class="mt-5 flex items-start gap-[9px] px-[14px] py-[11px] rounded-[11px] border"
             >
               <svg
                 class="shrink-0 mt-[1px]"
-                width="15"
-                height="15"
-                viewBox="0 0 24 24"
                 fill="none"
+                height="15"
                 stroke="var(--color-warn)"
-                stroke-width="1.7"
                 stroke-linecap="round"
                 stroke-linejoin="round"
-                ><circle cx="12" cy="12" r="9" /><path d="M12 8v5M12 16.5v.01" /></svg
+                stroke-width="1.7"
+                viewBox="0 0 24 24"
+                width="15"><circle cx="12" cy="12" r="9" /><path d="M12 8v5M12 16.5v.01" /></svg
               >
               <span class="text-[12px] text-t-mid leading-relaxed"
                 >Chords are fixed in this build (they avoid <span class="font-mono text-[11px]"
@@ -506,23 +520,24 @@
             <h2 class="font-display text-[16px] font-semibold text-t-hi mb-1">Launcher</h2>
             <p class="text-[12.5px] text-t-mid mb-5">How Sage behaves on your desktop.</p>
             {#each TOGGLES as t (t.key)}
-              {@const on = settings[t.key] as boolean}
+              {const on = $derived(settings[t.key] as boolean)}
               <div class="flex items-center py-[15px] border-b border-line-2">
                 <div class="min-w-0">
                   <div class="text-[13.5px] font-semibold text-t-hi">{t.label}</div>
                   <div class="text-[12px] text-t-mid">{t.sub}</div>
                 </div>
                 <button
-                  role="switch"
+                  style="background: {on ? 'var(--accent)' : 'rgba(255,255,255,0.13)'};"
+                  class="ml-auto relative w-[42px] h-[23px] rounded-full border-none cursor-pointer transition-colors duration-200 shrink-0"
                   aria-checked={on}
                   aria-label={t.label}
                   onclick={() => ((settings[t.key] as boolean) = !on)}
-                  class="ml-auto relative w-[42px] h-[23px] rounded-full border-none cursor-pointer transition-colors duration-200 shrink-0"
-                  style="background: {on ? 'var(--accent)' : 'rgba(255,255,255,0.13)'};"
+                  role="switch"
+                  type="button"
                 >
                   <span
-                    class="absolute top-[3px] w-[17px] h-[17px] rounded-full bg-white transition-all duration-200"
                     style="left: {on ? '22px' : '3px'};"
+                    class="absolute top-[3px] w-[17px] h-[17px] rounded-full bg-white transition-all duration-200"
                   ></span>
                 </button>
               </div>
@@ -530,8 +545,8 @@
           {:else}
             <div class="flex items-center gap-[14px] mb-4">
               <span
-                class="relative w-[46px] h-[46px] rounded-full shrink-0"
                 style="background: radial-gradient(circle at 50% 38%, #fff 0%, color-mix(in oklab, var(--accent) 85%, white) 26%, var(--accent) 60%, transparent 100%); box-shadow: 0 0 26px -4px var(--accent);"
+                class="relative w-[46px] h-[46px] rounded-full shrink-0"
               ></span>
               <div>
                 <div class="font-display text-[20px] font-bold tracking-[0.06em] text-t-hi">
@@ -561,14 +576,16 @@
             </div>
             <div class="flex gap-[10px]">
               <button
-                onclick={openConfigFolder}
+                style="background: var(--color-ink-2);"
                 class="flex-1 py-[11px] rounded-[10px] border border-line text-[12.5px] text-t-mid cursor-pointer transition-colors hover:text-t-hi"
-                style="background: var(--color-ink-2);">Open config folder</button
+                onclick={openConfigFolder}
+                type="button">Open config folder</button
               >
               <button
-                onclick={openLogs}
+                style="background: var(--color-ink-2);"
                 class="flex-1 py-[11px] rounded-[10px] border border-line text-[12.5px] text-t-mid cursor-pointer transition-colors hover:text-t-hi"
-                style="background: var(--color-ink-2);">Open logs</button
+                onclick={openLogs}
+                type="button">Open logs</button
               >
             </div>
           {/if}
@@ -578,21 +595,22 @@
       <!-- footer -->
       <div class="flex items-center px-[22px] py-[13px] border-t border-line">
         {#if saveError}
-          <span class="text-[11.5px] mr-auto" style="color: var(--color-err);">{saveError}</span>
+          <span style="color: var(--color-err);" class="text-[11.5px] mr-auto">{saveError}</span>
         {:else}
           <span class="font-mono text-[10px] text-t-lo mr-auto">changes apply immediately</span>
         {/if}
         <div class="flex gap-[10px]">
           <button
-            onclick={() => void closeModal()}
             class="px-4 py-2 rounded-[9px] text-[12.5px] font-medium text-t-mid cursor-pointer transition-colors hover:text-t-hi hover:bg-white/[0.05]"
-            >Cancel</button
+            onclick={() => void closeModal()}
+            type="button">Cancel</button
           >
           <button
-            onclick={save}
-            disabled={saving}
-            class="px-[18px] py-2 rounded-[9px] text-[12.5px] font-semibold cursor-pointer transition-all enabled:hover:brightness-110 disabled:opacity-60"
             style="background: var(--accent); color: #0b0b0d;"
+            class="px-[18px] py-2 rounded-[9px] text-[12.5px] font-semibold cursor-pointer transition-all enabled:hover:brightness-110 disabled:opacity-60"
+            disabled={saving}
+            onclick={save}
+            type="button"
           >
             {saving ? 'Saving…' : 'Save changes'}
           </button>
@@ -641,6 +659,9 @@
     color: var(--accent);
     border-color: color-mix(in oklab, var(--accent) 34%, transparent);
     background: color-mix(in oklab, var(--accent) 12%, transparent);
+  }
+  .spin {
+    animation: spin 0.9s linear infinite;
   }
   @keyframes spin {
     to {

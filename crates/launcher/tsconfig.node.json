@@ -1,0 +1,17 @@
+{
+  // Type-check context for the package-root config files (vite/svelte/eslint),
+  // which are Node scripts and therefore not part of tsconfig.json's app program.
+  // `include` stays empty on purpose: typescript-eslint attaches these files to
+  // this project via `projectService.defaultProject`, and a file may not appear
+  // in both.
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "types": ["node"],
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "allowImportingTsExtensions": true,
+    "noEmit": true
+  },
+  "files": [],
+  "references": [{ "path": "./tsconfig.json" }]
+}

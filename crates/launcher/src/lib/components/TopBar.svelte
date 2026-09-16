@@ -49,24 +49,24 @@
 </script>
 
 <header
-  data-tauri-drag-region
-  class="h-[60px] shrink-0 flex items-center justify-between px-4 border-b border-line relative z-10"
   style="background: rgba(9, 9, 11, 0.72); backdrop-filter: blur(20px);"
+  class="h-[60px] shrink-0 flex items-center justify-between px-4 border-b border-line relative z-10"
+  data-tauri-drag-region
 >
   <!-- brand -->
   <div class="flex items-center gap-[11px]">
     <div class="relative w-[30px] h-[30px] shrink-0">
       <div
-        class="absolute inset-0 rounded-full animate-pulse-soft"
         style="background: radial-gradient(circle at 50% 42%, #fff 0%, color-mix(in oklab, var(--accent) 85%, white) 24%, var(--accent) 56%, color-mix(in oklab, var(--accent) 38%, transparent) 80%, transparent 100%); box-shadow: 0 0 18px -2px var(--accent);"
+        class="absolute inset-0 rounded-full animate-pulse-soft"
       ></div>
       <div
-        class="absolute inset-[2px] rounded-full"
         style="border: 1px solid rgba(255,255,255,0.18);"
+        class="absolute inset-[2px] rounded-full"
       ></div>
       <div
-        class="absolute w-[5px] h-[5px] rounded-full"
         style="background: rgba(255,255,255,0.92); top: 18%; right: 20%;"
+        class="absolute w-[5px] h-[5px] rounded-full"
       ></div>
     </div>
     <div class="flex flex-col leading-none">
@@ -77,13 +77,13 @@
 
   <!-- watcher status -->
   <div
-    class="flex items-center gap-[9px] px-[15px] py-[7px] rounded-full whitespace-nowrap"
     style="background: rgba(255,255,255,0.025); border: 1px solid var(--color-line);"
+    class="flex items-center gap-[9px] px-[15px] py-[7px] rounded-full whitespace-nowrap"
   >
     <span class="relative flex w-[7px] h-[7px]">
       <span
-        class="absolute inset-0 rounded-full animate-pulse-fast"
         style="background: var(--color-ok); box-shadow: 0 0 8px var(--color-ok);"
+        class="absolute inset-0 rounded-full animate-pulse-fast"
       ></span>
     </span>
     <span class="text-[11.5px] text-t-mid">Watcher active</span>
@@ -95,21 +95,12 @@
   <div class="flex items-center gap-[10px]">
     <!-- provider switch -->
     <div
-      class="flex items-center gap-[3px] p-[3px] rounded-[11px]"
       style="background: rgba(255,255,255,0.03); border: 1px solid var(--color-line);"
+      class="flex items-center gap-[3px] p-[3px] rounded-[11px]"
     >
       {#each providerKeys as key (key)}
-        {@const active = key === provider}
+        {const active = $derived(key === provider)}
         <button
-          onclick={() => setProvider(key)}
-          onmouseenter={(e) => {
-            if (!active) (e.currentTarget as HTMLElement).style.color = 'var(--color-t-mid)';
-          }}
-          onmouseleave={(e) => {
-            if (!active) (e.currentTarget as HTMLElement).style.color = 'var(--color-t-lo)';
-          }}
-          aria-pressed={active}
-          class="flex items-center gap-1.5 px-[11px] py-1.5 rounded-lg font-display text-[11.5px] font-medium tracking-[0.02em] cursor-pointer transition-all duration-150"
           style="
             border: 1px solid {active
             ? 'color-mix(in oklab, var(--accent) 32%, transparent)'
@@ -119,10 +110,22 @@
             : 'transparent'};
             color: {active ? 'var(--color-t-hi)' : 'var(--color-t-lo)'};
           "
+          class="flex items-center gap-1.5 px-[11px] py-1.5 rounded-lg font-display text-[11.5px] font-medium tracking-[0.02em] cursor-pointer transition-all duration-150"
+          aria-pressed={active}
+          onclick={() => {
+            setProvider(key);
+          }}
+          onmouseenter={(e) => {
+            if (!active) (e.currentTarget as HTMLElement).style.color = 'var(--color-t-mid)';
+          }}
+          onmouseleave={(e) => {
+            if (!active) (e.currentTarget as HTMLElement).style.color = 'var(--color-t-lo)';
+          }}
+          type="button"
         >
           <span
-            class="w-[7px] h-[7px] rounded-full"
             style="background: {PROVIDERS[key].dot}; box-shadow: 0 0 6px {PROVIDERS[key].dot};"
+            class="w-[7px] h-[7px] rounded-full"
           ></span>
           {PROVIDERS[key].label}
         </button>
@@ -131,22 +134,23 @@
 
     <!-- settings -->
     <button
+      style="border: 1px solid var(--color-line); background: rgba(255,255,255,0.03);"
+      class="w-[34px] h-[34px] grid place-items-center rounded-[9px] text-t-mid cursor-pointer transition-all duration-150 hover:text-t-hi"
+      aria-label="Settings"
       onclick={onOpenSettings}
       onmouseenter={gearEnter}
       onmouseleave={gearLeave}
       title="Settings"
-      aria-label="Settings"
-      class="w-[34px] h-[34px] grid place-items-center rounded-[9px] text-t-mid cursor-pointer transition-all duration-150 hover:text-t-hi"
-      style="border: 1px solid var(--color-line); background: rgba(255,255,255,0.03);"
+      type="button"
     >
       <svg
-        width="16"
-        height="16"
-        viewBox="0 0 24 24"
         fill="none"
+        height="16"
         stroke="currentColor"
-        stroke-width="1.8"
         stroke-linecap="round"
+        stroke-width="1.8"
+        viewBox="0 0 24 24"
+        width="16"
       >
         <circle cx="12" cy="12" r="3" />
         <path
@@ -159,69 +163,72 @@
 
     <!-- window controls -->
     <button
+      class="w-[30px] h-[30px] grid place-items-center rounded-lg text-t-mid cursor-pointer transition-all duration-150 hover:text-t-hi hover:bg-white/[0.08]"
+      aria-label="Minimize"
       onclick={minimize}
       title="Minimize"
-      aria-label="Minimize"
-      class="w-[30px] h-[30px] grid place-items-center rounded-lg text-t-mid cursor-pointer transition-all duration-150 hover:text-t-hi hover:bg-white/[0.08]"
+      type="button"
     >
-      <svg width="11" height="11" viewBox="0 0 12 12"
+      <svg height="11" viewBox="0 0 12 12" width="11"
         ><line
-          x1="2"
-          y1="6"
-          x2="10"
-          y2="6"
           stroke="currentColor"
-          stroke-width="1.4"
           stroke-linecap="round"
+          stroke-width="1.4"
+          x1="2"
+          x2="10"
+          y1="6"
+          y2="6"
         /></svg
       >
     </button>
     <button
+      class="w-[30px] h-[30px] grid place-items-center rounded-lg text-t-mid cursor-pointer transition-all duration-150 hover:text-t-hi hover:bg-white/[0.08]"
+      aria-label="Maximize"
       onclick={toggleMax}
       title="Maximize"
-      aria-label="Maximize"
-      class="w-[30px] h-[30px] grid place-items-center rounded-lg text-t-mid cursor-pointer transition-all duration-150 hover:text-t-hi hover:bg-white/[0.08]"
+      type="button"
     >
-      <svg width="11" height="11" viewBox="0 0 12 12"
+      <svg height="11" viewBox="0 0 12 12" width="11"
         ><rect
-          x="2.2"
-          y="2.2"
-          width="7.6"
+          fill="none"
           height="7.6"
           rx="1.4"
           stroke="currentColor"
           stroke-width="1.3"
-          fill="none"
+          width="7.6"
+          x="2.2"
+          y="2.2"
         /></svg
       >
     </button>
     <button
-      onclick={close}
-      title="Close"
-      aria-label="Close"
-      class="w-[30px] h-[30px] grid place-items-center rounded-lg text-t-mid cursor-pointer transition-all duration-150 hover:text-white"
       style="--hover: rgba(232,72,72,0.75);"
+      class="w-[30px] h-[30px] grid place-items-center rounded-lg text-t-mid cursor-pointer transition-all duration-150 hover:text-white"
+      aria-label="Close"
+      onclick={close}
       onmouseenter={(e) =>
         ((e.currentTarget as HTMLElement).style.background = 'rgba(232,72,72,0.75)')}
       onmouseleave={(e) => ((e.currentTarget as HTMLElement).style.background = 'transparent')}
+      title="Close"
+      type="button"
     >
-      <svg width="11" height="11" viewBox="0 0 12 12"
+      <svg height="11" viewBox="0 0 12 12" width="11"
         ><line
+          stroke="currentColor"
+          stroke-linecap="round"
+          stroke-width="1.4"
           x1="2.4"
-          y1="2.4"
           x2="9.6"
-          y2="9.6"
-          stroke="currentColor"
-          stroke-width="1.4"
-          stroke-linecap="round"
-        /><line
-          x1="9.6"
           y1="2.4"
-          x2="2.4"
           y2="9.6"
+        /><line
           stroke="currentColor"
-          stroke-width="1.4"
           stroke-linecap="round"
+          stroke-width="1.4"
+          x1="9.6"
+          x2="2.4"
+          y1="2.4"
+          y2="9.6"
         /></svg
       >
     </button>

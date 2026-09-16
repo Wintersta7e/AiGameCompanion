@@ -12,21 +12,25 @@
     title: string;
     accent?: string;
   } | null;
-  type Availability = { gemini: boolean; claude: boolean; openai: boolean };
-  type SageEvent = {
+  interface Availability {
+    gemini: boolean;
+    claude: boolean;
+    openai: boolean;
+  }
+  interface SageEvent {
     kind: 'chunk' | 'done' | 'error';
     requestId: number;
     conversationId: number;
     text?: string;
     message?: string;
-  };
-  type Msg = {
+  }
+  interface Msg {
     role: 'user' | 'assistant';
     content: string;
     model?: string;
     screenshot?: boolean;
     streaming?: boolean;
-  };
+  }
 
   const PROVIDER_ORDER: Provider[] = ['gemini', 'claude', 'openai'];
   const SUGGESTIONS = ['Where do I go next?', "What's this enemy weak to?", 'Explain this screen'];
@@ -63,8 +67,8 @@
   const accent = $derived(
     game ? (game.accent ?? hashHue(game.exe || game.title || 'sage')) : '#e0a23c',
   );
-  const canAttach = $derived(!!game && provider !== 'openai');
-  const canSend = $derived(!!game && available.length > 0);
+  const canAttach = $derived(Boolean(game) && provider !== 'openai');
+  const canSend = $derived(Boolean(game) && available.length > 0);
   const captureHint = $derived.by(() => {
     if (provider === 'openai') return 'screenshots unsupported on OpenAI';
     if (attach && canAttach) return 'screenshot attached · WGC';
@@ -93,8 +97,9 @@
     } catch {
       return;
     }
+    const fallback = available[0];
     if (savedProvider && availability[savedProvider]) provider = savedProvider;
-    else if (!availability[provider] && available.length > 0) provider = available[0];
+    else if (!availability[provider] && fallback) provider = fallback;
   }
 
   async function selectProvider(p: Provider) {
@@ -162,17 +167,17 @@
     channel.onmessage = (event) => {
       // Ignore output from a superseded request or cleared conversation.
       if (event.requestId !== activeRequestId || event.conversationId !== convo) return;
+      const bubble = messages[idx];
+      if (!bubble) return;
       if (event.kind === 'chunk') {
-        messages[idx].content += event.text ?? '';
+        bubble.content += event.text ?? '';
       } else if (event.kind === 'done') {
-        messages[idx].streaming = false;
+        bubble.streaming = false;
         asking = false;
-      } else if (event.kind === 'error') {
+      } else {
         const msg = event.message ?? 'Unknown error';
-        messages[idx].content = messages[idx].content
-          ? `${messages[idx].content}\n\n[error] ${msg}`
-          : `[error] ${msg}`;
-        messages[idx].streaming = false;
+        bubble.content = bubble.content ? `${bubble.content}\n\n[error] ${msg}` : `[error] ${msg}`;
+        bubble.streaming = false;
         asking = false;
       }
     };
@@ -190,8 +195,11 @@
       // Same guard as the channel handler: a rejection that lands after New chat
       // or a newer Send must not write into the current conversation's bubble.
       if (id !== activeRequestId || convo !== conversationId) return;
-      messages[idx].content = `[error] ${String(err)}`;
-      messages[idx].streaming = false;
+      const bubble = messages[idx];
+      if (bubble) {
+        bubble.content = `[error] ${String(err)}`;
+        bubble.streaming = false;
+      }
       asking = false;
     }
   }
@@ -201,7 +209,8 @@
     const id = activeRequestId;
     activeRequestId = 0;
     asking = false;
-    if (streamIndex >= 0 && streamIndex < messages.length) messages[streamIndex].streaming = false;
+    const streamed = messages[streamIndex];
+    if (streamed) streamed.streaming = false;
     try {
       await invoke('cancel_sage', { requestId: id });
     } catch {
@@ -303,14 +312,17 @@
       }),
     ];
     return () => {
-      for (const listener of listeners) listener.then((unlisten) => unlisten());
+      for (const listener of listeners)
+        void listener.then((unlisten) => {
+          unlisten();
+        });
     };
   });
 </script>
 
 <svelte:window onpointerdown={onWindowPointerDown} />
 
-<div class="overlay-root" style="--accent: {accent};">
+<div style="--accent: {accent};" class="overlay-root">
   <div class="panel">
     <!-- titlebar -->
     <div class="titlebar" data-tauri-drag-region>
@@ -318,33 +330,40 @@
       <span class="wordmark">SAGE</span>
       <span class="drag-chip">drag</span>
       <div class="title-actions">
-        <button class="icon-btn" onclick={newChat} title="New chat" aria-label="New chat">
+        <button
+          class="icon-btn"
+          aria-label="New chat"
+          onclick={newChat}
+          title="New chat"
+          type="button"
+        >
           <svg
-            width="15"
-            height="15"
-            viewBox="0 0 24 24"
             fill="none"
+            height="15"
             stroke="currentColor"
-            stroke-width="1.7"
             stroke-linecap="round"
-            stroke-linejoin="round"><path d="M3 12a9 9 0 1 0 3-6.7L3 8" /><path d="M3 3v5h5" /></svg
+            stroke-linejoin="round"
+            stroke-width="1.7"
+            viewBox="0 0 24 24"
+            width="15"><path d="M3 12a9 9 0 1 0 3-6.7L3 8" /><path d="M3 3v5h5" /></svg
           >
         </button>
         <button
           class="icon-btn"
+          aria-label="Hide"
           onclick={hideOverlay}
           title="Hide (Ctrl+Shift+G)"
-          aria-label="Hide"
+          type="button"
         >
           <svg
-            width="15"
-            height="15"
-            viewBox="0 0 24 24"
             fill="none"
+            height="15"
             stroke="currentColor"
-            stroke-width="1.9"
             stroke-linecap="round"
-            stroke-linejoin="round"><path d="M6 9l6 6 6-6" /></svg
+            stroke-linejoin="round"
+            stroke-width="1.9"
+            viewBox="0 0 24 24"
+            width="15"><path d="M6 9l6 6 6-6" /></svg
           >
         </button>
       </div>
@@ -370,30 +389,40 @@
     <!-- tabs + provider -->
     <div class="tabrow">
       <div class="tabs">
-        <button class="tab" class:active={tab === 'chat'} onclick={() => (tab = 'chat')}>
+        <button
+          class="tab"
+          class:active={tab === 'chat'}
+          onclick={() => (tab = 'chat')}
+          type="button"
+        >
           <svg
-            width="14"
-            height="14"
-            viewBox="0 0 24 24"
             fill="none"
+            height="14"
             stroke="currentColor"
-            stroke-width="1.7"
             stroke-linecap="round"
             stroke-linejoin="round"
+            stroke-width="1.7"
+            viewBox="0 0 24 24"
+            width="14"
             ><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" /></svg
           >
           Chat
         </button>
-        <button class="tab" class:active={tab === 'translate'} onclick={() => (tab = 'translate')}>
+        <button
+          class="tab"
+          class:active={tab === 'translate'}
+          onclick={() => (tab = 'translate')}
+          type="button"
+        >
           <svg
-            width="14"
-            height="14"
-            viewBox="0 0 24 24"
             fill="none"
+            height="14"
             stroke="currentColor"
-            stroke-width="1.7"
             stroke-linecap="round"
             stroke-linejoin="round"
+            stroke-width="1.7"
+            viewBox="0 0 24 24"
+            width="14"
             ><circle cx="12" cy="12" r="9" /><path
               d="M3 12h18M12 3a15 15 0 0 1 0 18M12 3a15 15 0 0 0 0 18"
             /></svg
@@ -403,10 +432,11 @@
       </div>
       <button
         class="provider-pill"
-        onclick={() => (dropdownOpen = !dropdownOpen)}
         disabled={available.length === 0 || asking}
+        onclick={() => (dropdownOpen = !dropdownOpen)}
+        type="button"
       >
-        <span class="prov-dot" style="background: {meta.dot}; box-shadow: 0 0 6px {meta.dot};"
+        <span style="background: {meta.dot}; box-shadow: 0 0 6px {meta.dot};" class="prov-dot"
         ></span>
         {available.length === 0 ? 'No providers' : meta.label}
         <span class="caret">{dropdownOpen ? '▴' : '▾'}</span>
@@ -416,8 +446,8 @@
         <div class="dropdown">
           <div class="dropdown-head">Available providers</div>
           {#each available as p (p)}
-            <button class="prov-row" onclick={() => selectProvider(p)}>
-              <span class="pdot" style="background: {PROVIDERS[p].dot};"></span>
+            <button class="prov-row" onclick={() => selectProvider(p)} type="button">
+              <span style="background: {PROVIDERS[p].dot};" class="pdot"></span>
               <span class="pmeta">
                 <span class="pname">{PROVIDERS[p].label}</span>
                 <span class="pmodel">{PROVIDERS[p].model}</span>
@@ -425,14 +455,14 @@
               {#if p === provider}
                 <span class="pcheck">
                   <svg
-                    width="15"
-                    height="15"
-                    viewBox="0 0 24 24"
                     fill="none"
+                    height="15"
                     stroke="currentColor"
-                    stroke-width="2.2"
                     stroke-linecap="round"
-                    stroke-linejoin="round"><path d="M5 13l4 4L19 7" /></svg
+                    stroke-linejoin="round"
+                    stroke-width="2.2"
+                    viewBox="0 0 24 24"
+                    width="15"><path d="M5 13l4 4L19 7" /></svg
                   >
                 </span>
               {/if}
@@ -445,7 +475,7 @@
     {#if tab === 'chat'}
       <!-- chat body -->
       <div class="body">
-        <div class="msglist" bind:this={msglistEl}>
+        <div bind:this={msglistEl} class="msglist">
           {#if available.length === 0}
             <div class="msg sage">
               <span class="avatar"></span>
@@ -470,7 +500,7 @@
             {#if game}
               <div class="chips">
                 {#each SUGGESTIONS as s (s)}
-                  <button class="chip" onclick={() => send(s)}>{s}</button>
+                  <button class="chip" onclick={() => send(s)} type="button">{s}</button>
                 {/each}
               </div>
             {/if}
@@ -510,23 +540,24 @@
             <button
               class="attach-btn"
               class:off={!(attach && canAttach)}
+              aria-label="Attach screenshot"
               disabled={!canAttach}
               onclick={() => (attach = !attach)}
               title={provider === 'openai'
                 ? 'Screenshots are not supported on OpenAI'
                 : 'Attach a screenshot of the game'}
-              aria-label="Attach screenshot"
+              type="button"
             >
               <svg
-                width="18"
-                height="18"
-                viewBox="0 0 24 24"
                 fill="none"
+                height="18"
                 stroke="currentColor"
-                stroke-width="1.7"
                 stroke-linecap="round"
                 stroke-linejoin="round"
-                ><rect x="3" y="3" width="18" height="18" rx="2" /><circle
+                stroke-width="1.7"
+                viewBox="0 0 24 24"
+                width="18"
+                ><rect height="18" rx="2" width="18" x="3" y="3" /><circle
                   cx="8.5"
                   cy="8.5"
                   r="1.5"
@@ -534,28 +565,29 @@
               >
             </button>
             <input
-              class="text-input"
               bind:this={inputEl}
-              bind:value={prompt}
-              onkeydown={onKeydown}
+              class="text-input"
               disabled={!canSend}
+              onkeydown={onKeydown}
               placeholder={game ? `Ask Sage about ${game.title || game.exe}…` : 'No game detected'}
+              bind:value={prompt}
             />
             {#if asking}
-              <button class="send-btn" onclick={stop} title="Stop" aria-label="Stop">
-                <svg width="13" height="13" viewBox="0 0 24 24" fill="currentColor"
-                  ><rect x="5" y="5" width="14" height="14" rx="2" /></svg
+              <button class="send-btn" aria-label="Stop" onclick={stop} title="Stop" type="button">
+                <svg fill="currentColor" height="13" viewBox="0 0 24 24" width="13"
+                  ><rect height="14" rx="2" width="14" x="5" y="5" /></svg
                 >
               </button>
             {:else}
               <button
                 class="send-btn"
-                onclick={() => send()}
-                disabled={!canSend || !prompt.trim()}
-                title="Send"
                 aria-label="Send"
+                disabled={!canSend || !prompt.trim()}
+                onclick={() => send()}
+                title="Send"
+                type="button"
               >
-                <svg width="17" height="17" viewBox="0 0 24 24" fill="currentColor"
+                <svg fill="currentColor" height="17" viewBox="0 0 24 24" width="17"
                   ><path d="M3 11l18-8-8 18-2-7-8-3z" /></svg
                 >
               </button>
@@ -583,7 +615,7 @@
           {#if translateBusy}
             <div class="thinking"><i></i><i></i><i></i></div>
           {:else if translateError}
-            <div class="te-title" style="color: var(--color-err);">{translateError}</div>
+            <div style="color: var(--color-err);" class="te-title">{translateError}</div>
           {:else if translateText}
             <div class="translate-text">{translateText}</div>
           {:else}
@@ -601,12 +633,15 @@
         <div class="translate-actions">
           <button
             class="recapture live"
-            onclick={runTranslate}
             disabled={translateBusy || !game || !availability.gemini}
-            >Re-capture · Ctrl+Shift+T</button
+            onclick={runTranslate}
+            type="button">Re-capture · Ctrl+Shift+T</button
           >
-          <button class="recapture live" onclick={copyTranslation} disabled={!translateText}
-            >Copy</button
+          <button
+            class="recapture live"
+            disabled={!translateText}
+            onclick={copyTranslation}
+            type="button">Copy</button
           >
         </div>
       </div>

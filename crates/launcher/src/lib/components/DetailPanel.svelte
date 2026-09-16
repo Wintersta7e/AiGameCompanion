@@ -112,62 +112,63 @@
   }
 </script>
 
-<div class="flex-1 overflow-y-auto relative" style="background: var(--color-ink-1);">
+<div style="background: var(--color-ink-1);" class="flex-1 overflow-y-auto relative">
   {#if game}
     <!-- HERO -->
     <div class="relative h-[296px] overflow-hidden">
       {#if coverSrc}
         <img
-          src={coverSrc}
-          alt={game.name}
-          class="absolute inset-0 w-full h-full object-cover"
           style="filter: brightness(0.72) saturate(1.2);"
+          class="absolute inset-0 w-full h-full object-cover"
+          alt={game.name}
           onerror={() => (coverError = true)}
+          src={coverSrc}
         />
       {:else}
         <div
-          class="absolute inset-0 grid place-items-center"
           style="background: linear-gradient(135deg, color-mix(in oklab, var(--accent) 30%, #14141a) 0%, #0d0d10 70%);"
+          class="absolute inset-0 grid place-items-center"
         >
           <span class="font-display text-[6rem] font-bold text-white/10">{initial}</span>
         </div>
       {/if}
       <div
-        class="absolute inset-0"
         style="background: radial-gradient(120% 110% at 22% 0%, transparent 0%, rgba(10,10,12,0.4) 58%, var(--color-ink-1) 100%);"
+        class="absolute inset-0"
       ></div>
       <div
-        class="absolute inset-0"
         style="background: linear-gradient(180deg, rgba(10,10,12,0.05) 0%, rgba(10,10,12,0.5) 52%, var(--color-ink-1) 100%);"
+        class="absolute inset-0"
       ></div>
       <div
-        class="absolute inset-0"
         style="background: linear-gradient(180deg, transparent 42%, color-mix(in oklab, var(--accent) 14%, transparent) 100%); mix-blend-mode: screen;"
+        class="absolute inset-0"
       ></div>
 
-      <div class="absolute inset-x-0 bottom-0 px-9 pb-6 pt-8" style="animation: fade-up 0.5s ease;">
+      <div style="animation: fade-up 0.5s ease;" class="absolute inset-x-0 bottom-0 px-9 pb-6 pt-8">
         <div class="flex items-center gap-2 mb-[11px]">
           <span
+            style="color: var(--accent);"
             class="font-display text-[10px] font-semibold tracking-[0.18em] uppercase"
-            style="color: var(--accent);">Companion bound</span
+            >Companion bound</span
           >
           <span
-            class="px-[11px] py-1 rounded-full font-display text-[10px] font-semibold tracking-[0.1em] uppercase"
             style="color: {statusColor}; background: color-mix(in oklab, {statusColor} 15%, transparent); border: 1px solid color-mix(in oklab, {statusColor} 32%, transparent);"
+            class="px-[11px] py-1 rounded-full font-display text-[10px] font-semibold tracking-[0.1em] uppercase"
             >{statusLabel}</span
           >
         </div>
         <h1
-          class="m-0 font-display text-[34px] font-bold tracking-[0.01em] leading-[1.05] text-white"
           style="text-shadow: 0 2px 24px rgba(0,0,0,0.5);"
+          class="m-0 font-display text-[34px] font-bold tracking-[0.01em] leading-[1.05] text-white"
         >
           {game.name}
         </h1>
         <div class="flex items-center gap-[13px] mt-[11px]">
           <span class="flex items-center gap-[7px] text-[11.5px] text-t-mid">
             <span
-              class="w-[7px] h-[7px] rounded-full"
               style="background: {srcDot}; box-shadow: 0 0 6px {srcDot};"
+              class="w-[7px] h-[7px] rounded-full"
             ></span>
             {capSource(game.source)}
           </span>
@@ -181,12 +182,12 @@
     <div class="px-9 pt-6 pb-10 flex flex-col gap-6">
       <!-- LINK STATION -->
       <div
-        class="relative rounded-2xl border border-line overflow-hidden p-6"
         style="background: linear-gradient(180deg, var(--color-ink-2), var(--color-ink-1)); animation: fade-up 0.5s ease 0.05s both;"
+        class="relative rounded-2xl border border-line overflow-hidden p-6"
       >
         <div
-          class="absolute -top-[46%] left-1/2 -translate-x-1/2 w-[420px] h-[240px] pointer-events-none"
           style="background: radial-gradient(circle, color-mix(in oklab, var(--accent) 26%, transparent), transparent 70%); filter: blur(22px); opacity: 0.45;"
+          class="absolute -top-[46%] left-1/2 -translate-x-1/2 w-[420px] h-[240px] pointer-events-none"
         ></div>
 
         <div class="relative flex items-center gap-2 mb-[22px]">
@@ -194,16 +195,16 @@
           <div class="flex flex-col items-center gap-2.5 w-[128px]">
             <div class="relative w-[54px] h-[54px]">
               <div
-                class="absolute inset-0 rounded-full animate-pulse-soft"
                 style="background: radial-gradient(circle at 50% 40%, #fff 0%, color-mix(in oklab, var(--accent) 85%, white) 24%, var(--accent) 56%, color-mix(in oklab, var(--accent) 38%, transparent) 80%, transparent 100%); box-shadow: 0 0 28px -2px var(--accent);"
+                class="absolute inset-0 rounded-full animate-pulse-soft"
               ></div>
               <div
-                class="absolute inset-[3px] rounded-full"
                 style="border: 1px solid rgba(255,255,255,0.2);"
+                class="absolute inset-[3px] rounded-full"
               ></div>
               <div
-                class="absolute w-2 h-2 rounded-full"
                 style="background: rgba(255,255,255,0.92); top: 17%; right: 20%;"
+                class="absolute w-2 h-2 rounded-full"
               ></div>
             </div>
             <div class="text-center">
@@ -212,8 +213,8 @@
               </div>
               <div class="flex items-center gap-1.5 justify-center mt-[5px]">
                 <span
-                  class="w-[7px] h-[7px] rounded-full"
                   style="background: {prov.dot}; box-shadow: 0 0 6px {prov.dot};"
+                  class="w-[7px] h-[7px] rounded-full"
                 ></span>
                 <span class="text-[10.5px] text-t-lo font-mono">{prov.label}</span>
               </div>
@@ -223,19 +224,19 @@
           <!-- beam -->
           <div class="flex-1 relative h-[54px] flex items-center min-w-[90px]">
             <div
-              class="absolute inset-x-0 top-1/2 h-0.5 -translate-y-1/2"
               style="background: linear-gradient(90deg, transparent, color-mix(in oklab, var(--accent) 45%, transparent), transparent);"
+              class="absolute inset-x-0 top-1/2 h-0.5 -translate-y-1/2"
             ></div>
             <div
-              class="absolute inset-x-0 top-1/2 h-0.5 -translate-y-1/2 animate-beam"
               style="background: linear-gradient(90deg, transparent 0%, var(--accent) 50%, transparent 100%); background-size: 200% 100%; opacity: {launchBusy ||
               status === 'linked'
                 ? 1
                 : 0.4};"
+              class="absolute inset-x-0 top-1/2 h-0.5 -translate-y-1/2 animate-beam"
             ></div>
             <div
-              class="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 px-[11px] py-[5px] rounded-full font-mono text-[9px] tracking-[0.1em] whitespace-nowrap"
               style="background: var(--color-ink-3); border: 1px solid color-mix(in oklab, var(--accent) 32%, transparent); color: var(--accent);"
+              class="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 px-[11px] py-[5px] rounded-full font-mono text-[9px] tracking-[0.1em] whitespace-nowrap"
             >
               {beamLabel}
             </div>
@@ -244,22 +245,22 @@
           <!-- game node -->
           <div class="flex flex-col items-center gap-2.5 w-[128px]">
             <div
-              class="relative w-[54px] h-[54px] rounded-[13px] overflow-hidden"
               style="box-shadow: 0 4px 16px rgba(0,0,0,0.5);"
+              class="relative w-[54px] h-[54px] rounded-[13px] overflow-hidden"
             >
               {#if coverSrc}
-                <img src={coverSrc} alt={game.name} class="w-full h-full object-cover" />
+                <img class="w-full h-full object-cover" alt={game.name} src={coverSrc} />
               {:else}
                 <div
-                  class="w-full h-full grid place-items-center font-display font-bold text-[22px] text-white/90"
                   style="background: linear-gradient(135deg, color-mix(in oklab, var(--accent) 45%, #16161a), #101013);"
+                  class="w-full h-full grid place-items-center font-display font-bold text-[22px] text-white/90"
                 >
                   {initial}
                 </div>
               {/if}
               <span
-                class="absolute inset-0"
                 style="box-shadow: inset 0 0 0 1px rgba(255,255,255,0.1);"
+                class="absolute inset-0"
               ></span>
             </div>
             <div class="text-center max-w-[128px]">
@@ -272,62 +273,65 @@
         <!-- actions -->
         <div class="relative flex items-center gap-3">
           <button
-            onclick={() => game && launchGame(game.id)}
-            disabled={launchBusy || status === 'linked'}
-            class="flex items-center gap-[9px] px-[26px] py-[13px] rounded-[11px] border-none font-display text-[14px] font-semibold tracking-[0.03em] transition-all duration-200 enabled:hover:brightness-110 enabled:hover:-translate-y-px"
-            class:cursor-pointer={!launchBusy}
-            class:cursor-not-allowed={launchBusy}
-            class:opacity-60={launchBusy}
             style="color: #0b0b0d; background: var(--accent); box-shadow: 0 8px 28px -8px color-mix(in oklab, var(--accent) 75%, transparent);"
+            class="flex items-center gap-[9px] px-[26px] py-[13px] rounded-[11px] border-none font-display text-[14px] font-semibold tracking-[0.03em] transition-all duration-200 enabled:hover:brightness-110 enabled:hover:-translate-y-px"
+            class:cursor-not-allowed={launchBusy}
+            class:cursor-pointer={!launchBusy}
+            class:opacity-60={launchBusy}
+            disabled={launchBusy || status === 'linked'}
+            onclick={() => {
+              void launchGame(game.id);
+            }}
+            type="button"
           >
-            <svg width="15" height="15" viewBox="0 0 24 24" fill="currentColor"
+            <svg fill="currentColor" height="15" viewBox="0 0 24 24" width="15"
               ><polygon points="6 4 20 12 6 20 6 4" /></svg
             >
             {launchLabel}
           </button>
           <button
+            style="border: 1px solid var(--color-line); background: rgba(255,255,255,0.03);"
+            class="px-[18px] py-[13px] rounded-[11px] font-display text-[12.5px] font-medium tracking-[0.03em] text-t-mid cursor-pointer transition-all duration-150 hover:text-t-hi"
             onclick={openConfig}
             onmouseenter={fileBtnEnter}
             onmouseleave={fileBtnLeave}
             title="Open config.toml"
-            class="px-[18px] py-[13px] rounded-[11px] font-display text-[12.5px] font-medium tracking-[0.03em] text-t-mid cursor-pointer transition-all duration-150 hover:text-t-hi"
-            style="border: 1px solid var(--color-line); background: rgba(255,255,255,0.03);"
-            >Config</button
+            type="button">Config</button
           >
           <button
+            style="border: 1px solid var(--color-line); background: rgba(255,255,255,0.03);"
+            class="px-[18px] py-[13px] rounded-[11px] font-display text-[12.5px] font-medium tracking-[0.03em] text-t-mid cursor-pointer transition-all duration-150 hover:text-t-hi"
             onclick={openLogs}
             onmouseenter={fileBtnEnter}
             onmouseleave={fileBtnLeave}
             title="Open launcher.log"
-            class="px-[18px] py-[13px] rounded-[11px] font-display text-[12.5px] font-medium tracking-[0.03em] text-t-mid cursor-pointer transition-all duration-150 hover:text-t-hi"
-            style="border: 1px solid var(--color-line); background: rgba(255,255,255,0.03);"
-            >Logs</button
+            type="button">Logs</button
           >
           <div class="ml-auto flex items-center gap-[9px]">
             <span
-              class="w-2 h-2 rounded-full"
               style="background: {statusColor}; box-shadow: 0 0 9px {statusColor};"
+              class="w-2 h-2 rounded-full"
             ></span>
             <span class="text-[12.5px] text-t-mid">{statusLabel}</span>
           </div>
         </div>
       </div>
 
-      {#if fileError || launchError}
+      {#if fileError ?? launchError}
         <div
-          class="px-4 py-2.5 rounded-lg text-[0.82rem]"
           style="background: color-mix(in oklab, var(--color-err) 8%, transparent); border: 1px solid color-mix(in oklab, var(--color-err) 25%, transparent); color: var(--color-err);"
+          class="px-4 py-2.5 rounded-lg text-[0.82rem]"
         >
           {fileError ?? launchError}
         </div>
       {/if}
 
       <!-- STATS -->
-      <div class="grid grid-cols-3 gap-3" style="animation: fade-up 0.5s ease 0.12s both;">
+      <div style="animation: fade-up 0.5s ease 0.12s both;" class="grid grid-cols-3 gap-3">
         {#each [{ l: 'Play time', v: playTime }, { l: 'Last played', v: lastPlayed }, { l: 'Source', v: capSource(game.source) }] as s (s.l)}
           <div
-            class="p-4 rounded-[13px] border border-line"
             style="background: rgba(255,255,255,0.018);"
+            class="p-4 rounded-[13px] border border-line"
           >
             <div class="font-mono text-[9.5px] text-t-lo tracking-[0.12em] uppercase mb-[7px]">
               {s.l}
@@ -344,22 +348,22 @@
             >COMPANION SETUP</span
           >
           <button
-            onclick={() => onOpenSettings?.()}
             class="font-mono text-[10px] text-t-lo cursor-pointer transition-colors hover:text-t-mid"
-            >manage in Settings →</button
+            onclick={() => onOpenSettings?.()}
+            type="button">manage in Settings →</button
           >
         </div>
         <div class="grid grid-cols-2 gap-2.5">
           <!-- provider -->
           <div
-            class="flex items-center justify-between px-[15px] py-[13px] rounded-[11px] border border-line"
             style="background: rgba(255,255,255,0.016);"
+            class="flex items-center justify-between px-[15px] py-[13px] rounded-[11px] border border-line"
           >
             <span class="text-[12.5px] text-t-mid">AI provider</span>
             <span class="flex items-center gap-[7px]"
               ><span
-                class="w-[7px] h-[7px] rounded-full"
                 style="background: {prov.dot}; box-shadow: 0 0 6px {prov.dot};"
+                class="w-[7px] h-[7px] rounded-full"
               ></span><span class="font-display text-[12.5px] font-medium text-t-hi"
                 >{prov.label}</span
               ></span
@@ -367,55 +371,54 @@
           </div>
           <!-- model -->
           <div
-            class="flex items-center justify-between px-[15px] py-[13px] rounded-[11px] border border-line"
             style="background: rgba(255,255,255,0.016);"
+            class="flex items-center justify-between px-[15px] py-[13px] rounded-[11px] border border-line"
           >
             <span class="text-[12.5px] text-t-mid">Model</span>
             <span
-              class="font-mono text-[11px] px-[9px] py-[3px] rounded-md"
               style="color: var(--accent); background: color-mix(in oklab, var(--accent) 10%, transparent);"
-              >{prov.model}</span
+              class="font-mono text-[11px] px-[9px] py-[3px] rounded-md">{prov.model}</span
             >
           </div>
           <!-- overlay hotkey -->
           <div
-            class="flex items-center justify-between px-[15px] py-[13px] rounded-[11px] border border-line"
             style="background: rgba(255,255,255,0.016);"
+            class="flex items-center justify-between px-[15px] py-[13px] rounded-[11px] border border-line"
           >
             <span class="text-[12.5px] text-t-mid">Overlay hotkey</span>
             <span
-              class="font-mono text-[11px] text-t-hi px-[9px] py-[3px] rounded-md"
               style="background: var(--color-ink-3); border: 1px solid var(--color-line); box-shadow: 0 1.5px 0 rgba(0,0,0,0.4);"
+              class="font-mono text-[11px] text-t-hi px-[9px] py-[3px] rounded-md"
               >Ctrl+Shift+G</span
             >
           </div>
           <!-- translate hotkey -->
           <div
-            class="flex items-center justify-between px-[15px] py-[13px] rounded-[11px] border border-line"
             style="background: rgba(255,255,255,0.016);"
+            class="flex items-center justify-between px-[15px] py-[13px] rounded-[11px] border border-line"
           >
             <span class="text-[12.5px] text-t-mid">Translate hotkey</span>
             <span
-              class="font-mono text-[11px] text-t-hi px-[9px] py-[3px] rounded-md"
               style="background: var(--color-ink-3); border: 1px solid var(--color-line); box-shadow: 0 1.5px 0 rgba(0,0,0,0.4);"
+              class="font-mono text-[11px] text-t-hi px-[9px] py-[3px] rounded-md"
               >Ctrl+Shift+T</span
             >
           </div>
           <!-- translation (per-game translate config lands with a future setting) -->
           <div
-            class="flex items-center justify-between px-[15px] py-[13px] rounded-[11px] border border-line"
             style="background: rgba(255,255,255,0.016);"
+            class="flex items-center justify-between px-[15px] py-[13px] rounded-[11px] border border-line"
           >
             <span class="text-[12.5px] text-t-mid">Translation</span>
             <span class="font-display text-[12px] font-medium text-t-lo">Off</span>
           </div>
           <!-- vision -->
           <div
-            class="flex items-center justify-between px-[15px] py-[13px] rounded-[11px] border border-line"
             style="background: rgba(255,255,255,0.016);"
+            class="flex items-center justify-between px-[15px] py-[13px] rounded-[11px] border border-line"
           >
             <span class="text-[12.5px] text-t-mid">Screenshot vision</span>
-            <span class="font-display text-[12px] font-medium" style="color: var(--accent);"
+            <span style="color: var(--accent);" class="font-display text-[12px] font-medium"
               >Enabled</span
             >
           </div>
