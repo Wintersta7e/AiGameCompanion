@@ -30,6 +30,16 @@ jobs:
         with:
           components: rustfmt, clippy
       - uses: Swatinem/rust-cache@49a0bdc70d2e1b713ca9e2869b211fcce03d3c1c # v2
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: crates/launcher/package-lock.json
+      # `custom-protocol` embeds the frontend at compile time, so the bundle has
+      # to exist before anything is checked with --all-features.
+      - name: Build the frontend
+        run: npm ci && npm run build
+        working-directory: crates/launcher
       - name: Format check
         run: cargo fmt --all --check
       # --all-targets covers tests and benches, --locked fails if Cargo.lock is
@@ -55,6 +65,12 @@ jobs:
         with:
           components: clippy
       - uses: Swatinem/rust-cache@49a0bdc70d2e1b713ca9e2869b211fcce03d3c1c # v2
+      # Tauri links against the GTK/WebKit stack on Linux.
+      - name: Install system libraries
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libglib2.0-dev libgtk-3-dev libsoup-3.0-dev \
+            libwebkit2gtk-4.1-dev libjavascriptcoregtk-4.1-dev librsvg2-dev
       - name: Clippy
         run: cargo clippy --workspace --all-targets --locked -- -D warnings
 
@@ -147,10 +163,20 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-      - uses: taiki-e/install-action@26e9283f268b880168bdbd2c545dfcd60ec2c6ab # v2
-        with:
-          tool: actionlint
-      - run: actionlint
+      # actionlint is a Go binary, so install-action's cargo fallback cannot
+      # resolve it. Pinned version + checksum instead of an unverified download.
+      - name: Install actionlint
+        env:
+          VERSION: 1.7.12
+          SHA256: 8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8
+        run: |
+          set -euo pipefail
+          archive="actionlint_${VERSION}_linux_amd64.tar.gz"
+          curl -fsSL -o "$archive" \
+            "https://github.com/rhysd/actionlint/releases/download/v${VERSION}/${archive}"
+          echo "${SHA256}  ${archive}" | sha256sum -c -
+          tar xzf "$archive" actionlint
+      - run: ./actionlint -color
 
   secrets:
     name: Secrets (gitleaks)
