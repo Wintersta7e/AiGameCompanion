@@ -53,6 +53,6 @@ pub(crate) fn set_gemini_key(_key: &str) -> Result<(), String> {
 }
 
 #[cfg(not(windows))]
-pub(crate) fn gemini_key() -> Option<String> {
+pub(crate) const fn gemini_key() -> Option<String> {
     None
 }
