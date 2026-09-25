@@ -49,6 +49,7 @@
   let messages = $state<Msg[]>([]);
 
   let inputEl = $state<HTMLInputElement | null>(null);
+  let translateBtn = $state<HTMLButtonElement | null>(null);
   let msglistEl = $state<HTMLDivElement | null>(null);
 
   let translateText = $state('');
@@ -77,7 +78,10 @@
   const exeFile = $derived(game?.exe.split(/[\\/]/).pop() ?? '');
   const captureHint = $derived.by(() => {
     if (provider === 'openai') return 'screenshots unsupported on OpenAI';
-    if (attach && canAttach) return 'screenshot attached · WGC';
+    // Name the window Enter will capture: a hotkey pressed while the overlay
+    // is open acts on this stored target, not on whatever is in front now.
+    if (attach && canAttach && game)
+      return `screenshot of ${game.name || game.exe} attaches on send`;
     return 'screenshot attaches via WGC';
   });
 
@@ -275,16 +279,14 @@
     }
   }
 
+  // The hotkey only stages the question: nothing is captured or sent, and no
+  // answer in progress is cancelled, until the user presses Enter or clicks.
   async function runQuickAsk() {
     tab = 'chat';
-    if (asking) await stop();
-    if (!canSend) return;
-    // Attach a frame for this one-shot without leaving the toggle on.
-    const prev = attach;
-    attach = canAttach;
-    const pending = send(QUICK_ASK);
-    attach = prev;
-    await pending;
+    prompt = QUICK_ASK;
+    if (canAttach) attach = true;
+    await tick();
+    inputEl?.focus();
   }
 
   async function copyTranslation() {
@@ -324,8 +326,9 @@
         void tick().then(() => inputEl?.focus());
       }),
       listen('translate-request', () => {
+        // Stage only: Enter on the focused button, or a click, runs it.
         tab = 'translate';
-        void runTranslate();
+        void tick().then(() => translateBtn?.focus());
       }),
       listen('quick-ask', () => {
         void runQuickAsk();
@@ -662,17 +665,21 @@
                 <div class="te-sub">Set api.gemini.api_key in config.toml.</div>
               {:else}
                 <div class="te-title">No foreign text captured yet.</div>
-                <div class="te-sub">Aim at on-screen text and press Ctrl+Shift+T.</div>
+                <div class="te-sub">
+                  Ctrl+Shift+T opens this tab. Press Enter or click Capture &amp; translate to send
+                  the game's screen.
+                </div>
               {/if}
             </div>
           {/if}
         </div>
         <div class="translate-actions">
           <button
+            bind:this={translateBtn}
             class="recapture live"
             disabled={translateBusy || !game?.linked || !availability.gemini}
             onclick={runTranslate}
-            type="button">Re-capture · Ctrl+Shift+T</button
+            type="button">Capture &amp; translate</button
           >
           <button
             class="recapture live"
