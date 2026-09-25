@@ -517,7 +517,7 @@
           {:else if messages.length === 0}
             <div class="msg sage">
               <span class="avatar"></span>
-              <div class="bubble">
+              <div class="bubble intro">
                 {#if game?.linked}
                   Linked to {game.name || game.exe}. I can see your screen — ask me anything, or tap
                   a prompt below.
@@ -1053,6 +1053,10 @@
     color: var(--color-t-hi);
     white-space: pre-wrap;
     word-break: break-word;
+  }
+  /* The intro text wraps in the template; pre-wrap would render those breaks. */
+  .bubble.intro {
+    white-space: normal;
   }
   .msg.sage .bubble {
     background: var(--color-ink-2);
