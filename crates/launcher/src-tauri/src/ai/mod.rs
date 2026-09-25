@@ -17,7 +17,7 @@ use serde::{Deserialize, Serialize};
 use tauri::ipc::Channel;
 use tauri::{AppHandle, Manager};
 
-use crate::overlay::{GameInfo, OverlayState};
+use crate::overlay::GameInfo;
 
 pub(crate) use cli::{detect_all, CliConfig};
 
@@ -205,14 +205,14 @@ async fn run(app: AppHandle, params: RequestParams, channel: Channel<SageEvent>)
     } = params;
 
     // Read shared state up front so no state guard is held across an await.
-    let (system_prompt, game_hwnd) = {
-        let overlay = app.state::<OverlayState>();
-        let game = overlay.game.lock();
-        (
-            build_system_prompt(game.as_ref()),
-            game.as_ref().map(|g| g.hwnd),
-        )
-    };
+    // Only a linked, still-live target contributes a name or a capture target.
+    let ctx = request_context(crate::overlay::linked_game(&app).as_ref());
+    tracing::info!(
+        "{}",
+        request_log_line(request_id, provider, attach_screenshot, &ctx)
+    );
+    let system_prompt = build_system_prompt(ctx.game_name.as_deref());
+    let capture_target = ctx.capture;
     let cli_cfg = app.state::<AiState>().cli.lock().clone();
 
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<String>();
@@ -225,7 +225,7 @@ async fn run(app: AppHandle, params: RequestParams, channel: Channel<SageEvent>)
         // blocking-pool thread.
         // Screenshots are skipped for OpenAI (Codex `--image` is broken upstream).
         let screenshot = if attach_screenshot && provider != Provider::Openai {
-            capture_base64(game_hwnd).await
+            capture_base64(capture_target).await
         } else {
             None
         };
@@ -303,12 +303,14 @@ async fn run(app: AppHandle, params: RequestParams, channel: Channel<SageEvent>)
     app.state::<AiState>().clear_if(request_id);
 }
 
-/// Capture the stored game window and base64-encode it as PNG for an AI request.
+/// Capture the linked game window and base64-encode it as PNG for an AI request.
 /// Capture failures are non-fatal: the request proceeds without the screenshot.
-async fn capture_base64(game_hwnd: Option<i64>) -> Option<String> {
-    let hwnd = game_hwnd?;
-    match tokio::task::spawn_blocking(move || crate::overlay_capture::capture_window_png(hwnd))
-        .await
+async fn capture_base64(target: Option<(i64, u32)>) -> Option<String> {
+    let (hwnd, pid) = target?;
+    match tokio::task::spawn_blocking(move || {
+        crate::overlay_capture::capture_live_window_png(hwnd, pid)
+    })
+    .await
     {
         Ok(Ok(png)) => Some(base64::engine::general_purpose::STANDARD.encode(png)),
         Ok(Err(error)) => {
@@ -322,21 +324,50 @@ async fn capture_base64(game_hwnd: Option<i64>) -> Option<String> {
     }
 }
 
-/// The Sage persona prompt, optionally grounded with the detected game name.
-fn build_system_prompt(game: Option<&GameInfo>) -> String {
+/// What a request may use from the stored target.
+#[derive(Debug, Default, PartialEq, Eq)]
+struct RequestContext {
+    /// The name the system prompt may use.
+    game_name: Option<String>,
+    /// The window a screenshot may capture, as (hwnd, pid).
+    capture: Option<(i64, u32)>,
+}
+
+/// The send gate: a target contributes its name and its capture target only
+/// when it is linked. A missing or unlinked target contributes nothing, and a
+/// window title never leaves here.
+fn request_context(target: Option<&GameInfo>) -> RequestContext {
+    match target {
+        Some(game) if game.linked => RequestContext {
+            game_name: Some(game.name.clone()),
+            capture: Some((game.hwnd, game.pid)),
+        },
+        _ => RequestContext::default(),
+    }
+}
+
+/// One log line per request recording what the gate let through -- never a name
+/// or a title.
+fn request_log_line(
+    request_id: u64,
+    provider: Provider,
+    screenshot_requested: bool,
+    ctx: &RequestContext,
+) -> String {
+    let yes_no = |flag: bool| if flag { "yes" } else { "no" };
+    format!(
+        "Request {request_id}: provider {}, screenshot requested: {}, linked target: {}",
+        provider.as_str(),
+        yes_no(screenshot_requested),
+        yes_no(ctx.capture.is_some()),
+    )
+}
+
+/// The Sage persona prompt, naming the game when the linked target has a name.
+fn build_system_prompt(game_name: Option<&str>) -> String {
     let mut prompt = default_system_prompt();
-    if let Some(game) = game {
-        let name = if game.title.trim().is_empty() {
-            std::path::Path::new(&game.exe)
-                .file_stem()
-                .map(|stem| stem.to_string_lossy().into_owned())
-                .unwrap_or_default()
-        } else {
-            game.title.trim().to_owned()
-        };
-        if !name.is_empty() {
-            let _ = write!(prompt, " The player is currently playing {name}.");
-        }
+    if let Some(name) = game_name.map(str::trim).filter(|name| !name.is_empty()) {
+        let _ = write!(prompt, " The player is currently playing {name}.");
     }
     prompt
 }
@@ -356,13 +387,14 @@ const TRANSLATE_SYSTEM: &str =
     "You are a screen translator for a gamer. Read the foreign text in the image and translate it \
      into natural English. Be concise; do not add commentary.";
 
-/// Capture the game window and translate any foreign text in it to English via
-/// Gemini. A one-shot call, independent of the chat request slot.
-pub(crate) async fn translate_capture(game_hwnd: i64) -> Result<String, String> {
-    let png =
-        tokio::task::spawn_blocking(move || crate::overlay_capture::capture_window_png(game_hwnd))
-            .await
-            .map_err(|error| format!("capture task failed: {error}"))??;
+/// Capture the linked game window and translate any foreign text in it to
+/// English via Gemini. A one-shot call, independent of the chat request slot.
+pub(crate) async fn translate_capture(hwnd: i64, pid: u32) -> Result<String, String> {
+    let png = tokio::task::spawn_blocking(move || {
+        crate::overlay_capture::capture_live_window_png(hwnd, pid)
+    })
+    .await
+    .map_err(|error| format!("capture task failed: {error}"))??;
     let screenshot = base64::engine::general_purpose::STANDARD.encode(png);
     let cfg = gemini::load_config()?;
     let messages = [ChatMessage {
@@ -386,4 +418,87 @@ pub(crate) async fn translate_capture(game_hwnd: i64) -> Result<String, String> 
     )
     .await?;
     Ok(out.trim().to_owned())
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(
+        clippy::print_stdout,
+        reason = "the tests print the prompt and what the scans counted"
+    )]
+
+    use super::*;
+
+    fn target(linked: bool) -> GameInfo {
+        GameInfo {
+            hwnd: 42,
+            pid: 7,
+            exe: r"C:\Games\Foo\foo.exe".into(),
+            title: "SECRET-TITLE $(id)".into(),
+            name: "Real Name".into(),
+            linked,
+        }
+    }
+
+    #[test]
+    fn system_prompt_names_game_never_title() {
+        let ctx = request_context(Some(&target(true)));
+        let prompt = build_system_prompt(ctx.game_name.as_deref());
+        println!("{prompt}");
+        assert!(prompt.contains("Real Name"));
+        assert!(!prompt.contains("SECRET-TITLE"));
+
+        let untargeted = build_system_prompt(request_context(None).game_name.as_deref());
+        assert_eq!(
+            untargeted,
+            default_system_prompt(),
+            "no target names no game"
+        );
+    }
+
+    #[test]
+    fn unlinked_target_contributes_nothing() {
+        assert_eq!(request_context(None), RequestContext::default());
+        assert_eq!(
+            request_context(Some(&target(false))),
+            RequestContext::default()
+        );
+        assert_eq!(
+            request_context(Some(&target(true))),
+            RequestContext {
+                game_name: Some("Real Name".into()),
+                capture: Some((42, 7)),
+            }
+        );
+    }
+
+    #[test]
+    fn request_log_line_names_no_game() {
+        for (linked, expected) in [
+            (
+                true,
+                "Request 3: provider claude, screenshot requested: yes, linked target: yes",
+            ),
+            (
+                false,
+                "Request 3: provider claude, screenshot requested: yes, linked target: no",
+            ),
+        ] {
+            let ctx = request_context(Some(&target(linked)));
+            let line = request_log_line(3, Provider::Claude, true, &ctx);
+            println!("{line}");
+            assert_eq!(line, expected);
+            assert!(!line.contains("Real Name"));
+            assert!(!line.contains("SECRET-TITLE"));
+        }
+    }
+
+    #[test]
+    fn captures_go_through_the_liveness_check() {
+        let needle = concat!("capture_window_png", "(");
+        let (files, count) = crate::util::count_in_sources(needle, Some("overlay_capture.rs"));
+        println!("scanned {files} files, found {count} occurrence(s) of {needle}");
+        assert!(files > 0, "the source scan found no files");
+        assert_eq!(count, 0, "capture only through capture_live_window_png");
+    }
 }
