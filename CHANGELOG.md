@@ -4,6 +4,43 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## Unreleased
+
+### Security
+
+- **A window title could run commands inside WSL.** When Claude or Codex ran
+  through WSL, the launcher started it with `wsl.exe --`, which hands the command
+  line to the user's default shell to parse before the CLI's own shell does. Text
+  in the system prompt -- including the title of whatever window was in front --
+  could therefore expand `$(...)` and run commands. WSL commands now start with
+  `wsl.exe --exec`, so the prompt is parsed exactly once. The same double parsing
+  is what the 2.0.1 entry described as an environment variable arriving empty.
+- **Window titles no longer reach any provider.** The prompt names a game by its
+  library name, or by the program's file name for a window you linked yourself,
+  and only a linked window is ever named or captured.
+
+### Fixed
+
+- **A library file the launcher cannot fully read is never overwritten.** If the
+  file stays locked (for example by a virus scanner) for more than about a
+  second, cannot be read, or is corrupt with no backup possible, the launcher now
+  runs read-only for that session: it shows a banner saying so, skips the startup
+  scan and leaves launch-on-startup alone. Before, it started from an empty
+  library and the next save replaced the file. A backup never replaces an older
+  backup, and a file with unreadable game entries is backed up before anything
+  writes to it.
+- The chat screenshot now rechecks that its target window is still there right
+  before capturing, as translation does; a window that closed is not captured.
+
+### Changed
+
+- **Windows outside your library are linked with one click.** The overlay opens
+  unlinked over any other window and sends nothing about it until you click
+  **Link** for that session. Library games link automatically.
+- **Ctrl+Shift+A and Ctrl+Shift+T wait for Enter.** Quick-ask puts the preset
+  question in the input with the screenshot on; translate opens its tab with the
+  button focused. Nothing is captured or sent until you press Enter or click.
+
 ## 2.0.1 - 2026-09-16
 
 ### Fixed

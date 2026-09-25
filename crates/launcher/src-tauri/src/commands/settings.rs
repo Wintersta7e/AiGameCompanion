@@ -12,6 +12,14 @@ pub(crate) fn get_settings(state: State<'_, AppState>) -> LauncherSettings {
     launcher.settings.clone()
 }
 
+/// Why the library file is read-only this run, or `None` when it is writable.
+/// The main window asks before deciding whether to scan.
+#[tauri::command]
+#[allow(clippy::needless_pass_by_value)]
+pub(crate) fn state_health(state: State<'_, AppState>) -> Option<String> {
+    state.load_error().map(str::to_owned)
+}
+
 #[tauri::command]
 #[allow(clippy::needless_pass_by_value)]
 pub(crate) fn update_settings(
@@ -19,6 +27,11 @@ pub(crate) fn update_settings(
     state: State<'_, AppState>,
     app: AppHandle,
 ) -> Result<(), String> {
+    // Refuse before the autostart entry changes: `save()` would fail anyway in
+    // read-only mode, but only after the OS entry had been rewritten.
+    if let Some(reason) = state.load_error() {
+        return Err(reason.to_owned());
+    }
     let launch_on_startup = settings.launch_on_startup;
     {
         let mut launcher = state.launcher.lock();

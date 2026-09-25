@@ -61,7 +61,7 @@ a working tool you can build and run, not a polished consumer app.
 - Streaming "Sage" replies over a Tauri channel, multi-turn chat, Stop / New chat.
 - Screenshot vision (Gemini + Claude) via **Windows.Graphics.Capture** -- capture
   the game frame with no injection; skipped for OpenAI (upstream Codex limitation).
-- Screen translation (**Ctrl+Shift+T**) and quick-ask (**Ctrl+Shift+A**) hotkeys.
+- Translate (**Ctrl+Shift+T**) and quick-ask (**Ctrl+Shift+A**) hotkeys that wait for Enter.
 - Desktop launcher (Tauri 2 + Svelte 5) -- Steam library discovery, cover art,
   one-click launch, tray, launch-on-startup, and play-time via an external process
   watcher.
@@ -106,9 +106,13 @@ fall back to one another silently.
 
 ### Screenshot vision & translation
 Attach the current frame to a question (Gemini / Claude) -- captured via
-Windows.Graphics.Capture, no injection. Press **Ctrl+Shift+T** to translate
-on-screen text through Gemini, or **Ctrl+Shift+A** to fire a preset question with
-a screenshot attached.
+Windows.Graphics.Capture, no injection. The hotkeys stage a request and wait:
+- **Ctrl+Shift+T** opens the translate tab; Enter (or a click) captures and translates.
+- **Ctrl+Shift+A** stages a preset question with the screenshot on; Enter sends it.
+
+Sage only uses a *linked* window: games in your library link automatically, and
+any other window shows a one-click **Link** control for that session. Until a
+window is linked, nothing about it -- not its name, not a screenshot -- is sent.
 
 ### Desktop launcher
 A Tauri 2 + Svelte 5 GUI for your library: Steam auto-discovery, Steam-CDN cover
@@ -136,8 +140,9 @@ default provider, hotkey reference, launcher toggles).
    key (stored in the Windows Credential Manager). Claude / OpenAI are detected
    automatically if their CLIs are installed.
 3. **Play.** With a game in the foreground, press **Ctrl+Shift+G** to open Sage,
-   type a question, and optionally attach the current frame. **Ctrl+Shift+T**
-   translates on-screen text; **Ctrl+Shift+A** asks a preset question.
+   type a question, and optionally attach the current frame. A window outside your
+   library opens unlinked: click **Link** once to use it for the session.
+   **Ctrl+Shift+T** (translate) and **Ctrl+Shift+A** (preset question) wait for Enter.
 
 ## Layout
 

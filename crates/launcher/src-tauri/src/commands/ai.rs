@@ -68,17 +68,16 @@ pub(crate) struct TranslateResult {
     pub text: String,
 }
 
-/// Capture the detected game window and translate its on-screen foreign text to
+/// Capture the linked game window and translate its on-screen foreign text to
 /// English. One-shot (not part of the streaming chat slot).
 #[tauri::command]
 #[allow(clippy::needless_pass_by_value)]
 pub(crate) async fn translate_screen(app: AppHandle) -> Result<TranslateResult, String> {
-    // Revalidated, not just read: capturing a recycled handle would screenshot
-    // an unrelated window and upload it to a cloud provider.
-    let hwnd = crate::overlay::live_game(&app)
-        .map(|game| game.hwnd)
-        .ok_or_else(|| "No game detected -- open the overlay over a game first.".to_owned())?;
-    let text = crate::ai::translate_capture(hwnd).await?;
+    // Linked and revalidated, not just read: an unlinked window is never
+    // captured, and a recycled handle would screenshot an unrelated window.
+    let game = crate::overlay::linked_game(&app)
+        .ok_or_else(|| "No linked game -- link the window in the overlay first.".to_owned())?;
+    let text = crate::ai::translate_capture(game.hwnd, game.pid).await?;
     Ok(TranslateResult { text })
 }
 

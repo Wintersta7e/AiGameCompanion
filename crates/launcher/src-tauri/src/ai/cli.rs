@@ -94,17 +94,16 @@ fn silent(cmd: &mut std::process::Command) -> &mut std::process::Command {
 
 /// The WSL user's home directory, resolved once.
 ///
-/// `wsl.exe -- <cmd>` launched from a Windows process gets no HOME: the shell is
-/// not a login shell and nothing on the Windows side supplies one. `$HOME` is
-/// therefore empty inside every probe, which silently broke two things -- the
-/// Codex workdir resolved to `""`, and `.bashrc` put `/.local/bin` on PATH
-/// instead of `~/.local/bin`, so Claude was reported "Not found" on machines
-/// that have it. The passwd database needs no environment to answer.
+/// Scripts interpolate this path instead of writing `$HOME`. Under the old
+/// `wsl.exe --` form the command line went through the user's default shell
+/// first, which expanded every `$VAR`, `$(...)` and backtick before `bash -lic`
+/// ran -- a `$HOME` in the script was that shell's value, not bash's, and the
+/// Codex workdir resolved to `""`. `wsl_exec` removes that shell; the passwd
+/// database still needs no environment to answer.
 fn wsl_home() -> Option<&'static str> {
     static HOME: std::sync::OnceLock<Option<String>> = std::sync::OnceLock::new();
     HOME.get_or_init(|| {
-        let out = windowless(std::process::Command::new("wsl.exe").args([
-            "--",
+        let out = windowless(&mut wsl_exec(&[
             "sh",
             "-c",
             r#"getent passwd "$(id -u)" | cut -d: -f6"#,
@@ -163,16 +162,40 @@ fn shell_escape(s: &str) -> String {
     format!("'{}'", s.replace('\'', "'\\''"))
 }
 
+/// Build every `wsl.exe` child here, as `wsl.exe --exec <program> <args...>`.
+///
+/// `--exec` hands the arguments to the Linux program as argv. The `--` form
+/// passes the command line to the user's default shell instead, which re-parsed
+/// it before `bash` ran: `$(...)`, backticks and `$VAR` expanded, `\\` collapsed
+/// and a line after a newline ran, so `shell_escape` was not the only quoting
+/// layer and text such as a window title could run commands. Measured with ten
+/// hostile inputs: `--` altered six, `--exec` none.
+fn wsl_exec(args: &[&str]) -> std::process::Command {
+    let mut cmd = std::process::Command::new("wsl.exe");
+    cmd.arg("--exec").args(args);
+    cmd
+}
+
+/// `wsl.exe --exec bash -lic <script>`: the script is parsed by that bash only.
+fn wsl_bash(script: &str) -> std::process::Command {
+    wsl_exec(&["bash", "-lic", script])
+}
+
+/// The version probe run inside WSL, with the CLI name quoted like any argument.
+fn version_script(name: &str) -> String {
+    format!("{} --version", shell_escape(name))
+}
+
 /// Check if a CLI tool is available, first natively on the Windows PATH, then
 /// inside WSL, using `bash -lic`.
 ///
 /// Both flags are required, and each was measured from the running launcher:
 /// `-i` sources `.bashrc`, where nvm puts Codex (plain `-lc` made Codex
 /// undetectable), and `-l` sources the profile, where `~/.local/bin` is added --
-/// without it Claude reported "Not found" on a machine that has it installed,
-/// because `wsl.exe -- bash` from a Windows process starts with no HOME and a
-/// bare PATH. See `WSL_SENTINEL` for how the interactive shell's banner output
-/// is kept out of the model stream.
+/// without it Claude reported "Not found" on a machine that has it installed.
+/// The script reaches that bash through `wsl_bash`, so no other shell parses it
+/// first. See `WSL_SENTINEL` for how the interactive shell's banner output is
+/// kept out of the model stream.
 pub(crate) fn detect_cli(name: &str) -> CliMode {
     let native = silent(std::process::Command::new(name).arg("--version"))
         .status()
@@ -181,11 +204,9 @@ pub(crate) fn detect_cli(name: &str) -> CliMode {
         return CliMode::Native;
     }
 
-    let version_cmd = format!("{name} --version");
-    let wsl =
-        silent(std::process::Command::new("wsl.exe").args(["--", "bash", "-lic", &version_cmd]))
-            .status()
-            .is_ok_and(|status| status.success());
+    let wsl = silent(&mut wsl_bash(&version_script(name)))
+        .status()
+        .is_ok_and(|status| status.success());
     if wsl {
         return CliMode::Wsl;
     }
@@ -225,10 +246,11 @@ pub(crate) fn ensure_codex_workdir(mode: CliMode) -> Option<String> {
         // -- the `[ -d dir/.git ]` guard then no-ops and every Codex answer is
         // steered by their file. `-s read-only` blocks writes, not reads.
         //
-        // The path is interpolated, never `$HOME`: a `$VAR` written into a
-        // `wsl.exe -- bash -lic` command line reaches bash empty (measured -- an
-        // `export HOME=...` in the same script does not even fix it), which is
-        // what made this resolve to "" and Codex die on a missing directory.
+        // The path is interpolated from `wsl_home`, never written as `$HOME`.
+        // Under the old `wsl.exe --` form the user's default shell expanded
+        // `$HOME` before bash ran -- which is why an `export HOME=...` in the
+        // same script did not help -- so this resolved to "" and Codex died on
+        // a missing directory. `wsl_bash` uses `--exec`, which removes that shell.
         let home = wsl_home()?;
         let dir = format!("{home}/.cache/{CODEX_WORKDIR}");
         let quoted = shell_escape(&dir);
@@ -239,9 +261,7 @@ pub(crate) fn ensure_codex_workdir(mode: CliMode) -> Option<String> {
         // `windowless`, not `silent`: `silent` discards stderr, and a failure
         // here must say why -- otherwise the only symptom is Codex exiting with
         // "No such file or directory" long afterwards.
-        let output =
-            windowless(std::process::Command::new("wsl.exe").args(["--", "bash", "-lic", &script]))
-                .output();
+        let output = windowless(&mut wsl_bash(&script)).output();
         return match output {
             Ok(out) if out.status.success() => Some(dir),
             Ok(out) => {
@@ -462,9 +482,7 @@ where
             shell_escape(model),
             shell_escape(system_prompt),
         );
-        let mut c = Command::new("wsl.exe");
-        c.args(["--", "bash", "-lic", &claude_args]);
-        c
+        Command::from(wsl_bash(&claude_args))
     } else {
         let mut c = Command::new("claude");
         c.args([
@@ -512,9 +530,7 @@ where
             "printf '%s\\n' {WSL_SENTINEL}; codex -a never -s read-only -C {} exec --skip-git-repo-check",
             shell_escape(work_dir),
         );
-        let mut c = Command::new("wsl.exe");
-        c.args(["--", "bash", "-lic", &codex_cmd]);
-        c
+        Command::from(wsl_bash(&codex_cmd))
     } else {
         let mut c = Command::new("codex");
         c.args([
@@ -687,7 +703,8 @@ fn cli_failure_message(label: &str, stderr_tail: &[String]) -> String {
 mod tests {
     #![allow(
         clippy::unwrap_used,
-        reason = "a panic is how a test reports a failed assumption"
+        clippy::print_stdout,
+        reason = "a panic is how a test reports a failed assumption, and the scans print what they counted"
     )]
 
     use super::*;
@@ -696,6 +713,72 @@ mod tests {
         ChatMessage {
             role: role.to_owned(),
             content: content.to_owned(),
+        }
+    }
+
+    // ---------------- WSL spawning ----------------
+
+    #[test]
+    fn every_wsl_spawn_uses_the_builder() {
+        let needle = concat!("Command::new(", "\"wsl.exe\")");
+        let (files, count) = crate::util::count_in_sources(needle, None);
+        println!("scanned {files} files, found {count} occurrence(s) of {needle}");
+        assert!(files > 0, "the source scan found no files");
+        assert_eq!(count, 1, "every wsl.exe child must be built by wsl_exec");
+    }
+
+    #[test]
+    fn wsl_bash_passes_script_without_a_second_shell() {
+        let cmd = wsl_bash("S");
+        assert_eq!(cmd.get_program(), "wsl.exe");
+        assert_eq!(
+            cmd.get_args().collect::<Vec<_>>(),
+            ["--exec", "bash", "-lic", "S"]
+        );
+    }
+
+    #[test]
+    fn version_probe_escapes_the_name() {
+        assert_eq!(version_script("x; y"), "'x; y' --version");
+    }
+
+    /// Every input must come back byte for byte: anything else means a shell
+    /// other than the `bash` we start parsed the command line.
+    #[cfg(windows)]
+    #[test]
+    #[ignore = "needs WSL"]
+    fn wsl_round_trips_hostile_text() {
+        let inputs = [
+            "$(echo INJECTED)",
+            "`echo INJECTED`",
+            "$HOME and $USER",
+            "say \"hi\"",
+            "it's",
+            r"a\\b",
+            r"ends with \",
+            "line one\n$(echo INJECTED)",
+            "%PATH% !bang!",
+            "caf\u{e9} \u{65e5}\u{672c}",
+        ];
+        let marker = format!("{WSL_SENTINEL}\n");
+        for input in inputs {
+            let out = wsl_bash(&format!(
+                "printf '%s\\n' {WSL_SENTINEL}; printf '%s' {}",
+                shell_escape(input)
+            ))
+            .output()
+            .unwrap();
+            let stdout = String::from_utf8(out.stdout).unwrap();
+            let result = stdout
+                .strip_prefix(&marker)
+                .or_else(|| {
+                    stdout
+                        .split_once(&format!("\n{marker}"))
+                        .map(|(_, rest)| rest)
+                })
+                .unwrap();
+            println!("input  {input:?}\nresult {result:?}");
+            assert_eq!(result, input);
         }
     }
 

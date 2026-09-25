@@ -1,12 +1,24 @@
 //! Single-frame Windows Graphics Capture for the external overlay companion.
 
+/// Capture `hwnd` as PNG, but only while it is still a live window of `pid`.
+///
+/// The only way to capture from outside this module. The check runs here, in
+/// the caller's blocking task, immediately before the capture: a target that
+/// closed or was recycled since the request was accepted is never captured.
+pub(crate) fn capture_live_window_png(hwnd: i64, pid: u32) -> Result<Vec<u8>, String> {
+    if !crate::overlay::is_live_window(hwnd, pid) {
+        return Err("target window is gone".to_owned());
+    }
+    capture_window_png(hwnd)
+}
+
 #[cfg(windows)]
-pub(crate) fn capture_window_png(hwnd: i64) -> Result<Vec<u8>, String> {
+fn capture_window_png(hwnd: i64) -> Result<Vec<u8>, String> {
     imp::capture_window_png(hwnd)
 }
 
 #[cfg(not(windows))]
-pub(crate) fn capture_window_png(_hwnd: i64) -> Result<Vec<u8>, String> {
+fn capture_window_png(_hwnd: i64) -> Result<Vec<u8>, String> {
     Err("screen capture is only supported on Windows".into())
 }
 
