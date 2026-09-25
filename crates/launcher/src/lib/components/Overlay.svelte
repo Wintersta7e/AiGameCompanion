@@ -10,6 +10,8 @@
     pid: number;
     exe: string;
     title: string;
+    name: string;
+    linked: boolean;
     accent?: string;
   } | null;
   interface Availability {
@@ -67,8 +69,12 @@
   const accent = $derived(
     game ? (game.accent ?? hashHue(game.exe || game.title || 'sage')) : '#e0a23c',
   );
-  const canAttach = $derived(Boolean(game) && provider !== 'openai');
-  const canSend = $derived(Boolean(game) && available.length > 0);
+  // Nothing about a window is sent until it is linked; the backend enforces the
+  // same gate, this only keeps the controls honest.
+  const canAttach = $derived(Boolean(game?.linked) && provider !== 'openai');
+  const canSend = $derived(Boolean(game?.linked) && available.length > 0);
+  // The exe's file name, for the link control ("Link foo.exe ...").
+  const exeFile = $derived(game?.exe.split(/[\\/]/).pop() ?? '');
   const captureHint = $derived.by(() => {
     if (provider === 'openai') return 'screenshots unsupported on OpenAI';
     if (attach && canAttach) return 'screenshot attached · WGC';
@@ -235,6 +241,20 @@
     }
   }
 
+  async function linkGame() {
+    const shown = game;
+    if (!shown) return;
+    const linked = await invoke<GameInfo>('link_game', { hwnd: shown.hwnd, pid: shown.pid }).catch(
+      () => null,
+    );
+    // An overlay-status may have replaced the target while the call was in
+    // flight: the result applies only to the window it was asked for.
+    if (!linked || game?.hwnd !== shown.hwnd || game.pid !== shown.pid) return;
+    game = linked;
+    await tick();
+    inputEl?.focus();
+  }
+
   async function runTranslate() {
     if (translateBusy) return;
     if (!availability.gemini) {
@@ -373,16 +393,23 @@
     <div class="gamebar">
       <span class="game-tile" class:muted={!game}></span>
       <div class="game-meta">
-        {#if game}
-          <span class="game-title">{game.title || game.exe}</span>
+        {#if game?.exe}
+          <span class="game-title">{game.name || game.exe}</span>
           <span class="game-exe">{game.exe}</span>
+        {:else if game}
+          <span class="game-title dim">This window cannot be identified</span>
+          <span class="game-exe">nothing about it is sent</span>
         {:else}
           <span class="game-title dim">No game detected</span>
           <span class="game-exe">bring a game to the foreground</span>
         {/if}
       </div>
-      {#if game}
+      {#if game?.linked}
         <span class="linked-pill"><span class="d"></span>linked</span>
+      {:else if game?.exe}
+        <button class="link-btn" onclick={linkGame} title={game.exe} type="button"
+          >Link {exeFile} for this session</button
+        >
       {/if}
     </div>
 
@@ -488,16 +515,22 @@
             <div class="msg sage">
               <span class="avatar"></span>
               <div class="bubble">
-                {#if game}
-                  Linked to {game.title || game.exe}. I can see your screen — ask me anything, or
-                  tap a prompt below.
+                {#if game?.linked}
+                  Linked to {game.name || game.exe}. I can see your screen — ask me anything, or tap
+                  a prompt below.
+                {:else if game?.exe}
+                  Nothing about this window is sent until you link it. Link {exeFile} above to ask about
+                  it this session.
+                {:else if game}
+                  This window cannot be identified, so it cannot be linked and nothing about it is
+                  sent.
                 {:else}
                   Bring a game to the foreground and I'll link to it. Then ask me anything about
                   what's on screen.
                 {/if}
               </div>
             </div>
-            {#if game}
+            {#if game?.linked}
               <div class="chips">
                 {#each SUGGESTIONS as s (s)}
                   <button class="chip" onclick={() => send(s)} type="button">{s}</button>
@@ -569,7 +602,11 @@
               class="text-input"
               disabled={!canSend}
               onkeydown={onKeydown}
-              placeholder={game ? `Ask Sage about ${game.title || game.exe}…` : 'No game detected'}
+              placeholder={game?.linked
+                ? `Ask Sage about ${game.name || game.exe}…`
+                : game
+                  ? 'Link this window to ask Sage'
+                  : 'No game detected'}
               bind:value={prompt}
             />
             {#if asking}
@@ -633,7 +670,7 @@
         <div class="translate-actions">
           <button
             class="recapture live"
-            disabled={translateBusy || !game || !availability.gemini}
+            disabled={translateBusy || !game?.linked || !availability.gemini}
             onclick={runTranslate}
             type="button">Re-capture · Ctrl+Shift+T</button
           >
@@ -815,6 +852,26 @@
     border-radius: 50%;
     background: var(--accent);
     box-shadow: 0 0 6px var(--accent);
+  }
+  .link-btn {
+    margin-left: auto;
+    flex-shrink: 0;
+    max-width: 55%;
+    padding: 5px 10px;
+    border-radius: 999px;
+    font-size: 11px;
+    font-weight: 500;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    color: var(--color-t-hi);
+    background: rgba(255, 255, 255, 0.04);
+    border: 1px solid var(--color-line);
+    cursor: pointer;
+  }
+  .link-btn:hover {
+    border-color: color-mix(in oklab, var(--accent) 40%, transparent);
+    background: color-mix(in oklab, var(--accent) 12%, transparent);
   }
 
   /* tabs + provider */

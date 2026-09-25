@@ -217,6 +217,7 @@ fn main() {
             commands::ai::set_gemini_key,
             commands::ai::recheck_clis,
             overlay::hide_overlay,
+            overlay::link_game,
         ])
         .run(tauri::generate_context!());
 

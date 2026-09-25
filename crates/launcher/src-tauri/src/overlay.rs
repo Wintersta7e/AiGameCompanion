@@ -272,6 +272,52 @@ pub(crate) fn linked_game(app: &AppHandle) -> Option<GameInfo> {
     live_game(app).filter(|game| game.linked)
 }
 
+/// Whether the stored target may be linked by a control that displayed `hwnd`
+/// and `pid`: it must still be that window, and its exe must be known.
+fn may_link(stored: Option<&GameInfo>, hwnd: i64, pid: u32) -> bool {
+    stored.is_some_and(|game| game.hwnd == hwnd && game.pid == pid && !game.exe.is_empty())
+}
+
+/// Link the displayed window's app instance (pid + exe) for the rest of this
+/// launcher session. The overlay's link control is the only caller: a click
+/// there is the user's consent, so any other window is refused. Returns the
+/// linked target, or `None` when nothing was linked -- including when the
+/// stored target is no longer the window the overlay showed.
+#[tauri::command]
+#[expect(
+    clippy::needless_pass_by_value,
+    reason = "Tauri injects the handle and the calling window by value"
+)]
+pub(crate) fn link_game(
+    app: AppHandle,
+    window: tauri::WebviewWindow,
+    hwnd: i64,
+    pid: u32,
+) -> Option<GameInfo> {
+    if window.label() != "overlay" {
+        return None;
+    }
+    let game = live_game(&app)?;
+    if !may_link(Some(&game), hwnd, pid) {
+        return None;
+    }
+    let state = app.try_state::<OverlayState>()?;
+    state.user_linked.lock().insert((game.pid, game.exe));
+    let mut slot = state.game.lock();
+    let linked = slot
+        .as_mut()
+        .filter(|stored| stored.hwnd == hwnd && stored.pid == pid)
+        .map(|stored| {
+            stored.linked = true;
+            stored.clone()
+        });
+    drop(slot);
+    if linked.is_some() {
+        tracing::info!("Linked window {hwnd} (pid {pid}) for this session");
+    }
+    linked
+}
+
 #[cfg(windows)]
 mod imp {
     use super::GameInfo;
@@ -377,9 +423,76 @@ mod imp {
 
 #[cfg(test)]
 mod tests {
-    #![allow(clippy::print_stdout, reason = "the scans print what they counted")]
+    #![allow(
+        clippy::unwrap_used,
+        clippy::print_stdout,
+        reason = "a panic is how a test reports a failed assumption, and the tests print what they compared"
+    )]
 
     use super::*;
+
+    /// The overlay's hand-written `GameInfo` type must carry every field Rust
+    /// sends, with the same JSON type; a field only TypeScript has must be
+    /// optional, since Rust never sends it.
+    #[test]
+    fn overlay_game_info_type_mirrors_rust() {
+        let source = include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../src/lib/components/Overlay.svelte"
+        ));
+        let body = source
+            .split_once("type GameInfo = {")
+            .and_then(|(_, rest)| rest.split_once('}'))
+            .map(|(body, _)| body)
+            .unwrap();
+        let typescript: Vec<(String, String, bool)> = body
+            .split(';')
+            .map(str::trim)
+            .filter(|field| !field.is_empty())
+            .map(|field| {
+                let (name, ty) = field.split_once(':').unwrap();
+                let optional = name.trim().ends_with('?');
+                let name = name.trim().trim_end_matches('?').to_owned();
+                (name, ty.trim().to_owned(), optional)
+            })
+            .collect();
+        let rust: Vec<(String, &str)> = serde_json::to_value(GameInfo::default())
+            .unwrap()
+            .as_object()
+            .unwrap()
+            .iter()
+            .map(|(key, value)| {
+                let ty = match value {
+                    serde_json::Value::String(_) => "string",
+                    serde_json::Value::Number(_) => "number",
+                    serde_json::Value::Bool(_) => "boolean",
+                    _ => "unsupported",
+                };
+                (key.clone(), ty)
+            })
+            .collect();
+        println!("Rust:       {rust:?}");
+        println!("TypeScript: {typescript:?}");
+
+        let missing: Vec<String> = rust
+            .iter()
+            .filter(|(key, ty)| {
+                !typescript
+                    .iter()
+                    .any(|(name, ts_ty, _)| name == key && ts_ty == ty)
+            })
+            .map(|(key, ty)| format!("{key}: {ty}"))
+            .collect();
+        let extra_required: Vec<&str> = typescript
+            .iter()
+            .filter(|(name, _, optional)| !optional && !rust.iter().any(|(key, _)| key == name))
+            .map(|(name, _, _)| name.as_str())
+            .collect();
+        assert!(
+            missing.is_empty() && extra_required.is_empty(),
+            "missing or mistyped in TypeScript: {missing:?}; not sent by Rust but required: {extra_required:?}"
+        );
+    }
 
     fn game(name: &str, install_dir: &str, exe_path: Option<&str>) -> Game {
         Game {
@@ -462,6 +575,25 @@ mod tests {
             classify("", 7, &library, &linked_empty),
             (String::new(), false)
         );
+    }
+
+    #[test]
+    fn link_requires_the_displayed_window() {
+        let stored = GameInfo {
+            hwnd: 42,
+            pid: 7,
+            exe: r"C:\a\b\Game.exe".into(),
+            ..Default::default()
+        };
+        assert!(may_link(Some(&stored), 42, 7));
+        assert!(!may_link(Some(&stored), 43, 7), "a different window");
+        assert!(!may_link(Some(&stored), 42, 8), "a different process");
+        assert!(!may_link(None, 42, 7), "nothing stored");
+        let unidentified = GameInfo {
+            exe: String::new(),
+            ..stored
+        };
+        assert!(!may_link(Some(&unidentified), 42, 7), "an unreadable exe");
     }
 
     #[test]
