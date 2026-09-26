@@ -65,7 +65,6 @@ struct GeminiRequest {
     system_instruction: Option<SystemInstruction>,
     contents: Vec<Content>,
     generation_config: GenerationConfig,
-    tools: Vec<Tool>,
 }
 
 #[derive(Serialize)]
@@ -84,14 +83,6 @@ struct Content {
 struct GenerationConfig {
     max_output_tokens: u32,
 }
-
-#[derive(Serialize)]
-struct Tool {
-    google_search: GoogleSearch,
-}
-
-#[derive(Serialize)]
-struct GoogleSearch {}
 
 #[derive(Deserialize)]
 struct GeminiResponse {
@@ -170,29 +161,13 @@ fn gemini_role(role: &str) -> &'static str {
     }
 }
 
-/// Stream a Gemini response, passing each complete Gemini text chunk to `on_chunk`.
-///
-/// `screenshot` is a base64-encoded PNG attached to the most recent user turn.
-#[allow(clippy::too_many_lines)] // linear request-build + SSE-parse pipeline
-pub(super) async fn stream<F>(
+/// Build the request body: one content per chat turn, the screenshot attached to
+/// the most recent user turn, and the system prompt when there is one.
+fn build_request(
     messages: &[ChatMessage],
     system_prompt: &str,
     screenshot: Option<String>,
-    model: &str,
-    api_key: &str,
-    mut on_chunk: F,
-) -> Result<(), String>
-where
-    F: FnMut(String) -> Result<(), String>,
-{
-    if messages
-        .iter()
-        .all(|message| message.content.trim().is_empty())
-    {
-        return Err("Question cannot be empty.".to_owned());
-    }
-    validate_model(model)?;
-
+) -> GeminiRequest {
     let mut contents: Vec<Content> = messages
         .iter()
         .map(|message| Content {
@@ -228,16 +203,39 @@ where
         })
     };
 
-    let request = GeminiRequest {
+    GeminiRequest {
         system_instruction,
         contents,
         generation_config: GenerationConfig {
             max_output_tokens: MAX_OUTPUT_TOKENS,
         },
-        tools: vec![Tool {
-            google_search: GoogleSearch {},
-        }],
-    };
+    }
+}
+
+/// Stream a Gemini response, passing each complete Gemini text chunk to `on_chunk`.
+///
+/// `screenshot` is a base64-encoded PNG attached to the most recent user turn.
+#[allow(clippy::too_many_lines)] // linear request-build + SSE-parse pipeline
+pub(super) async fn stream<F>(
+    messages: &[ChatMessage],
+    system_prompt: &str,
+    screenshot: Option<String>,
+    model: &str,
+    api_key: &str,
+    mut on_chunk: F,
+) -> Result<(), String>
+where
+    F: FnMut(String) -> Result<(), String>,
+{
+    if messages
+        .iter()
+        .all(|message| message.content.trim().is_empty())
+    {
+        return Err("Question cannot be empty.".to_owned());
+    }
+    validate_model(model)?;
+
+    let request = build_request(messages, system_prompt, screenshot);
     let url = format!("{GEMINI_ENDPOINT}/{model}:streamGenerateContent?alt=sse");
     let client = reqwest::Client::builder()
         .timeout(Duration::from_mins(2))
@@ -388,10 +386,51 @@ fn stream_error_message(json: &str) -> Option<String> {
 mod tests {
     #![allow(
         clippy::expect_used,
-        reason = "a panic is how a test reports a failed assumption"
+        clippy::print_stdout,
+        reason = "a panic is how a test reports a failed assumption, and the scans print what they counted"
     )]
 
-    use super::{process_sse_lines, stream_error_message, validate_model};
+    use super::{
+        build_request, process_sse_lines, stream_error_message, validate_model, ChatMessage,
+    };
+
+    fn turn(role: &str, content: &str) -> ChatMessage {
+        ChatMessage {
+            role: role.to_owned(),
+            content: content.to_owned(),
+        }
+    }
+
+    #[test]
+    fn request_carries_no_tools() {
+        let chat = build_request(
+            &[turn("user", "q1"), turn("model", "a1"), turn("user", "q2")],
+            "Be brief.",
+            Some("QUJD".into()),
+        );
+        let translation = build_request(
+            &[turn("user", "Translate the text in this image.")],
+            "You translate on-screen text.",
+            Some("QUJD".into()),
+        );
+        for request in [chat, translation] {
+            let value = serde_json::to_value(&request).expect("the request serialises");
+            let text = value.to_string();
+            println!("{text}");
+            assert!(value.get("tools").is_none(), "the request carries tools");
+            assert!(!text.contains(concat!("google", "_search")));
+        }
+    }
+
+    #[test]
+    fn no_search_tool_in_sources() {
+        for needle in [concat!("google", "_search"), concat!("Google", "Search")] {
+            let (files, count) = crate::util::count_in_sources(needle, None);
+            println!("scanned {files} files, found {count} occurrence(s) of {needle}");
+            assert!(files > 0, "the source scan found no files");
+            assert_eq!(count, 0, "no Gemini request may carry the search tool");
+        }
+    }
 
     #[test]
     fn buffers_split_utf8_and_emits_complete_text_chunks() {

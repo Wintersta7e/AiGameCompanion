@@ -199,10 +199,10 @@ cargo test -p launcher    # pure-logic tests; run on the Linux host
 4. **Secrets stay secret.** A Gemini key entered in Settings lives in the Windows
    Credential Manager. A key left in a legacy `config.toml` is still read from
    there in plaintext, so move it into Settings and clear the file.
-5. **No telemetry or analytics.** Nothing reports usage back to us. Two outbound
-   requests are worth knowing about anyway: the UI loads its fonts from Google
-   Fonts at startup, and Gemini requests enable Google Search grounding, so a
-   prompt sent to Gemini can reach Google Search.
+5. **No telemetry or analytics.** Nothing reports usage back to us. Two things
+   are worth knowing about anyway: the UI loads its fonts from Google Fonts at
+   startup, and Gemini answers from the model alone -- it does not search the
+   web.
 
 ## License
 
