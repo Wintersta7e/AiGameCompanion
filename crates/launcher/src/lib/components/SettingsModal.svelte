@@ -54,6 +54,8 @@
   // The model select's own state; written to settings.gemini_model on Save.
   let modelChoice = $state('');
   let customModel = $state('');
+  // Labels of the hotkeys that failed to register ("Ctrl+Shift+G", ...).
+  let failedHotkeys = $state<string[]>([]);
   let provider = $derived(getProvider());
   let geminiKey = $state('');
   let revealKey = $state(false);
@@ -105,6 +107,11 @@
       availability = await invoke<Availability>('available_providers');
     } catch (e) {
       console.error('availability load failed:', e);
+    }
+    try {
+      failedHotkeys = await invoke<string[]>('hotkey_status');
+    } catch (e) {
+      console.error('hotkey status load failed:', e);
     }
   }
 
@@ -533,16 +540,24 @@
               Work from inside any game while Sage runs in the background.
             </p>
             {#each HOTKEYS as h (h.title)}
-              <div class="flex items-center py-[15px] border-b border-line-2">
-                <div class="min-w-0">
-                  <div class="text-[13.5px] font-semibold text-t-hi">{h.title}</div>
-                  <div class="text-[12px] text-t-mid">{h.sub}</div>
+              <div class="py-[15px] border-b border-line-2">
+                <div class="flex items-center">
+                  <div class="min-w-0">
+                    <div class="text-[13.5px] font-semibold text-t-hi">{h.title}</div>
+                    <div class="text-[12px] text-t-mid">{h.sub}</div>
+                  </div>
+                  <div class="ml-auto flex items-center gap-[6px]">
+                    <span class="keycap">Ctrl</span><span class="text-t-lo text-[11px]">+</span>
+                    <span class="keycap">Shift</span><span class="text-t-lo text-[11px]">+</span>
+                    <span class="keycap accent">{h.keys}</span>
+                  </div>
                 </div>
-                <div class="ml-auto flex items-center gap-[6px]">
-                  <span class="keycap">Ctrl</span><span class="text-t-lo text-[11px]">+</span>
-                  <span class="keycap">Shift</span><span class="text-t-lo text-[11px]">+</span>
-                  <span class="keycap accent">{h.keys}</span>
-                </div>
+                {#if failedHotkeys.includes(`Ctrl+Shift+${h.keys}`)}
+                  <div style="color: var(--color-err);" class="mt-2 text-right text-[11.5px]">
+                    Could not be registered — another app may be using it. Close it and restart
+                    Sage.
+                  </div>
+                {/if}
               </div>
             {/each}
             <div

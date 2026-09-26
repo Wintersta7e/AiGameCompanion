@@ -1,16 +1,30 @@
 <script lang="ts">
+  import { onMount } from 'svelte';
+  import { invoke } from '@tauri-apps/api/core';
   import { getCurrentWindow } from '@tauri-apps/api/window';
-  import { getGames } from '../stores/games.svelte';
   import { PROVIDERS, getProvider, setProvider, type Provider } from '../stores/companion.svelte';
+  import { formatHotkeyStatus } from '../utils/format';
 
   let { onOpenSettings }: { onOpenSettings: () => void } = $props();
 
   const appWindow = getCurrentWindow();
 
   let provider = $derived(getProvider());
-  let count = $derived(getGames().length);
+  // Hotkeys that failed to register; null until the backend has answered.
+  let failedHotkeys = $state<string[] | null>(null);
+  let hotkeyDot = $derived(failedHotkeys?.length === 0 ? 'var(--color-ok)' : 'var(--color-err)');
 
   const providerKeys = Object.keys(PROVIDERS) as Provider[];
+
+  onMount(() => {
+    void invoke<string[]>('hotkey_status')
+      .then((failed) => {
+        failedHotkeys = failed;
+      })
+      .catch((err: unknown) => {
+        console.error('Failed to read the hotkey status:', err);
+      });
+  });
 
   async function minimize() {
     try {
@@ -75,21 +89,22 @@
     </div>
   </div>
 
-  <!-- watcher status -->
-  <div
-    style="background: rgba(255,255,255,0.025); border: 1px solid var(--color-line);"
-    class="flex items-center gap-[9px] px-[15px] py-[7px] rounded-full whitespace-nowrap"
-  >
-    <span class="relative flex w-[7px] h-[7px]">
-      <span
-        style="background: var(--color-ok); box-shadow: 0 0 8px var(--color-ok);"
-        class="absolute inset-0 rounded-full animate-pulse-fast"
-      ></span>
-    </span>
-    <span class="text-[11.5px] text-t-mid">Watcher active</span>
-    <span class="w-px h-[11px] bg-line"></span>
-    <span class="font-mono text-[10.5px] text-t-lo">{count} bound · listening</span>
-  </div>
+  <!-- hotkey status -->
+  {#if failedHotkeys}
+    <div
+      style="background: rgba(255,255,255,0.025); border: 1px solid var(--color-line);"
+      class="flex items-center gap-[9px] px-[15px] py-[7px] rounded-full whitespace-nowrap"
+    >
+      <span class="relative flex w-[7px] h-[7px]">
+        <span
+          style="background: {hotkeyDot}; box-shadow: 0 0 8px {hotkeyDot};"
+          class="absolute inset-0 rounded-full"
+          class:animate-pulse-fast={failedHotkeys.length === 0}
+        ></span>
+      </span>
+      <span class="text-[11.5px] text-t-mid">{formatHotkeyStatus(failedHotkeys)}</span>
+    </div>
+  {/if}
 
   <!-- right cluster -->
   <div class="flex items-center gap-[10px]">

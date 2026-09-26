@@ -12,6 +12,7 @@ mod state;
 mod util;
 
 use ai::AiState;
+use commands::settings::HotkeyStatus;
 use overlay::OverlayState;
 use state::AppState;
 use tauri::{
@@ -21,6 +22,16 @@ use tauri::{
 };
 use tauri_plugin_autostart::{MacosLauncher, ManagerExt};
 use tauri_plugin_global_shortcut::{Code, GlobalShortcutExt, Modifiers, Shortcut, ShortcutState};
+
+/// The overlay hotkeys in registration order -- Ctrl+Shift plus the key: toggle,
+/// translate, quick ask -- with the label shown when one cannot be registered.
+/// Modifier chords, not bare F-keys, and not Ctrl+Alt (which equals `AltGr` on
+/// international keyboards).
+const HOTKEYS: [(Code, &str); 3] = [
+    (Code::KeyG, "Ctrl+Shift+G"),
+    (Code::KeyT, "Ctrl+Shift+T"),
+    (Code::KeyA, "Ctrl+Shift+A"),
+];
 
 /// Bring the main launcher window to the foreground (restore + focus).
 fn show_main_window(app: &tauri::AppHandle) {
@@ -44,11 +55,8 @@ fn show_main_window(app: &tauri::AppHandle) {
     reason = "these two sites run before the tracing logger is initialised"
 )]
 fn main() {
-    // Overlay hotkeys (Ctrl+Shift+G/T/A): modifier chords, not bare F-keys, and
-    // not Ctrl+Alt (which equals AltGr on international keyboards).
-    let toggle = Shortcut::new(Some(Modifiers::CONTROL | Modifiers::SHIFT), Code::KeyG);
-    let translate = Shortcut::new(Some(Modifiers::CONTROL | Modifiers::SHIFT), Code::KeyT);
-    let quick_ask = Shortcut::new(Some(Modifiers::CONTROL | Modifiers::SHIFT), Code::KeyA);
+    let [toggle, translate, quick_ask] =
+        HOTKEYS.map(|(code, _)| Shortcut::new(Some(Modifiers::CONTROL | Modifiers::SHIFT), code));
 
     let run_result = tauri::Builder::default()
         // Must be registered first. Two instances would otherwise share one
@@ -84,6 +92,7 @@ fn main() {
         )
         .manage(OverlayState::default())
         .manage(AiState::default())
+        .manage(HotkeyStatus::default())
         .setup(move |app| {
             // Under `windows_subsystem = "windows"` there is no console and no
             // dialog, so panicking here kills the launcher with no visible
@@ -137,10 +146,13 @@ fn main() {
                 }
             }
 
-            // Register the overlay hotkeys (log + continue on conflict).
-            for shortcut in [toggle, translate, quick_ask] {
+            // Register the overlay hotkeys. A failure is logged and recorded, so
+            // the main window can say which chord is unavailable.
+            let hotkey_status = app.state::<HotkeyStatus>();
+            for (shortcut, (_, label)) in [toggle, translate, quick_ask].into_iter().zip(HOTKEYS) {
                 if let Err(e) = app.global_shortcut().register(shortcut) {
-                    tracing::warn!("hotkey registration failed: {e}");
+                    tracing::warn!("hotkey registration failed for {label}: {e}");
+                    hotkey_status.0.lock().push(label.to_owned());
                 }
             }
 
@@ -216,6 +228,7 @@ fn main() {
             commands::settings::get_settings,
             commands::settings::update_settings,
             commands::settings::state_health,
+            commands::settings::hotkey_status,
             commands::settings::open_url,
             commands::settings::open_config_folder,
             commands::ai::ask_sage,
@@ -241,4 +254,18 @@ fn main() {
     // Tauri's event loop has exited (all windows closed). Force-terminate so no
     // background thread keeps the process alive.
     std::process::exit(code);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::HOTKEYS;
+    use tauri_plugin_global_shortcut::Code;
+
+    #[test]
+    fn hotkey_labels_are_the_documented_chords() {
+        let labels: Vec<&str> = HOTKEYS.iter().map(|(_, label)| *label).collect();
+        assert_eq!(labels, ["Ctrl+Shift+G", "Ctrl+Shift+T", "Ctrl+Shift+A"]);
+        let codes: Vec<Code> = HOTKEYS.iter().map(|(code, _)| *code).collect();
+        assert_eq!(codes, [Code::KeyG, Code::KeyT, Code::KeyA]);
+    }
 }

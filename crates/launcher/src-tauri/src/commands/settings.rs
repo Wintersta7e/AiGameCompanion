@@ -12,6 +12,18 @@ pub(crate) fn get_settings(state: State<'_, AppState>) -> LauncherSettings {
     launcher.settings.clone()
 }
 
+/// Labels of the overlay hotkeys that failed to register at startup, in
+/// registration order. Empty when all of them registered.
+#[derive(Debug, Default)]
+pub(crate) struct HotkeyStatus(pub parking_lot::Mutex<Vec<String>>);
+
+/// The hotkeys that could not be registered; empty means all are ready.
+#[tauri::command]
+#[allow(clippy::needless_pass_by_value)]
+pub(crate) fn hotkey_status(status: State<'_, HotkeyStatus>) -> Vec<String> {
+    status.0.lock().clone()
+}
+
 /// Why the library file is read-only this run, or `None` when it is writable.
 /// The main window asks before deciding whether to scan.
 #[tauri::command]
