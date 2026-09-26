@@ -3,7 +3,7 @@
   import { invoke, Channel } from '@tauri-apps/api/core';
   import { listen } from '@tauri-apps/api/event';
   import { hashHue } from '../utils/accent';
-  import { PROVIDERS, type Provider } from '../stores/companion.svelte';
+  import { PROVIDERS, modelName, type ModelNames, type Provider } from '../stores/companion.svelte';
 
   type GameInfo = {
     hwnd: number;
@@ -14,10 +14,11 @@
     linked: boolean;
     accent?: string;
   } | null;
-  interface Availability {
+  interface Availability extends ModelNames {
     gemini: boolean;
     claude: boolean;
     openai: boolean;
+    gemini_fallback_model: string;
   }
   interface SageEvent {
     kind: 'chunk' | 'done' | 'error';
@@ -32,13 +33,23 @@
     model?: string;
     screenshot?: boolean;
     streaming?: boolean;
+    // Set only when the answer finished ("done"); stopped and failed ones never are.
+    complete?: boolean;
   }
 
   const PROVIDER_ORDER: Provider[] = ['gemini', 'claude', 'openai'];
   const SUGGESTIONS = ['Where do I go next?', "What's this enemy weak to?", 'Explain this screen'];
 
   let game = $state<GameInfo>(null);
-  let availability = $state<Availability>({ gemini: false, claude: false, openai: false });
+  let availability = $state<Availability>({
+    gemini: false,
+    claude: false,
+    openai: false,
+    gemini_model: '',
+    gemini_fallback_model: '',
+    claude_model: '',
+    openai_model: '',
+  });
   let provider = $state<Provider>('gemini');
   let savedProvider: Provider | null = null;
   let dropdownOpen = $state(false);
@@ -67,17 +78,18 @@
 
   const available = $derived(PROVIDER_ORDER.filter((p) => availability[p]));
   const meta = $derived(PROVIDERS[provider]);
+  // The model each provider answers with, as the backend reports it.
+  const modelLabel = (p: Provider) => modelName(availability, p);
   const accent = $derived(
     game ? (game.accent ?? hashHue(game.exe || game.title || 'sage')) : '#e0a23c',
   );
   // Nothing about a window is sent until it is linked; the backend enforces the
   // same gate, this only keeps the controls honest.
-  const canAttach = $derived(Boolean(game?.linked) && provider !== 'openai');
-  const canSend = $derived(Boolean(game?.linked) && available.length > 0);
+  const canAttach = $derived(Boolean(game?.linked));
+  const canSend = $derived(Boolean(game?.linked) && availability[provider]);
   // The exe's file name, for the link control ("Link foo.exe ...").
   const exeFile = $derived(game?.exe.split(/[\\/]/).pop() ?? '');
   const captureHint = $derived.by(() => {
-    if (provider === 'openai') return 'screenshots unsupported on OpenAI';
     // Name the window Enter will capture: a hotkey pressed while the overlay
     // is open acts on this stored target, not on whatever is in front now.
     if (attach && canAttach && game)
@@ -99,8 +111,9 @@
     });
   });
 
-  // Re-query availability (CLI detection can lag startup); restore the saved
-  // provider once it's known-available, else fall back to the first available.
+  // Re-query availability (CLI detection can lag startup). A saved provider
+  // stays selected even while it is unavailable: only the user switches. With
+  // nothing saved, start on the first available one.
   async function refreshProviders() {
     try {
       availability = await invoke<Availability>('available_providers');
@@ -108,7 +121,7 @@
       return;
     }
     const fallback = available[0];
-    if (savedProvider && availability[savedProvider]) provider = savedProvider;
+    if (savedProvider) provider = savedProvider;
     else if (!availability[provider] && fallback) provider = fallback;
   }
 
@@ -116,7 +129,6 @@
     provider = p;
     savedProvider = p;
     dropdownOpen = false;
-    if (provider === 'openai') attach = false;
     try {
       await invoke('set_active_provider', { provider: p });
     } catch {
@@ -150,6 +162,30 @@
     }
   }
 
+  // The history a request carries: each question with the answer that followed
+  // it, only when that answer finished and has text. A stopped, failed or empty
+  // answer is left out together with its question, so no error text or half
+  // answer is sent back as if the model had said it.
+  function completedHistory(msgs: Msg[]): { role: Msg['role']; content: string }[] {
+    const history: { role: Msg['role']; content: string }[] = [];
+    for (let i = 0; i + 1 < msgs.length; i += 2) {
+      const question = msgs[i];
+      const answer = msgs[i + 1];
+      if (
+        question?.role === 'user' &&
+        answer?.role === 'assistant' &&
+        answer.complete === true &&
+        answer.content.trim() !== ''
+      ) {
+        history.push(
+          { role: 'user', content: question.content },
+          { role: 'assistant', content: answer.content },
+        );
+      }
+    }
+    return history;
+  }
+
   async function send(text?: string) {
     const question = (text ?? prompt).trim();
     if (!question || asking || !canSend) return;
@@ -159,14 +195,14 @@
     activeRequestId = id;
     const withShot = attach && canAttach;
 
-    // History for the backend: prior turns + this question.
-    const outgoing = messages.map((m) => ({ role: m.role, content: m.content }));
+    // History for the backend: finished exchanges + this question.
+    const outgoing = completedHistory(messages);
     outgoing.push({ role: 'user', content: question });
 
     messages = [
       ...messages,
       { role: 'user', content: question, screenshot: withShot },
-      { role: 'assistant', content: '', model: meta.model, streaming: true },
+      { role: 'assistant', content: '', model: modelLabel(provider), streaming: true },
     ];
     const idx = messages.length - 1;
     streamIndex = idx;
@@ -183,6 +219,7 @@
         bubble.content += event.text ?? '';
       } else if (event.kind === 'done') {
         bubble.streaming = false;
+        bubble.complete = true;
         asking = false;
       } else {
         const msg = event.message ?? 'Unknown error';
@@ -298,21 +335,30 @@
     }
   }
 
+  // Read the saved provider: at mount, and again whenever a window announces a
+  // provider change (a choice made in the launcher, a key saved in Settings,
+  // CLI detection finishing).
+  async function loadSavedProvider() {
+    try {
+      const settings = await invoke<{ active_provider?: string }>('get_settings');
+      // The saved provider is kept even when unavailable. An empty value (a
+      // new install, nothing picked yet) or an unknown one (a hand-edited
+      // state file) is no saved provider, so the first available one is used.
+      const saved = settings.active_provider;
+      savedProvider = saved && saved in PROVIDERS ? (saved as Provider) : null;
+    } catch {
+      /* defaults apply */
+    }
+    savedProviderLoaded = true;
+    await refreshProviders();
+  }
+
   onMount(() => {
     // Only the overlay window mounts this; keep its surface transparent.
     document.documentElement.style.background = 'transparent';
     document.body.style.background = 'transparent';
 
-    void (async () => {
-      try {
-        const settings = await invoke<{ active_provider?: string }>('get_settings');
-        savedProvider = (settings.active_provider as Provider | undefined) ?? null;
-      } catch {
-        /* defaults apply */
-      }
-      savedProviderLoaded = true;
-      await refreshProviders();
-    })();
+    void loadSavedProvider();
 
     const listeners = [
       listen<GameInfo>('overlay-status', (event) => {
@@ -324,6 +370,9 @@
         // Wait for the DOM: `game` above flips canSend, and a still-disabled
         // input silently refuses focus.
         void tick().then(() => inputEl?.focus());
+      }),
+      listen('providers-changed', () => {
+        void loadSavedProvider();
       }),
       listen('translate-request', () => {
         // Stage only: Enter on the focused button, or a click, runs it.
@@ -460,45 +509,56 @@
           Translate
         </button>
       </div>
-      <button
-        class="provider-pill"
-        disabled={available.length === 0 || asking}
-        onclick={() => (dropdownOpen = !dropdownOpen)}
-        type="button"
-      >
-        <span style="background: {meta.dot}; box-shadow: 0 0 6px {meta.dot};" class="prov-dot"
-        ></span>
-        {available.length === 0 ? 'No providers' : meta.label}
-        <span class="caret">{dropdownOpen ? '▴' : '▾'}</span>
-      </button>
+      {#if tab === 'chat'}
+        <button
+          class="provider-pill"
+          disabled={available.length === 0 || asking}
+          onclick={() => (dropdownOpen = !dropdownOpen)}
+          type="button"
+        >
+          <span style="background: {meta.dot}; box-shadow: 0 0 6px {meta.dot};" class="prov-dot"
+          ></span>
+          {availability[provider] ? meta.label : `${meta.label} — not available`}
+          <span class="caret">{dropdownOpen ? '▴' : '▾'}</span>
+        </button>
 
-      {#if dropdownOpen && available.length > 0}
-        <div class="dropdown">
-          <div class="dropdown-head">Available providers</div>
-          {#each available as p (p)}
-            <button class="prov-row" onclick={() => selectProvider(p)} type="button">
-              <span style="background: {PROVIDERS[p].dot};" class="pdot"></span>
-              <span class="pmeta">
-                <span class="pname">{PROVIDERS[p].label}</span>
-                <span class="pmodel">{PROVIDERS[p].model}</span>
-              </span>
-              {#if p === provider}
-                <span class="pcheck">
-                  <svg
-                    fill="none"
-                    height="15"
-                    stroke="currentColor"
-                    stroke-linecap="round"
-                    stroke-linejoin="round"
-                    stroke-width="2.2"
-                    viewBox="0 0 24 24"
-                    width="15"><path d="M5 13l4 4L19 7" /></svg
-                  >
+        {#if dropdownOpen && available.length > 0}
+          <div class="dropdown">
+            <div class="dropdown-head">Available providers</div>
+            {#each available as p (p)}
+              <button class="prov-row" onclick={() => selectProvider(p)} type="button">
+                <span style="background: {PROVIDERS[p].dot};" class="pdot"></span>
+                <span class="pmeta">
+                  <span class="pname">{PROVIDERS[p].label}</span>
+                  <span class="pmodel">{modelLabel(p)}</span>
                 </span>
-              {/if}
-            </button>
-          {/each}
-        </div>
+                {#if p === provider}
+                  <span class="pcheck">
+                    <svg
+                      fill="none"
+                      height="15"
+                      stroke="currentColor"
+                      stroke-linecap="round"
+                      stroke-linejoin="round"
+                      stroke-width="2.2"
+                      viewBox="0 0 24 24"
+                      width="15"><path d="M5 13l4 4L19 7" /></svg
+                    >
+                  </span>
+                {/if}
+              </button>
+            {/each}
+          </div>
+        {/if}
+      {:else}
+        <!-- translation always goes to Gemini, whichever chat provider is picked -->
+        <span class="provider-note">
+          <span
+            style="background: {PROVIDERS.gemini.dot}; box-shadow: 0 0 6px {PROVIDERS.gemini.dot};"
+            class="prov-dot"
+          ></span>
+          Translates with Gemini
+        </span>
       {/if}
     </div>
 
@@ -509,9 +569,9 @@
           {#if available.length === 0}
             <div class="msg sage">
               <span class="avatar"></span>
-              <div class="bubble">
-                No AI providers are available. Add a Gemini key in config.toml, or install the
-                Claude / Codex CLI.
+              <div class="bubble intro">
+                No AI providers are available. Add a Gemini key in Settings, or install and sign in
+                to the Claude or Codex CLI.
               </div>
             </div>
           {:else if messages.length === 0}
@@ -519,8 +579,8 @@
               <span class="avatar"></span>
               <div class="bubble intro">
                 {#if game?.linked}
-                  Linked to {game.name || game.exe}. I can see your screen — ask me anything, or tap
-                  a prompt below.
+                  Linked to {game.name || game.exe}. Ask me anything, or tap a prompt below — turn
+                  on the image button to include a screenshot.
                 {:else if game?.exe}
                   Nothing about this window is sent until you link it. Link {exeFile} above to ask about
                   it this session.
@@ -579,9 +639,7 @@
               aria-label="Attach screenshot"
               disabled={!canAttach}
               onclick={() => (attach = !attach)}
-              title={provider === 'openai'
-                ? 'Screenshots are not supported on OpenAI'
-                : 'Attach a screenshot of the game'}
+              title="Attach a screenshot of the game"
               type="button"
             >
               <svg
@@ -634,7 +692,7 @@
             {/if}
           </div>
           <div class="footer">
-            <span>{meta.model} · {asking ? 'streaming' : 'Enter to send'}</span>
+            <span>{modelLabel(provider)} · {asking ? 'streaming' : 'Enter to send'}</span>
             <span>{captureHint}</span>
           </div>
         </div>
@@ -642,10 +700,6 @@
     {:else}
       <!-- translate -->
       <div class="body translate">
-        <div class="capture-box">
-          <div class="capture-head">CAPTURED · Windows.Graphics.Capture</div>
-          <div class="capture-frame" class:busy={translateBusy}></div>
-        </div>
         <div class="lang-row">
           <span class="lang-chip">Auto-detect</span>
           <span class="lang-arrow">→</span>
@@ -662,7 +716,7 @@
             <div class="translate-empty">
               {#if !availability.gemini}
                 <div class="te-title">Translation needs a Gemini key.</div>
-                <div class="te-sub">Set api.gemini.api_key in config.toml.</div>
+                <div class="te-sub">Add a Gemini key in Settings.</div>
               {:else}
                 <div class="te-title">No foreign text captured yet.</div>
                 <div class="te-sub">
@@ -932,6 +986,16 @@
   .provider-pill:disabled {
     cursor: default;
     opacity: 0.6;
+  }
+  .provider-note {
+    margin-left: auto;
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    padding: 8px 12px;
+    color: var(--color-t-mid);
+    font-size: 12.5px;
+    font-weight: 500;
   }
   .prov-dot {
     width: 7px;
@@ -1239,29 +1303,6 @@
     padding: 4px 14px 14px;
     gap: 14px;
   }
-  .capture-box {
-    border-radius: 13px;
-    border: 1px solid var(--color-line);
-    background: linear-gradient(
-      135deg,
-      color-mix(in oklab, var(--accent) 10%, var(--color-ink-2)),
-      var(--color-ink-1)
-    );
-    padding: 12px;
-  }
-  .capture-head {
-    font-family: var(--font-mono);
-    font-size: 9.5px;
-    letter-spacing: 0.06em;
-    color: var(--color-t-mid);
-    margin-bottom: 10px;
-  }
-  .capture-frame {
-    height: 74px;
-    border-radius: 9px;
-    border: 1px dashed color-mix(in oklab, var(--accent) 45%, transparent);
-    background: rgba(0, 0, 0, 0.18);
-  }
   .lang-row {
     display: flex;
     align-items: center;
@@ -1341,8 +1382,5 @@
     color: var(--color-t-hi);
     white-space: pre-wrap;
     word-break: break-word;
-  }
-  .capture-frame.busy {
-    animation: pulse-soft 1.4s ease-in-out infinite;
   }
 </style>

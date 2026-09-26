@@ -50,8 +50,11 @@ pub(crate) struct LauncherSettings {
     pub scan_on_startup: bool,
     pub minimize_to_tray: bool,
     pub launch_on_startup: bool,
-    /// Overlay AI provider selection ("gemini" / "claude" / "openai").
+    /// Overlay AI provider selection ("gemini" / "claude" / "openai"); empty
+    /// until the user picks one, when the first available provider is shown.
     pub active_provider: String,
+    /// Gemini model chosen in Settings; empty = the default model.
+    pub gemini_model: String,
 }
 
 impl Default for LauncherSettings {
@@ -60,7 +63,8 @@ impl Default for LauncherSettings {
             scan_on_startup: true,
             minimize_to_tray: true,
             launch_on_startup: false,
-            active_provider: "gemini".to_owned(),
+            active_provider: String::new(),
+            gemini_model: String::new(),
         }
     }
 }
@@ -94,4 +98,42 @@ pub(crate) struct LauncherState {
     #[serde(deserialize_with = "games_lenient")]
     pub games: Vec<Game>,
     pub settings: LauncherSettings,
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(
+        clippy::expect_used,
+        reason = "a panic is how a test reports a failed assumption"
+    )]
+
+    use super::LauncherSettings;
+
+    #[test]
+    fn gemini_model_defaults_and_round_trips() {
+        let old: LauncherSettings =
+            serde_json::from_str(r#"{"scan_on_startup":false,"active_provider":"claude"}"#)
+                .expect("settings saved before the model field load");
+        assert_eq!(old.gemini_model, "");
+        assert_eq!(old.active_provider, "claude");
+        assert!(!old.scan_on_startup);
+
+        let chosen: LauncherSettings =
+            serde_json::from_str(r#"{"gemini_model":"gemini-3.8-flash"}"#)
+                .expect("settings with a model load");
+        assert_eq!(chosen.gemini_model, "gemini-3.8-flash");
+        let value = serde_json::to_value(&chosen).expect("settings serialise");
+        assert_eq!(value["gemini_model"], "gemini-3.8-flash");
+    }
+
+    #[test]
+    fn new_install_has_no_saved_provider() {
+        assert_eq!(LauncherSettings::default().active_provider, "");
+        let without: LauncherSettings = serde_json::from_str(r#"{"scan_on_startup":false}"#)
+            .expect("settings without a provider load");
+        assert_eq!(without.active_provider, "");
+        let saved: LauncherSettings = serde_json::from_str(r#"{"active_provider":"gemini"}"#)
+            .expect("settings with a provider load");
+        assert_eq!(saved.active_provider, "gemini", "a stored choice is kept");
+    }
 }

@@ -27,3 +27,10 @@ export function formatLastPlayed(dateStr: string | null): string {
     return 'Unknown';
   }
 }
+
+/** The hotkey status line, from the labels `hotkey_status` reports as failed. */
+export function formatHotkeyStatus(failed: string[]): string {
+  return failed.length === 0
+    ? 'Hotkeys ready'
+    : `${failed.join(', ')} unavailable — another app may be using it`;
+}

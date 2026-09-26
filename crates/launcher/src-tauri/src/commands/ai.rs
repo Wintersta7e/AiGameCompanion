@@ -2,16 +2,25 @@
 //! and persisting the selected provider.
 
 use tauri::ipc::Channel;
-use tauri::{AppHandle, State};
+use tauri::{AppHandle, Manager, State};
 
 use crate::ai::{AiState, ChatMessage, Provider, ProviderAvailability, RequestParams, SageEvent};
 use crate::state::AppState;
 
+/// The Gemini model chosen in Settings. The lock is released on return, so no
+/// caller holds it across an await or another lock.
+fn settings_model(state: &AppState) -> String {
+    state.launcher.lock().settings.gemini_model.clone()
+}
+
 /// Report which providers can currently serve a request (for the UI dropdown).
 #[tauri::command]
 #[allow(clippy::needless_pass_by_value)]
-pub(crate) fn available_providers(ai: State<'_, AiState>) -> ProviderAvailability {
-    ai.availability()
+pub(crate) fn available_providers(
+    ai: State<'_, AiState>,
+    state: State<'_, AppState>,
+) -> ProviderAvailability {
+    ai.availability(&settings_model(&state))
 }
 
 /// Start a streaming chat request. Tokens arrive on `channel`; issuing a newer
@@ -51,6 +60,7 @@ pub(crate) fn cancel_sage(ai: State<'_, AiState>, request_id: u64) {
 #[tauri::command]
 #[allow(clippy::needless_pass_by_value)]
 pub(crate) fn set_active_provider(
+    app: AppHandle,
     provider: Provider,
     state: State<'_, AppState>,
 ) -> Result<(), String> {
@@ -60,7 +70,9 @@ pub(crate) fn set_active_provider(
             .as_str()
             .clone_into(&mut launcher.settings.active_provider);
     }
-    state.save()
+    let saved = state.save();
+    crate::ai::notify_providers_changed(&app);
+    saved
 }
 
 #[derive(serde::Serialize)]
@@ -77,7 +89,8 @@ pub(crate) async fn translate_screen(app: AppHandle) -> Result<TranslateResult, 
     // captured, and a recycled handle would screenshot an unrelated window.
     let game = crate::overlay::linked_game(&app)
         .ok_or_else(|| "No linked game -- link the window in the overlay first.".to_owned())?;
-    let text = crate::ai::translate_capture(game.hwnd, game.pid).await?;
+    let model = settings_model(&app.state::<AppState>());
+    let text = crate::ai::translate_capture(game.hwnd, game.pid, model).await?;
     Ok(TranslateResult { text })
 }
 
@@ -87,21 +100,30 @@ pub(crate) async fn translate_screen(app: AppHandle) -> Result<TranslateResult, 
 #[tauri::command]
 #[allow(clippy::needless_pass_by_value)]
 pub(crate) fn set_gemini_key(
+    app: AppHandle,
     ai: State<'_, AiState>,
+    state: State<'_, AppState>,
     key: String,
 ) -> Result<ProviderAvailability, String> {
     crate::secrets::set_gemini_key(key.trim())?;
-    Ok(ai.availability())
+    crate::ai::notify_providers_changed(&app);
+    Ok(ai.availability(&settings_model(&state)))
 }
 
 /// Re-run CLI detection (claude/codex) off the UI thread and return the refreshed
 /// availability.
 #[tauri::command]
 #[allow(clippy::needless_pass_by_value)]
-pub(crate) async fn recheck_clis(ai: State<'_, AiState>) -> Result<ProviderAvailability, String> {
+pub(crate) async fn recheck_clis(
+    app: AppHandle,
+    ai: State<'_, AiState>,
+    state: State<'_, AppState>,
+) -> Result<ProviderAvailability, String> {
+    let model = settings_model(&state);
     let cfg = tokio::task::spawn_blocking(crate::ai::detect_all)
         .await
         .map_err(|error| format!("CLI re-check failed: {error}"))?;
     ai.set_cli(cfg);
-    Ok(ai.availability())
+    crate::ai::notify_providers_changed(&app);
+    Ok(ai.availability(&model))
 }

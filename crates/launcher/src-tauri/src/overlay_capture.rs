@@ -22,6 +22,70 @@ fn capture_window_png(_hwnd: i64) -> Result<Vec<u8>, String> {
     Err("screen capture is only supported on Windows".into())
 }
 
+/// Scale an RGBA frame down to fit inside `max_w` x `max_h`, keeping its aspect
+/// ratio. Each output pixel is the average of the block of source pixels it
+/// covers (an area filter); the blocks tile the frame, so every source pixel
+/// counts exactly once. A frame that already fits comes back unchanged.
+#[cfg_attr(
+    not(windows),
+    allow(
+        dead_code,
+        reason = "only the Windows capture calls it; its tests run everywhere"
+    )
+)]
+fn fit_within(rgba: &[u8], w: u32, h: u32, max_w: u32, max_h: u32) -> (Vec<u8>, u32, u32) {
+    let (src_w, src_h) = (w as usize, h as usize);
+    let fits = w <= max_w && h <= max_h;
+    // An empty or mis-sized buffer is left for the PNG encoder to reject.
+    if fits || src_w == 0 || src_h == 0 || rgba.len() != src_w * src_h * 4 {
+        return (rgba.to_vec(), w, h);
+    }
+    let (out_w, out_h) = fitted_size(w, h, max_w, max_h);
+    let (dst_w, dst_h) = (out_w as usize, out_h as usize);
+
+    let mut out = Vec::with_capacity(dst_w * dst_h * 4);
+    for oy in 0..dst_h {
+        let (y0, y1) = (oy * src_h / dst_h, (oy + 1) * src_h / dst_h);
+        for ox in 0..dst_w {
+            let (x0, x1) = (ox * src_w / dst_w, (ox + 1) * src_w / dst_w);
+            let mut sum = [0_usize; 4];
+            for y in y0..y1 {
+                let row = &rgba[(y * src_w + x0) * 4..(y * src_w + x1) * 4];
+                for px in row.as_chunks::<4>().0 {
+                    for (acc, &channel) in sum.iter_mut().zip(px) {
+                        *acc += usize::from(channel);
+                    }
+                }
+            }
+            let count = (y1 - y0) * (x1 - x0);
+            for acc in sum {
+                out.push(u8::try_from((acc + count / 2) / count).unwrap_or(u8::MAX));
+            }
+        }
+    }
+    (out, out_w, out_h)
+}
+
+/// The largest size inside `max_w` x `max_h` with the aspect ratio of a
+/// `w` x `h` frame that is larger than the box, rounded to whole pixels and at
+/// least 1x1. Never larger than the frame on either side.
+fn fitted_size(w: u32, h: u32, max_w: u32, max_h: u32) -> (u32, u32) {
+    let (w, h, max_w, max_h) = (
+        u64::from(w),
+        u64::from(h),
+        u64::from(max_w),
+        u64::from(max_h),
+    );
+    // The side that overflows the box by the larger factor sets the scale.
+    let (out_w, out_h) = if w * max_h >= h * max_w {
+        (max_w, (h * max_w + w / 2) / w)
+    } else {
+        ((w * max_h + h / 2) / h, max_h)
+    };
+    let side = |value: u64| u32::try_from(value.max(1)).unwrap_or(u32::MAX);
+    (side(out_w), side(out_h))
+}
+
 #[cfg(windows)]
 mod imp {
     use std::time::{Duration, Instant};
@@ -47,6 +111,10 @@ mod imp {
 
     const FRAME_TIMEOUT: Duration = Duration::from_secs(2);
     const FRAME_POLL_INTERVAL: Duration = Duration::from_millis(16);
+    /// Largest frame sent to a provider. A 4K frame encodes to a PNG over
+    /// Gemini's 20 MB request limit; 1080p keeps on-screen text legible.
+    const MAX_SENT_WIDTH: u32 = 1920;
+    const MAX_SENT_HEIGHT: u32 = 1080;
 
     pub(super) fn capture_window_png(hwnd: i64) -> Result<Vec<u8>, String> {
         let (d3d_device, d3d_context, capture_device) = create_device()?;
@@ -212,7 +280,21 @@ mod imp {
         let pixels = read_mapped_rgba(&mapped, desc.Width, desc.Height);
         // SAFETY: pairs with the Map above on the same texture and subresource.
         unsafe { context.Unmap(&staging, 0) };
-        encode_png(desc.Width, desc.Height, &pixels?)
+        let (rgba, width, height) = super::fit_within(
+            &pixels?,
+            desc.Width,
+            desc.Height,
+            MAX_SENT_WIDTH,
+            MAX_SENT_HEIGHT,
+        );
+        let png = encode_png(width, height, &rgba)?;
+        tracing::info!(
+            "Screenshot {width}x{height} (captured {}x{}) encoded to {} bytes",
+            desc.Width,
+            desc.Height,
+            png.len()
+        );
+        Ok(png)
     }
 
     fn read_mapped_rgba(
@@ -272,5 +354,84 @@ mod imp {
                 .map_err(|error| format!("failed to encode PNG: {error}"))?;
         }
         Ok(output)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::print_stdout, reason = "the tests print the sizes they got")]
+
+    use super::fit_within;
+
+    /// A frame of `w` x `h` pixels, every one of them `pixel`.
+    fn flat_frame(w: u32, h: u32, pixel: [u8; 4]) -> Vec<u8> {
+        pixel.repeat(w as usize * h as usize)
+    }
+
+    #[test]
+    fn fit_within_scales_large_frames() {
+        for ((w, h), expected) in [((3840, 2160), (1920, 1080)), ((2560, 1080), (1920, 810))] {
+            let (out, out_w, out_h) =
+                fit_within(&flat_frame(w, h, [10, 20, 30, 255]), w, h, 1920, 1080);
+            println!("{w}x{h} -> {out_w}x{out_h}, {} bytes", out.len());
+            assert_eq!((out_w, out_h), expected);
+            assert_eq!(out.len(), out_w as usize * out_h as usize * 4);
+            assert!(
+                out.as_chunks::<4>()
+                    .0
+                    .iter()
+                    .all(|px| *px == [10, 20, 30, 255]),
+                "a flat frame must stay flat"
+            );
+        }
+    }
+
+    #[test]
+    fn fit_within_averages_each_block() {
+        // 4x2 into 2x1: each output pixel is the mean of one 2x2 block.
+        let rgba = [
+            0, 0, 0, 255, 100, 100, 100, 255, 10, 0, 0, 0, 30, 0, 0, 0, //
+            0, 0, 0, 255, 100, 100, 100, 255, 50, 0, 0, 0, 70, 0, 0, 0,
+        ];
+        let (out, w, h) = fit_within(&rgba, 4, 2, 2, 1);
+        assert_eq!((w, h), (2, 1));
+        assert_eq!(out, [50, 50, 50, 255, 40, 0, 0, 0]);
+    }
+
+    #[test]
+    fn fit_within_leaves_small_frames_alone() {
+        for (w, h) in [(1280, 720), (1920, 1080), (1, 1)] {
+            let rgba: Vec<u8> = (0..=u8::MAX)
+                .cycle()
+                .take(w as usize * h as usize * 4)
+                .collect();
+            let (out, out_w, out_h) = fit_within(&rgba, w, h, 1920, 1080);
+            assert_eq!((out_w, out_h), (w, h));
+            assert_eq!(out, rgba, "{w}x{h} must come back unchanged");
+        }
+    }
+
+    #[test]
+    fn fit_within_keeps_the_aspect_of_odd_sizes() {
+        for (w, h) in [
+            (3001, 1999),
+            (1921, 1081),
+            (2561, 1439),
+            (5000, 3),
+            (3, 5000),
+        ] {
+            let (out, out_w, out_h) = fit_within(&flat_frame(w, h, [1, 2, 3, 4]), w, h, 1920, 1080);
+            println!("{w}x{h} -> {out_w}x{out_h}");
+            assert!((1..=1920).contains(&out_w) && (1..=1080).contains(&out_h));
+            assert!(out_w == 1920 || out_h == 1080, "one side must fill the box");
+            let exact_h = f64::from(h) * f64::from(out_w) / f64::from(w);
+            let exact_w = f64::from(w) * f64::from(out_h) / f64::from(h);
+            assert!(
+                (f64::from(out_h) - exact_h).abs() <= 1.0
+                    || (f64::from(out_w) - exact_w).abs() <= 1.0,
+                "{w}x{h} -> {out_w}x{out_h} changed the aspect ratio"
+            );
+            assert_eq!(out.len(), out_w as usize * out_h as usize * 4);
+        }
     }
 }

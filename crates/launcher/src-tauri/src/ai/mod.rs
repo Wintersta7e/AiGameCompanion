@@ -15,11 +15,23 @@ use base64::Engine as _;
 use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
 use tauri::ipc::Channel;
-use tauri::{AppHandle, Manager};
+use tauri::{AppHandle, Emitter, Manager};
 
 use crate::overlay::GameInfo;
+use crate::state::AppState;
 
-pub(crate) use cli::{detect_all, CliConfig};
+pub(crate) use cli::{detect_all, sweep_shots, CliConfig};
+
+/// Tells every window to re-read which providers can answer and which one is
+/// chosen. Each window keeps its own copy; without this, CLI detection that
+/// finishes after startup, or a choice made in the other window, left a stale
+/// provider switch on screen.
+pub(crate) fn notify_providers_changed(app: &AppHandle) {
+    crate::util::log_if_err(
+        "announce a provider change",
+        app.emit("providers-changed", ()),
+    );
+}
 
 /// Backstop timeout for a single request, covering a hung CLI that never closes
 /// stdout. Gemini has its own (shorter) HTTP timeout, so this is the CLI ceiling.
@@ -109,6 +121,14 @@ pub(crate) struct ProviderAvailability {
     /// Where each CLI was detected ("PATH" / "WSL" / "").
     pub claude_where: String,
     pub openai_where: String,
+    /// The Gemini model a request names now.
+    pub gemini_model: String,
+    /// The Gemini model used when Settings names none.
+    pub gemini_fallback_model: String,
+    /// The Claude model the CLI is asked for.
+    pub claude_model: String,
+    /// The Codex model; empty because the CLI picks its own default.
+    pub openai_model: String,
 }
 
 /// Parameters of a chat request, deserialized from the `ask_sage` command.
@@ -148,9 +168,11 @@ impl AiState {
         *self.cli.lock() = cfg;
     }
 
-    /// Report which providers can currently serve a request. Gemini depends on a
-    /// readable config with a key + model; Claude / Codex on a detected CLI.
-    pub(crate) fn availability(&self) -> ProviderAvailability {
+    /// Report which providers can currently serve a request, and the Gemini model
+    /// a request would name given `settings_model` (the Settings choice). Gemini
+    /// depends on a stored key; Claude / Codex on a detected CLI.
+    pub(crate) fn availability(&self, settings_model: &str) -> ProviderAvailability {
+        let file_model = gemini::file_model();
         let cli = self.cli.lock();
         ProviderAvailability {
             gemini: gemini::load_config().is_ok(),
@@ -158,6 +180,10 @@ impl AiState {
             openai: cli.codex.is_available(),
             claude_where: cli.claude.location().to_owned(),
             openai_where: cli.codex.location().to_owned(),
+            gemini_model: gemini::resolve_model(settings_model, &file_model),
+            gemini_fallback_model: gemini::resolve_model("", &file_model),
+            claude_model: cli::DEFAULT_CLAUDE_MODEL.to_owned(),
+            openai_model: String::new(),
         }
     }
 
@@ -207,13 +233,25 @@ async fn run(app: AppHandle, params: RequestParams, channel: Channel<SageEvent>)
     // Read shared state up front so no state guard is held across an await.
     // Only a linked, still-live target contributes a name or a capture target.
     let ctx = request_context(crate::overlay::linked_game(&app).as_ref());
+    let turns = messages.len();
     tracing::info!(
         "{}",
-        request_log_line(request_id, provider, attach_screenshot, &ctx)
+        request_log_line(request_id, provider, attach_screenshot, turns, &ctx)
     );
     let system_prompt = build_system_prompt(ctx.game_name.as_deref());
     let capture_target = ctx.capture;
     let cli_cfg = app.state::<AiState>().cli.lock().clone();
+    let settings_model = app
+        .state::<AppState>()
+        .launcher
+        .lock()
+        .settings
+        .gemini_model
+        .clone();
+    // Codex reads a screenshot from a file, so it needs somewhere to put one.
+    let shots = (provider == Provider::Openai && attach_screenshot)
+        .then(|| prepare_shots_dir(&app))
+        .flatten();
 
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<String>();
     let chan_stream = channel.clone();
@@ -223,9 +261,8 @@ async fn run(app: AppHandle, params: RequestParams, channel: Channel<SageEvent>)
         // cancelled once spawned, so awaiting it before the timeout wrapper
         // left the UI stuck on "Streaming" with no done, no error and a leaked
         // blocking-pool thread.
-        // Screenshots are skipped for OpenAI (Codex `--image` is broken upstream).
-        let screenshot = if attach_screenshot && provider != Provider::Openai {
-            capture_base64(capture_target).await
+        let screenshot = if attach_screenshot {
+            capture_png(capture_target).await
         } else {
             None
         };
@@ -236,29 +273,32 @@ async fn run(app: AppHandle, params: RequestParams, channel: Channel<SageEvent>)
         match provider {
             Provider::Gemini => {
                 let cfg = gemini::load_config()?;
+                let model = gemini::resolve_model(&settings_model, &gemini::file_model());
                 gemini::stream(
                     &messages,
                     &system_prompt,
-                    screenshot,
-                    &cfg.model,
+                    screenshot.as_deref().map(encode_png),
+                    &model,
                     &cfg.api_key,
                     on_chunk,
                 )
                 .await
             }
             Provider::Claude => {
+                let encoded = screenshot.as_deref().map(encode_png);
                 cli::stream_claude(
                     &cli_cfg,
                     cli::DEFAULT_CLAUDE_MODEL,
                     &system_prompt,
                     &messages,
-                    screenshot.as_deref(),
+                    encoded.as_deref(),
                     on_chunk,
                 )
                 .await
             }
             Provider::Openai => {
-                cli::stream_codex(&cli_cfg, &system_prompt, &messages, on_chunk).await
+                let shot = shots.as_deref().zip(screenshot.as_deref());
+                cli::stream_codex(&cli_cfg, &system_prompt, &messages, shot, on_chunk).await
             }
         }
     };
@@ -303,22 +343,51 @@ async fn run(app: AppHandle, params: RequestParams, channel: Channel<SageEvent>)
     app.state::<AiState>().clear_if(request_id);
 }
 
-/// Capture the linked game window and base64-encode it as PNG for an AI request.
-/// Capture failures are non-fatal: the request proceeds without the screenshot.
-async fn capture_base64(target: Option<(i64, u32)>) -> Option<String> {
+/// Capture the linked game window as PNG bytes for an AI request. Capture
+/// failures are non-fatal: the request proceeds without the screenshot.
+async fn capture_png(target: Option<(i64, u32)>) -> Option<Vec<u8>> {
     let (hwnd, pid) = target?;
     match tokio::task::spawn_blocking(move || {
         crate::overlay_capture::capture_live_window_png(hwnd, pid)
     })
     .await
     {
-        Ok(Ok(png)) => Some(base64::engine::general_purpose::STANDARD.encode(png)),
+        Ok(Ok(png)) => Some(png),
         Ok(Err(error)) => {
             tracing::warn!("screenshot capture failed: {error}");
             None
         }
         Err(error) => {
             tracing::warn!("screenshot capture task failed: {error}");
+            None
+        }
+    }
+}
+
+/// Base64 of a PNG, as Gemini and the Claude CLI take an image.
+fn encode_png(png: &[u8]) -> String {
+    base64::engine::general_purpose::STANDARD.encode(png)
+}
+
+/// Where a Codex screenshot is written while its request runs: `shots` in the
+/// app's local (not roaming) data folder. `None` if the folder is unknown.
+pub(crate) fn shots_dir(app: &AppHandle) -> Option<std::path::PathBuf> {
+    match app.path().app_local_data_dir() {
+        Ok(dir) => Some(dir.join(cli::SHOTS_DIR)),
+        Err(e) => {
+            tracing::warn!("Could not resolve the screenshot folder: {e}");
+            None
+        }
+    }
+}
+
+/// The screenshot folder, created if needed. `None` sends Codex no image.
+fn prepare_shots_dir(app: &AppHandle) -> Option<std::path::PathBuf> {
+    let dir = shots_dir(app)?;
+    match std::fs::create_dir_all(&dir) {
+        Ok(()) => Some(dir),
+        Err(e) => {
+            tracing::warn!("Codex request continues without the screenshot: {e}");
             None
         }
     }
@@ -347,16 +416,17 @@ fn request_context(target: Option<&GameInfo>) -> RequestContext {
 }
 
 /// One log line per request recording what the gate let through -- never a name
-/// or a title.
+/// or a title -- and how many chat turns were sent, the new question included.
 fn request_log_line(
     request_id: u64,
     provider: Provider,
     screenshot_requested: bool,
+    turns: usize,
     ctx: &RequestContext,
 ) -> String {
     let yes_no = |flag: bool| if flag { "yes" } else { "no" };
     format!(
-        "Request {request_id}: provider {}, screenshot requested: {}, linked target: {}",
+        "Request {request_id}: provider {}, screenshot requested: {}, linked target: {}, turns: {turns}",
         provider.as_str(),
         yes_no(screenshot_requested),
         yes_no(ctx.capture.is_some()),
@@ -387,9 +457,19 @@ const TRANSLATE_SYSTEM: &str =
     "You are a screen translator for a gamer. Read the foreign text in the image and translate it \
      into natural English. Be concise; do not add commentary.";
 
+/// Check a Gemini model id chosen in Settings before it is saved.
+pub(crate) fn validate_gemini_model(model: &str) -> Result<(), String> {
+    gemini::validate_model(model)
+}
+
 /// Capture the linked game window and translate any foreign text in it to
 /// English via Gemini. A one-shot call, independent of the chat request slot.
-pub(crate) async fn translate_capture(hwnd: i64, pid: u32) -> Result<String, String> {
+/// `settings_model` is the Gemini model chosen in Settings (empty for none).
+pub(crate) async fn translate_capture(
+    hwnd: i64,
+    pid: u32,
+    settings_model: String,
+) -> Result<String, String> {
     let png = tokio::task::spawn_blocking(move || {
         crate::overlay_capture::capture_live_window_png(hwnd, pid)
     })
@@ -397,6 +477,7 @@ pub(crate) async fn translate_capture(hwnd: i64, pid: u32) -> Result<String, Str
     .map_err(|error| format!("capture task failed: {error}"))??;
     let screenshot = base64::engine::general_purpose::STANDARD.encode(png);
     let cfg = gemini::load_config()?;
+    let model = gemini::resolve_model(&settings_model, &gemini::file_model());
     let messages = [ChatMessage {
         role: "user".to_owned(),
         content: "Translate any non-English text visible in this screenshot into English. Output \
@@ -409,7 +490,7 @@ pub(crate) async fn translate_capture(hwnd: i64, pid: u32) -> Result<String, Str
         &messages,
         TRANSLATE_SYSTEM,
         Some(screenshot),
-        &cfg.model,
+        &model,
         &cfg.api_key,
         |chunk| {
             out.push_str(&chunk);
@@ -477,20 +558,42 @@ mod tests {
         for (linked, expected) in [
             (
                 true,
-                "Request 3: provider claude, screenshot requested: yes, linked target: yes",
+                "Request 3: provider claude, screenshot requested: yes, linked target: yes, turns: 2",
             ),
             (
                 false,
-                "Request 3: provider claude, screenshot requested: yes, linked target: no",
+                "Request 3: provider claude, screenshot requested: yes, linked target: no, turns: 2",
             ),
         ] {
             let ctx = request_context(Some(&target(linked)));
-            let line = request_log_line(3, Provider::Claude, true, &ctx);
+            let line = request_log_line(3, Provider::Claude, true, 2, &ctx);
             println!("{line}");
             assert_eq!(line, expected);
             assert!(!line.contains("Real Name"));
             assert!(!line.contains("SECRET-TITLE"));
         }
+    }
+
+    #[test]
+    fn availability_reports_the_models_in_use() {
+        let availability = AiState::default().availability("gemini-3.8-flash");
+        println!("{availability:?}");
+        assert_eq!(availability.claude_model, "claude-haiku-4-5");
+        assert_eq!(availability.claude_model, cli::DEFAULT_CLAUDE_MODEL);
+        assert_eq!(availability.openai_model, "");
+        assert_eq!(availability.gemini_model, "gemini-3.8-flash");
+        assert!(!availability.gemini_fallback_model.is_empty());
+    }
+
+    #[test]
+    fn every_provider_change_is_announced() {
+        // One definition plus its five callers: CLI detection at startup,
+        // set_active_provider, set_gemini_key, recheck_clis, update_settings.
+        let needle = concat!("notify_providers", "_changed(");
+        let (files, count) = crate::util::count_in_sources(needle, None);
+        println!("scanned {files} files, found {count} occurrence(s) of {needle}");
+        assert!(files > 0, "the source scan found no files");
+        assert_eq!(count, 6, "a provider change that no window hears about");
     }
 
     #[test]

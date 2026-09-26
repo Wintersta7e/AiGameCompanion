@@ -1,31 +1,44 @@
 <script lang="ts">
   import { invoke } from '@tauri-apps/api/core';
-  import { PROVIDERS, getProvider, setProvider, type Provider } from '../stores/companion.svelte';
+  import {
+    PROVIDERS,
+    getProvider,
+    modelName,
+    refreshAvailability,
+    setProvider,
+    type ModelNames,
+    type Provider,
+  } from '../stores/companion.svelte';
 
-  interface Availability {
+  interface Availability extends ModelNames {
     gemini: boolean;
     claude: boolean;
     openai: boolean;
     claude_where: string;
     openai_where: string;
+    gemini_fallback_model: string;
   }
   interface Settings {
     scan_on_startup: boolean;
     minimize_to_tray: boolean;
     launch_on_startup: boolean;
     active_provider?: string;
+    gemini_model?: string;
   }
 
   let { open = $bindable(false) }: { open: boolean } = $props();
 
-  const VERSION = 'v2.0.1'; // keep in sync with tauri.conf.json "version"
+  const VERSION = 'v2.0.2'; // keep in sync with tauri.conf.json "version"
   const KEY_URL = 'https://aistudio.google.com/apikey';
+  // Gemini models offered by name; anything else is entered as Custom.
+  const MODEL_PRESETS = ['gemini-3.6-flash', 'gemini-3.8-flash', 'gemini-3.5-flash-lite'];
 
   let section = $state<'providers' | 'hotkeys' | 'launcher' | 'about'>('providers');
   let settings = $state<Settings>({
     scan_on_startup: true,
     minimize_to_tray: true,
     launch_on_startup: false,
+    gemini_model: '',
   });
   let availability = $state<Availability>({
     gemini: false,
@@ -33,7 +46,16 @@
     openai: false,
     claude_where: '',
     openai_where: '',
+    gemini_model: '',
+    gemini_fallback_model: '',
+    claude_model: '',
+    openai_model: '',
   });
+  // The model select's own state; written to settings.gemini_model on Save.
+  let modelChoice = $state('');
+  let customModel = $state('');
+  // Labels of the hotkeys that failed to register ("Ctrl+Shift+G", ...).
+  let failedHotkeys = $state<string[]>([]);
   let provider = $derived(getProvider());
   let geminiKey = $state('');
   let revealKey = $state(false);
@@ -77,10 +99,19 @@
     } catch (e) {
       console.error('settings load failed:', e);
     }
+    const saved = (settings.gemini_model ?? '').trim();
+    const custom = saved !== '' && !MODEL_PRESETS.includes(saved);
+    modelChoice = custom ? 'custom' : saved;
+    customModel = custom ? saved : '';
     try {
       availability = await invoke<Availability>('available_providers');
     } catch (e) {
       console.error('availability load failed:', e);
+    }
+    try {
+      failedHotkeys = await invoke<string[]>('hotkey_status');
+    } catch (e) {
+      console.error('hotkey status load failed:', e);
     }
   }
 
@@ -135,8 +166,10 @@
   async function save() {
     saving = true;
     saveError = null;
+    settings.gemini_model = modelChoice === 'custom' ? customModel.trim() : modelChoice;
     try {
       await invoke('update_settings', { settings });
+      void refreshAvailability();
       await closeModal();
     } catch (e) {
       saveError = String(e);
@@ -274,8 +307,8 @@
           {#if section === 'providers'}
             <h2 class="font-display text-[16px] font-semibold text-t-hi mb-1">AI providers</h2>
             <p class="text-[12.5px] text-t-mid mb-5">
-              Sage runs on your own key and CLIs. Availability is re-checked every time the overlay
-              opens.
+              Sage runs on your own key and CLIs. After installing or signing in to a CLI, press
+              Re-check.
             </p>
 
             <!-- Gemini -->
@@ -292,7 +325,7 @@
                 <div class="min-w-0">
                   <div class="text-[13.5px] font-semibold text-t-hi">Gemini</div>
                   <div class="font-mono text-[10.5px] text-t-lo">
-                    {PROVIDERS.gemini.model} · API
+                    {modelName(availability, 'gemini')} · API
                   </div>
                 </div>
                 {#if availability.gemini}
@@ -366,6 +399,30 @@
                   type="button">Get a key ↗</button
                 >
               </div>
+              <div class="text-[11.5px] text-t-mid mt-3 mb-1.5">Model</div>
+              <select
+                style="background: rgba(0,0,0,0.22); color-scheme: dark;"
+                class="w-full px-[13px] py-[10px] rounded-[10px] border border-line text-t-hi font-mono text-[11.5px] outline-none cursor-pointer transition-colors focus:border-accent"
+                aria-label="Gemini model"
+                bind:value={modelChoice}
+              >
+                <option value="">Default ({availability.gemini_fallback_model})</option>
+                {#each MODEL_PRESETS as id (id)}
+                  <option value={id}>{id}</option>
+                {/each}
+                <option value="custom">Custom…</option>
+              </select>
+              {#if modelChoice === 'custom'}
+                <input
+                  style="background: rgba(0,0,0,0.22);"
+                  class="w-full mt-2 px-[13px] py-[10px] rounded-[10px] border border-line text-t-hi font-mono text-[11.5px] outline-none transition-colors placeholder:text-t-lo focus:border-accent"
+                  aria-label="Custom Gemini model"
+                  placeholder="Gemini model id"
+                  spellcheck="false"
+                  type="text"
+                  bind:value={customModel}
+                />
+              {/if}
             </div>
 
             <!-- Claude -->
@@ -381,7 +438,7 @@
               <div class="min-w-0">
                 <div class="text-[13.5px] font-semibold text-t-hi">Claude</div>
                 <div class="font-mono text-[10.5px] text-t-lo">
-                  {PROVIDERS.claude.model} · CLI{availability.claude_where
+                  {modelName(availability, 'claude')} · CLI{availability.claude_where
                     ? ` · ${availability.claude_where}`
                     : ''}
                 </div>
@@ -404,9 +461,9 @@
               <div class="min-w-0">
                 <div class="text-[13.5px] font-semibold text-t-hi">OpenAI · Codex</div>
                 <div class="font-mono text-[10.5px] text-t-lo">
-                  {PROVIDERS.openai.model} · CLI{availability.openai_where
+                  {modelName(availability, 'openai')} · CLI{availability.openai_where
                     ? ` · ${availability.openai_where}`
-                    : ''} · no screenshots
+                    : ''}
                 </div>
               </div>
               <span class="ml-auto pill {availability.openai ? 'ok' : 'off'}"
@@ -483,16 +540,24 @@
               Work from inside any game while Sage runs in the background.
             </p>
             {#each HOTKEYS as h (h.title)}
-              <div class="flex items-center py-[15px] border-b border-line-2">
-                <div class="min-w-0">
-                  <div class="text-[13.5px] font-semibold text-t-hi">{h.title}</div>
-                  <div class="text-[12px] text-t-mid">{h.sub}</div>
+              <div class="py-[15px] border-b border-line-2">
+                <div class="flex items-center">
+                  <div class="min-w-0">
+                    <div class="text-[13.5px] font-semibold text-t-hi">{h.title}</div>
+                    <div class="text-[12px] text-t-mid">{h.sub}</div>
+                  </div>
+                  <div class="ml-auto flex items-center gap-[6px]">
+                    <span class="keycap">Ctrl</span><span class="text-t-lo text-[11px]">+</span>
+                    <span class="keycap">Shift</span><span class="text-t-lo text-[11px]">+</span>
+                    <span class="keycap accent">{h.keys}</span>
+                  </div>
                 </div>
-                <div class="ml-auto flex items-center gap-[6px]">
-                  <span class="keycap">Ctrl</span><span class="text-t-lo text-[11px]">+</span>
-                  <span class="keycap">Shift</span><span class="text-t-lo text-[11px]">+</span>
-                  <span class="keycap accent">{h.keys}</span>
-                </div>
+                {#if failedHotkeys.includes(`Ctrl+Shift+${h.keys}`)}
+                  <div style="color: var(--color-err);" class="mt-2 text-right text-[11.5px]">
+                    Could not be registered — another app may be using it. Close it and restart
+                    Sage.
+                  </div>
+                {/if}
               </div>
             {/each}
             <div
@@ -597,7 +662,7 @@
         {#if saveError}
           <span style="color: var(--color-err);" class="text-[11.5px] mr-auto">{saveError}</span>
         {:else}
-          <span class="font-mono text-[10px] text-t-lo mr-auto">changes apply immediately</span>
+          <span class="font-mono text-[10px] text-t-lo mr-auto">Save applies these settings</span>
         {/if}
         <div class="flex gap-[10px]">
           <button
@@ -659,6 +724,12 @@
     color: var(--accent);
     border-color: color-mix(in oklab, var(--accent) 34%, transparent);
     background: color-mix(in oklab, var(--accent) 12%, transparent);
+  }
+  /* The dropdown list inherits the select's translucent background, which the
+     webview paints over a light popup; give the options an opaque dark one. */
+  option {
+    background-color: var(--color-ink-2);
+    color: var(--color-t-hi);
   }
   .spin {
     animation: spin 0.9s linear infinite;

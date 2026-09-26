@@ -16,7 +16,7 @@ use super::ChatMessage;
 
 /// Default Claude model when the user has not configured one. Codex ignores the
 /// model (that CLI rejects an explicit `-m`), so no default is needed there.
-pub(super) const DEFAULT_CLAUDE_MODEL: &str = "claude-haiku-4-5";
+pub(crate) const DEFAULT_CLAUDE_MODEL: &str = "claude-haiku-4-5";
 
 /// Name of the Codex working directory (used as both the WSL `/tmp/<name>` path
 /// and the Windows `temp_dir().join(<name>)` path).
@@ -25,6 +25,9 @@ const CODEX_WORKDIR: &str = "aigc-codex-workdir";
 const MAX_STREAM_BYTES: usize = 2 * 1024 * 1024;
 /// How many stderr lines to keep for the failure message.
 const STDERR_TAIL_LINES: usize = 5;
+/// Folder, under the app's local data directory, that holds a Codex
+/// screenshot while its request runs.
+pub(crate) const SHOTS_DIR: &str = "shots";
 /// Marker printed by the WSL shell immediately before the CLI runs.
 ///
 /// `bash -lic` sources the user's interactive `.bashrc`, which is where many
@@ -412,8 +415,8 @@ fn parse_claude_line(line: &str) -> Option<Parsed> {
 }
 
 /// Parse a single line from Codex CLI stdout. `codex exec` prints plain text, so
-/// non-JSON lines are emitted verbatim; JSON lines (refusals, structured output)
-/// are decoded.
+/// non-JSON lines (blank ones included) are emitted verbatim plus their newline;
+/// JSON lines (refusals, structured output) are decoded.
 fn parse_codex_line(line: &str) -> Option<Parsed> {
     if let Ok(v) = serde_json::from_str::<serde_json::Value>(line) {
         if v.get("type").and_then(serde_json::Value::as_str) == Some("refusal") {
@@ -454,7 +457,167 @@ fn parse_codex_line(line: &str) -> Option<Parsed> {
         }
     }
 
-    Some(Parsed::Text(line.to_owned()))
+    // Put back the newline `lines()` removed, so the answer keeps its line
+    // breaks and blank lines (paragraphs, lists).
+    Some(Parsed::Text(format!("{line}\n")))
+}
+
+/// A new screenshot file name in `dir`. It has to be unique, not secret: the
+/// directory belongs to this user and this app.
+fn shot_path(dir: &std::path::Path) -> std::path::PathBuf {
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |elapsed| elapsed.as_nanos());
+    dir.join(format!("aigc-shot-{}-{nanos}.png", std::process::id()))
+}
+
+/// A screenshot written to disk for one Codex request. Dropping it deletes the
+/// file, so it lives exactly as long as the request's future.
+#[derive(Debug)]
+struct TempShot {
+    path: std::path::PathBuf,
+}
+
+impl TempShot {
+    /// Write `png` to a new file at exactly `path`. Fails if anything already
+    /// exists there, so an existing file is never written through. The file is
+    /// closed before this returns.
+    fn create(path: std::path::PathBuf, png: &[u8]) -> Result<Self, String> {
+        let mut file = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&path)
+            .map_err(|e| format!("could not create the screenshot file: {e}"))?;
+        let written = std::io::Write::write_all(&mut file, png);
+        drop(file);
+        // From here the guard owns the file, so a failed write removes it.
+        let shot = Self { path };
+        written.map_err(|e| format!("could not write the screenshot file: {e}"))?;
+        Ok(shot)
+    }
+}
+
+impl Drop for TempShot {
+    fn drop(&mut self) {
+        if let Err(e) = std::fs::remove_file(&self.path) {
+            tracing::warn!("Could not delete a Codex screenshot file: {e}");
+        }
+    }
+}
+
+/// Delete every regular file in the shots directory: leftovers of a crash, a
+/// failed delete or a killed process. Returns how many were removed; a missing
+/// directory removes none.
+pub(crate) fn sweep_shots(dir: &std::path::Path) -> usize {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return 0;
+    };
+    let mut removed = 0;
+    for entry in entries.flatten() {
+        if !entry.file_type().is_ok_and(|kind| kind.is_file()) {
+            continue;
+        }
+        match std::fs::remove_file(entry.path()) {
+            Ok(()) => removed += 1,
+            Err(e) => tracing::warn!("Could not delete a leftover screenshot: {e}"),
+        }
+    }
+    removed
+}
+
+/// Codex's arguments when it runs from the Windows PATH. The prompt goes on
+/// stdin, never as an argument, and the `=` form keeps the image path bound to
+/// its flag. `--ephemeral` keeps the prompt, the history and the screenshot out
+/// of Codex's own session files. `--disable shell_tool` takes away the tool
+/// that runs commands, and `--ignore-user-config` skips the user's Codex
+/// config file (MCP servers, model, effort), so Codex answers with its own
+/// default model.
+fn codex_args(work_dir: &str, image: Option<&str>) -> Vec<String> {
+    let mut args: Vec<String> = [
+        "-a",
+        "never",
+        "-s",
+        "read-only",
+        "--disable",
+        "shell_tool",
+        "-C",
+        work_dir,
+        "exec",
+        "--skip-git-repo-check",
+        "--ephemeral",
+        "--ignore-user-config",
+    ]
+    .into_iter()
+    .map(str::to_owned)
+    .collect();
+    if let Some(image) = image {
+        args.push(format!("--image={image}"));
+    }
+    args
+}
+
+/// The script `wsl_bash` runs for Codex. With an image, `wslpath` turns its
+/// Windows path into a Linux one inside the same bash; if that fails, Codex
+/// does not start and `wslpath`'s own message is the error.
+fn codex_wsl_script(work_dir: &str, image: Option<&str>) -> String {
+    let codex = format!(
+        "codex -a never -s read-only --disable shell_tool -C {} exec \
+         --skip-git-repo-check --ephemeral --ignore-user-config",
+        shell_escape(work_dir),
+    );
+    let start = format!("printf '%s\\n' {WSL_SENTINEL}; ");
+    image.map_or_else(
+        || format!("{start}{codex}"),
+        |image| {
+            format!(
+                "{start}img=$(wslpath -u {}) && {codex} --image=\"$img\"",
+                shell_escape(image),
+            )
+        },
+    )
+}
+
+/// Claude's arguments, the same in both modes. The prompt goes on stdin.
+///
+/// Sage only wants text back, so the child runs without the user's setup:
+/// `--tools ''` offers no tool, `--safe-mode` skips their CLAUDE.md, plugins,
+/// hooks, skills and MCP servers, `--strict-mcp-config` drops every MCP server
+/// not named here (none is), `--permission-mode dontAsk` denies instead of
+/// asking, and `--no-session-persistence` keeps the conversation off disk.
+fn claude_args(model: &str, system_prompt: &str) -> Vec<String> {
+    [
+        "-p",
+        "--input-format",
+        "stream-json",
+        "--output-format",
+        "stream-json",
+        "--verbose",
+        "--include-partial-messages",
+        "--tools",
+        "",
+        "--no-session-persistence",
+        "--safe-mode",
+        "--strict-mcp-config",
+        "--permission-mode",
+        "dontAsk",
+        "--model",
+        model,
+        "--system-prompt",
+        system_prompt,
+    ]
+    .into_iter()
+    .map(str::to_owned)
+    .collect()
+}
+
+/// The script `wsl_bash` runs for Claude: `claude_args`, each one quoted, so
+/// the empty `--tools` value stays a literal `''`.
+fn claude_wsl_script(model: &str, system_prompt: &str) -> String {
+    let args: Vec<String> = claude_args(model, system_prompt)
+        .iter()
+        .map(|arg| shell_escape(arg))
+        .collect();
+    format!("claude {}", args.join(" "))
 }
 
 /// Stream a Claude response by spawning the Claude CLI in stream-json mode.
@@ -475,32 +638,10 @@ where
     validate_model_name(model)?;
 
     let mut cmd = if cfg.claude == CliMode::Wsl {
-        let claude_args = format!(
-            "claude -p --input-format stream-json --output-format stream-json \
-             --verbose --include-partial-messages --tools '' \
-             --no-session-persistence --model {} --system-prompt {}",
-            shell_escape(model),
-            shell_escape(system_prompt),
-        );
-        Command::from(wsl_bash(&claude_args))
+        Command::from(wsl_bash(&claude_wsl_script(model, system_prompt)))
     } else {
         let mut c = Command::new("claude");
-        c.args([
-            "-p",
-            "--input-format",
-            "stream-json",
-            "--output-format",
-            "stream-json",
-            "--verbose",
-            "--include-partial-messages",
-            "--tools",
-            "",
-            "--no-session-persistence",
-            "--model",
-            model,
-            "--system-prompt",
-            system_prompt,
-        ]);
+        c.args(claude_args(model, system_prompt));
         c
     };
 
@@ -511,10 +652,15 @@ where
 }
 
 /// Stream a Codex response by spawning the Codex CLI in `exec` mode.
+///
+/// `shot` is the shots directory and a PNG to show Codex. The file is written
+/// here and deleted when this future ends, however it ends: answer, error,
+/// timeout, Stop or a newer request.
 pub(super) async fn stream_codex<F>(
     cfg: &CliConfig,
     system_prompt: &str,
     messages: &[ChatMessage],
+    shot: Option<(&std::path::Path, &[u8])>,
     on_chunk: F,
 ) -> Result<(), String>
 where
@@ -524,31 +670,32 @@ where
         return Err("Codex CLI is not available on this system.".to_owned());
     }
 
+    let temp_shot = shot.and_then(|(dir, png)| match TempShot::create(shot_path(dir), png) {
+        Ok(temp) => {
+            tracing::info!("Codex request: screenshot attached");
+            Some(temp)
+        }
+        Err(e) => {
+            tracing::warn!("Codex request continues without the screenshot: {e}");
+            None
+        }
+    });
+    let image = temp_shot
+        .as_ref()
+        .map(|temp| temp.path.to_string_lossy().into_owned());
+
     let work_dir = cfg.codex_workdir.as_str();
     let mut cmd = if cfg.codex == CliMode::Wsl {
-        let codex_cmd = format!(
-            "printf '%s\\n' {WSL_SENTINEL}; codex -a never -s read-only -C {} exec --skip-git-repo-check",
-            shell_escape(work_dir),
-        );
-        Command::from(wsl_bash(&codex_cmd))
+        Command::from(wsl_bash(&codex_wsl_script(work_dir, image.as_deref())))
     } else {
         let mut c = Command::new("codex");
-        c.args([
-            "-a",
-            "never",
-            "-s",
-            "read-only",
-            "-C",
-            work_dir,
-            "exec",
-            "--skip-git-repo-check",
-        ]);
+        c.args(codex_args(work_dir, image.as_deref()));
         c
     };
 
     let input = build_codex_input(system_prompt, messages);
     let sentinel = matches!(cfg.codex, CliMode::Wsl).then_some(WSL_SENTINEL);
-    run_cli(
+    let result = run_cli(
         &mut cmd,
         input,
         on_chunk,
@@ -556,7 +703,10 @@ where
         "Codex",
         sentinel,
     )
-    .await
+    .await;
+    // Only now may the file go: Codex reads it while `run_cli` runs.
+    drop(temp_shot);
+    result
 }
 
 /// Spawn a CLI child, write `input` to stdin, and stream parsed stdout lines to
@@ -606,15 +756,18 @@ where
     };
 
     // Keep the last few stderr lines: when the child fails without writing any
-    // stdout, this is the only thing that can explain why.
+    // stdout, this is the only thing that can explain why. They are not logged
+    // line by line -- Codex echoes the whole prompt, and with it the chat, to
+    // stderr -- only counted, and the tail is logged when the CLI fails.
     let stderr_fut = async move {
         let mut tail: Vec<String> = Vec::new();
+        let mut count = 0usize;
         if let Some(stderr) = stderr {
             let reader = BufReader::new(stderr);
             let mut lines = LinesStream::new(reader.lines());
             while let Some(Ok(line)) = lines.next().await {
                 if !line.trim().is_empty() {
-                    tracing::warn!("{label} stderr: {line}");
+                    count += 1;
                     if tail.len() == STDERR_TAIL_LINES {
                         tail.remove(0);
                     }
@@ -622,7 +775,7 @@ where
                 }
             }
         }
-        tail
+        (tail, count)
     };
 
     let read_fut = async {
@@ -645,14 +798,14 @@ where
             }
             // Mirror the Gemini stream cap: `lines()` grows one buffer with no
             // ceiling, so a child emitting a huge blob would otherwise grow the
-            // launcher's memory byte for byte.
-            total_bytes = total_bytes.saturating_add(line.len());
+            // launcher's memory byte for byte. The `+ 1` is the newline `lines()`
+            // strips, so a flood of blank lines counts too.
+            total_bytes = total_bytes.saturating_add(line.len() + 1);
             if total_bytes > MAX_STREAM_BYTES {
                 return Err(format!("{label} response exceeded the size limit."));
             }
-            if line.trim().is_empty() {
-                continue;
-            }
+            // Blank lines reach the parser: they are paragraph breaks in a
+            // plain-text answer, and Claude's JSON parser drops them anyway.
             match parse_line(&line) {
                 Some(Parsed::Text(text)) => {
                     emitted = true;
@@ -665,7 +818,9 @@ where
         Ok(emitted)
     };
 
-    let ((), stderr_tail, read_result) = tokio::join!(write_fut, stderr_fut, read_fut);
+    let ((), (stderr_tail, stderr_lines), read_result) =
+        tokio::join!(write_fut, stderr_fut, read_fut);
+    tracing::debug!("{label} wrote {stderr_lines} stderr line(s)");
     let emitted = read_result?;
 
     // Stdout reaching EOF is NOT success. Without this, a CLI that fails before
@@ -673,17 +828,22 @@ where
     // reached the user as a completed, empty answer with no error at all.
     let status = child.wait().await;
     drop(child);
+    let failed = |stderr_tail: &[String]| {
+        let message = cli_failure_message(label, stderr_tail);
+        tracing::warn!("{message}");
+        Err(message)
+    };
     match status {
         Ok(status) if status.success() => {
             if emitted {
                 Ok(())
             } else {
-                Err(cli_failure_message(label, &stderr_tail))
+                failed(&stderr_tail)
             }
         }
         Ok(status) => {
             tracing::warn!("{label} CLI exited with {status}");
-            Err(cli_failure_message(label, &stderr_tail))
+            failed(&stderr_tail)
         }
         Err(e) => Err(format!("Failed to wait for {label} CLI: {e}")),
     }
@@ -968,14 +1128,351 @@ mod tests {
         assert_eq!(parse_claude_line(""), None);
     }
 
+    // ---------------- Codex screenshot file ----------------
+
+    /// A fresh, empty directory for one test.
+    fn fresh_dir(name: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!("aigc-test-{name}-{}", std::process::id()));
+        if dir.exists() {
+            std::fs::remove_dir_all(&dir).unwrap();
+        }
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[test]
+    fn temp_shot_is_deleted_on_drop() {
+        let dir = fresh_dir("drop");
+        let path = shot_path(&dir);
+        let shot = TempShot::create(path.clone(), b"PNGDATA").unwrap();
+        assert_eq!(std::fs::read(&path).unwrap(), b"PNGDATA");
+        drop(shot);
+        assert!(!path.exists(), "the screenshot outlived its guard");
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn temp_shot_never_writes_through_an_existing_file() {
+        let dir = fresh_dir("existing");
+        let path = dir.join("taken.png");
+        std::fs::write(&path, b"ORIGINAL").unwrap();
+        assert!(TempShot::create(path.clone(), b"NEW").is_err());
+        assert_eq!(std::fs::read(&path).unwrap(), b"ORIGINAL");
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn shot_path_names_a_file_in_the_directory() {
+        let dir = std::path::Path::new("shots-dir");
+        let path = shot_path(dir);
+        assert_eq!(path.parent(), Some(dir));
+        let name = path.file_name().unwrap().to_str().unwrap();
+        println!("{name}");
+        let (pid, nanos) = name
+            .strip_prefix("aigc-shot-")
+            .and_then(|rest| rest.strip_suffix(".png"))
+            .and_then(|middle| middle.split_once('-'))
+            .unwrap();
+        let digits =
+            |text: &str| !text.is_empty() && text.bytes().all(|byte| byte.is_ascii_digit());
+        assert!(digits(pid), "process id {pid:?}");
+        assert!(digits(nanos), "timestamp {nanos:?}");
+    }
+
+    #[test]
+    fn sweep_removes_leftover_shots() {
+        let dir = fresh_dir("sweep");
+        for name in ["a.png", "b.png", "c.png"] {
+            std::fs::write(dir.join(name), b"x").unwrap();
+        }
+        assert_eq!(sweep_shots(&dir), 3);
+        assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 0);
+        std::fs::remove_dir_all(&dir).unwrap();
+        assert_eq!(sweep_shots(&dir), 0, "a missing directory is not an error");
+    }
+
+    #[test]
+    fn codex_args_add_one_image_token() {
+        let plain = codex_args("W", None);
+        assert_eq!(
+            plain,
+            [
+                "-a",
+                "never",
+                "-s",
+                "read-only",
+                "--disable",
+                "shell_tool",
+                "-C",
+                "W",
+                "exec",
+                "--skip-git-repo-check",
+                "--ephemeral",
+                "--ignore-user-config"
+            ]
+        );
+        assert!(plain.iter().all(|arg| !arg.contains("--image")));
+
+        let with_image = codex_args("W", Some(r"C:\shots\a b.png"));
+        let (last, before) = with_image.split_last().unwrap();
+        assert_eq!(before, plain.as_slice());
+        assert_eq!(last, r"--image=C:\shots\a b.png");
+        assert_eq!(
+            with_image
+                .iter()
+                .filter(|arg| arg.contains("--image"))
+                .count(),
+            1
+        );
+    }
+
+    #[test]
+    fn codex_wsl_script_hands_the_image_over() {
+        assert_eq!(
+            codex_wsl_script("/srv/work dir", None),
+            "printf '%s\\n' __AIGC_STREAM_BEGIN__; codex -a never -s read-only --disable shell_tool -C '/srv/work dir' exec --skip-git-repo-check --ephemeral --ignore-user-config"
+        );
+
+        let image = r"C:\shots\it's $(x) a.png";
+        let script = codex_wsl_script("/srv/work dir", Some(image));
+        println!("{script}");
+        assert!(script.contains(&format!("wslpath -u {}", shell_escape(image))));
+        assert_eq!(
+            script,
+            r#"printf '%s\n' __AIGC_STREAM_BEGIN__; img=$(wslpath -u 'C:\shots\it'\''s $(x) a.png') && codex -a never -s read-only --disable shell_tool -C '/srv/work dir' exec --skip-git-repo-check --ephemeral --ignore-user-config --image="$img""#
+        );
+        assert_eq!(script.matches("--image=").count(), 1);
+    }
+
+    #[test]
+    fn codex_runs_ephemeral() {
+        for image in [None, Some(r"C:\shots\a b.png")] {
+            let args = codex_args("W", image);
+            println!("{args:?}");
+            assert_eq!(
+                args.iter().filter(|arg| *arg == "--ephemeral").count(),
+                1,
+                "{args:?}"
+            );
+            let skip = args
+                .iter()
+                .position(|arg| arg == "--skip-git-repo-check")
+                .unwrap();
+            assert_eq!(
+                args.get(skip + 1).map(String::as_str),
+                Some("--ephemeral"),
+                "{args:?}"
+            );
+
+            let script = codex_wsl_script("/srv/work dir", image);
+            println!("{script}");
+            assert_eq!(script.matches("--ephemeral").count(), 1, "{script}");
+            assert!(
+                script.contains("--skip-git-repo-check --ephemeral"),
+                "{script}"
+            );
+        }
+    }
+
+    /// Every index at which `flag` appears in `args`.
+    fn positions(args: &[String], flag: &str) -> Vec<usize> {
+        args.iter()
+            .enumerate()
+            .filter(|(_, arg)| *arg == flag)
+            .map(|(at, _)| at)
+            .collect()
+    }
+
+    #[test]
+    fn claude_children_are_locked_down() {
+        let prompt = "You are Sage. It's $(x) `y`";
+        let args = claude_args("claude-haiku-4-5", prompt);
+        println!("{args:?}");
+        let after = |flag: &str| {
+            let at = positions(&args, flag);
+            assert_eq!(at.len(), 1, "{flag} in {args:?}");
+            args.get(at[0] + 1).map(String::as_str)
+        };
+        for flag in [
+            "--safe-mode",
+            "--strict-mcp-config",
+            "--no-session-persistence",
+        ] {
+            assert_eq!(positions(&args, flag).len(), 1, "{flag} in {args:?}");
+        }
+        assert_eq!(after("--permission-mode"), Some("dontAsk"));
+        assert_eq!(after("--tools"), Some(""));
+        assert_eq!(after("--model"), Some("claude-haiku-4-5"));
+        assert_eq!(after("--system-prompt"), Some(prompt));
+
+        let script = claude_wsl_script("claude-haiku-4-5", prompt);
+        println!("{script}");
+        assert!(script.starts_with("claude "), "{script}");
+        for flag in [
+            "'--safe-mode'",
+            "'--strict-mcp-config'",
+            "'--permission-mode' 'dontAsk'",
+            "'--tools' ''",
+            "'--no-session-persistence'",
+        ] {
+            assert_eq!(script.matches(flag).count(), 1, "{flag} in {script}");
+        }
+        assert!(script.contains(&shell_escape(prompt)), "{script}");
+    }
+
+    #[test]
+    fn codex_children_are_locked_down() {
+        for image in [None, Some(r"C:\shots\a b.png")] {
+            let args = codex_args("W", image);
+            println!("{args:?}");
+            let exec = positions(&args, "exec");
+            assert_eq!(exec.len(), 1, "{args:?}");
+            let disable = positions(&args, "--disable");
+            assert_eq!(disable.len(), 1, "{args:?}");
+            assert!(disable[0] < exec[0], "--disable must come before exec");
+            assert_eq!(
+                args.get(disable[0] + 1).map(String::as_str),
+                Some("shell_tool")
+            );
+            let ignore = positions(&args, "--ignore-user-config");
+            assert_eq!(ignore.len(), 1, "{args:?}");
+            assert!(ignore[0] > exec[0], "--ignore-user-config must follow exec");
+
+            let script = codex_wsl_script("/srv/work dir", image);
+            println!("{script}");
+            assert_eq!(script.matches(" exec ").count(), 1, "{script}");
+            let (before, after) = script.split_once(" exec ").unwrap();
+            assert_eq!(
+                before.matches("--disable shell_tool").count(),
+                1,
+                "{script}"
+            );
+            assert!(!after.contains("--disable"), "{script}");
+            assert_eq!(after.matches("--ignore-user-config").count(), 1, "{script}");
+            assert!(!before.contains("--ignore-user-config"), "{script}");
+        }
+    }
+
+    // ---------------- run_cli line handling ----------------
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn codex_output_keeps_line_breaks() {
+        let mut cmd = Command::new("sh");
+        cmd.args(["-c", "printf 'One.\\nTwo.\\n\\n- a\\n- b\\n'"]);
+        let mut chunks = Vec::new();
+        let result = run_cli(
+            &mut cmd,
+            String::new(),
+            |text| {
+                chunks.push(text);
+                Ok(())
+            },
+            parse_codex_line,
+            "Codex",
+            None,
+        )
+        .await;
+        let joined = chunks.concat();
+        println!("{joined:?}");
+        assert_eq!(result, Ok(()));
+        assert_eq!(joined, "One.\nTwo.\n\n- a\n- b\n");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn cli_stderr_is_not_copied_into_the_log() {
+        #[derive(Clone, Default)]
+        struct Buf(std::sync::Arc<std::sync::Mutex<Vec<u8>>>);
+        impl std::io::Write for Buf {
+            fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+                self.0
+                    .lock()
+                    .map_err(|_| std::io::Error::other("log buffer poisoned"))?
+                    .extend_from_slice(bytes);
+                Ok(bytes.len())
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+        // A process-wide subscriber, installed once: a thread-local one misses
+        // events whenever a parallel test registered the call site first
+        // (measured: the captured log came back empty in 3 of 5 full runs).
+        static LOG: std::sync::OnceLock<Buf> = std::sync::OnceLock::new();
+        let buf = LOG
+            .get_or_init(|| {
+                let buf = Buf::default();
+                let writer = buf.clone();
+                let subscriber = tracing_subscriber::fmt()
+                    .with_max_level(tracing::Level::TRACE)
+                    .with_writer(move || writer.clone())
+                    .finish();
+                tracing::subscriber::set_global_default(subscriber).unwrap();
+                buf
+            })
+            .clone();
+
+        // Codex echoes the prompt -- and so the conversation -- to stderr. A
+        // label no other test uses keeps their lines out of the assertions.
+        let mut cmd = Command::new("sh");
+        cmd.args(["-c", "echo 'user: SECRET-PROMPT' >&2; echo answer"]);
+        let result = run_cli(
+            &mut cmd,
+            String::new(),
+            |_| Ok(()),
+            parse_codex_line,
+            "Probe",
+            None,
+        )
+        .await;
+        let log = String::from_utf8(buf.0.lock().unwrap().clone()).unwrap();
+        assert_eq!(result, Ok(()));
+        assert!(
+            !log.contains("SECRET-PROMPT"),
+            "stderr text reached the log"
+        );
+        assert!(
+            log.contains("Probe wrote 1 stderr line(s)"),
+            "the stderr line count is logged"
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn blank_lines_count_toward_the_byte_cap() {
+        let script = format!(
+            "head -c {} /dev/zero | tr '\\0' '\\n'",
+            MAX_STREAM_BYTES + 10
+        );
+        let mut cmd = Command::new("sh");
+        cmd.args(["-c", &script]);
+        let result = run_cli(
+            &mut cmd,
+            String::new(),
+            |_| Ok(()),
+            parse_codex_line,
+            "Codex",
+            None,
+        )
+        .await;
+        println!("{result:?}");
+        assert_eq!(
+            result,
+            Err("Codex response exceeded the size limit.".to_owned())
+        );
+    }
+
     // ---------------- parse_codex_line ----------------
 
     #[test]
     fn parse_codex_line_emits_plain_text_verbatim() {
         assert_eq!(
             parse_codex_line("PONG"),
-            Some(Parsed::Text("PONG".to_owned()))
+            Some(Parsed::Text("PONG\n".to_owned()))
         );
+        // A blank line is a paragraph break, not nothing.
+        assert_eq!(parse_codex_line(""), Some(Parsed::Text("\n".to_owned())));
     }
 
     #[test]
@@ -1018,8 +1515,11 @@ mod tests {
         let object = r#"{"ok":true}"#;
         assert_eq!(
             parse_codex_line(object),
-            Some(Parsed::Text(object.to_owned()))
+            Some(Parsed::Text(format!("{object}\n")))
         );
-        assert_eq!(parse_codex_line("42"), Some(Parsed::Text("42".to_owned())));
+        assert_eq!(
+            parse_codex_line("42"),
+            Some(Parsed::Text("42\n".to_owned()))
+        );
     }
 }

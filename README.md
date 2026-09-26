@@ -53,14 +53,14 @@ titles); genuine legacy exclusive-fullscreen games are out of scope. Treat it as
 a working tool you can build and run, not a polished consumer app.
 
 **Implemented:**
-- External transparent overlay window -- topmost, click-through when idle, takes
-  focus on demand; toggled with **Ctrl+Shift+G**. No injection, any graphics API.
+- External transparent overlay window -- topmost, takes focus on demand; toggled
+  with **Ctrl+Shift+G**. No injection, any graphics API.
 - Multi-provider AI -- Gemini (direct API), Claude & OpenAI (through your own
   `claude` / `codex` CLIs), switchable from an in-panel dropdown that shows only
   available providers and persists your choice.
 - Streaming "Sage" replies over a Tauri channel, multi-turn chat, Stop / New chat.
-- Screenshot vision (Gemini + Claude) via **Windows.Graphics.Capture** -- capture
-  the game frame with no injection; skipped for OpenAI (upstream Codex limitation).
+- Screenshot vision for all three providers via **Windows.Graphics.Capture** --
+  capture the game frame with no injection.
 - Translate (**Ctrl+Shift+T**) and quick-ask (**Ctrl+Shift+A**) hotkeys that wait for Enter.
 - Desktop launcher (Tauri 2 + Svelte 5) -- Steam library discovery, cover art,
   one-click launch, tray, launch-on-startup, and play-time via an external process
@@ -70,7 +70,6 @@ a working tool you can build and run, not a polished consumer app.
   toggles.
 
 **Not done yet / out of scope:**
-- OpenAI screenshots -- blocked on an upstream Codex CLI fix.
 - Rebindable hotkeys -- the chords are fixed this build (Settings shows them).
 - Positioning the panel over the game's specific monitor (it opens centered).
 - Offline / local-model translation -- translation currently runs through Gemini.
@@ -95,7 +94,8 @@ Sage can talk through **Gemini**, **Claude**, or **OpenAI** -- pick one from the
 in-panel dropdown (only available providers are shown; the choice persists).
 
 - **Gemini** -- direct API with a free key ([Google AI Studio](https://aistudio.google.com/apikey)),
-  entered in Settings and stored in the OS Credential Manager.
+  entered in Settings and stored in the OS Credential Manager. The model is chosen
+  in Settings; the default is `gemini-3.6-flash`.
 - **Claude** -- your existing [Claude Code](https://claude.ai/code) CLI, no separate key.
 - **OpenAI** -- your existing [Codex CLI](https://openai.com/codex/), no separate key.
 
@@ -105,7 +105,7 @@ are extracted or shared; each user authenticates their own CLIs. Providers never
 fall back to one another silently.
 
 ### Screenshot vision & translation
-Attach the current frame to a question (Gemini / Claude) -- captured via
+Attach the current frame to a question (any provider) -- captured via
 Windows.Graphics.Capture, no injection. The hotkeys stage a request and wait:
 - **Ctrl+Shift+T** opens the translate tab; Enter (or a click) captures and translates.
 - **Ctrl+Shift+A** stages a preset question with the screenshot on; Enter sends it.
@@ -199,10 +199,10 @@ cargo test -p launcher    # pure-logic tests; run on the Linux host
 4. **Secrets stay secret.** A Gemini key entered in Settings lives in the Windows
    Credential Manager. A key left in a legacy `config.toml` is still read from
    there in plaintext, so move it into Settings and clear the file.
-5. **No telemetry or analytics.** Nothing reports usage back to us. Two outbound
-   requests are worth knowing about anyway: the UI loads its fonts from Google
-   Fonts at startup, and Gemini requests enable Google Search grounding, so a
-   prompt sent to Gemini can reach Google Search.
+5. **No telemetry or analytics.** Nothing reports usage back to us. Two things
+   are worth knowing about anyway: the UI loads its fonts from Google Fonts at
+   startup, and Gemini answers from the model alone -- it does not search the
+   web.
 
 ## License
 
