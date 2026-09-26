@@ -527,7 +527,8 @@ pub(crate) fn sweep_shots(dir: &std::path::Path) -> usize {
 
 /// Codex's arguments when it runs from the Windows PATH. The prompt goes on
 /// stdin, never as an argument, and the `=` form keeps the image path bound to
-/// its flag.
+/// its flag. `--ephemeral` keeps the prompt, the history and the screenshot out
+/// of Codex's own session files.
 fn codex_args(work_dir: &str, image: Option<&str>) -> Vec<String> {
     let mut args: Vec<String> = [
         "-a",
@@ -538,6 +539,7 @@ fn codex_args(work_dir: &str, image: Option<&str>) -> Vec<String> {
         work_dir,
         "exec",
         "--skip-git-repo-check",
+        "--ephemeral",
     ]
     .into_iter()
     .map(str::to_owned)
@@ -553,7 +555,7 @@ fn codex_args(work_dir: &str, image: Option<&str>) -> Vec<String> {
 /// does not start and `wslpath`'s own message is the error.
 fn codex_wsl_script(work_dir: &str, image: Option<&str>) -> String {
     let codex = format!(
-        "codex -a never -s read-only -C {} exec --skip-git-repo-check",
+        "codex -a never -s read-only -C {} exec --skip-git-repo-check --ephemeral",
         shell_escape(work_dir),
     );
     let start = format!("printf '%s\\n' {WSL_SENTINEL}; ");
@@ -1164,7 +1166,8 @@ mod tests {
                 "-C",
                 "W",
                 "exec",
-                "--skip-git-repo-check"
+                "--skip-git-repo-check",
+                "--ephemeral"
             ]
         );
         assert!(plain.iter().all(|arg| !arg.contains("--image")));
@@ -1186,7 +1189,7 @@ mod tests {
     fn codex_wsl_script_hands_the_image_over() {
         assert_eq!(
             codex_wsl_script("/srv/work dir", None),
-            "printf '%s\\n' __AIGC_STREAM_BEGIN__; codex -a never -s read-only -C '/srv/work dir' exec --skip-git-repo-check"
+            "printf '%s\\n' __AIGC_STREAM_BEGIN__; codex -a never -s read-only -C '/srv/work dir' exec --skip-git-repo-check --ephemeral"
         );
 
         let image = r"C:\shots\it's $(x) a.png";
@@ -1195,9 +1198,39 @@ mod tests {
         assert!(script.contains(&format!("wslpath -u {}", shell_escape(image))));
         assert_eq!(
             script,
-            r#"printf '%s\n' __AIGC_STREAM_BEGIN__; img=$(wslpath -u 'C:\shots\it'\''s $(x) a.png') && codex -a never -s read-only -C '/srv/work dir' exec --skip-git-repo-check --image="$img""#
+            r#"printf '%s\n' __AIGC_STREAM_BEGIN__; img=$(wslpath -u 'C:\shots\it'\''s $(x) a.png') && codex -a never -s read-only -C '/srv/work dir' exec --skip-git-repo-check --ephemeral --image="$img""#
         );
         assert_eq!(script.matches("--image=").count(), 1);
+    }
+
+    #[test]
+    fn codex_runs_ephemeral() {
+        for image in [None, Some(r"C:\shots\a b.png")] {
+            let args = codex_args("W", image);
+            println!("{args:?}");
+            assert_eq!(
+                args.iter().filter(|arg| *arg == "--ephemeral").count(),
+                1,
+                "{args:?}"
+            );
+            let skip = args
+                .iter()
+                .position(|arg| arg == "--skip-git-repo-check")
+                .unwrap();
+            assert_eq!(
+                args.get(skip + 1).map(String::as_str),
+                Some("--ephemeral"),
+                "{args:?}"
+            );
+
+            let script = codex_wsl_script("/srv/work dir", image);
+            println!("{script}");
+            assert_eq!(script.matches("--ephemeral").count(), 1, "{script}");
+            assert!(
+                script.contains("--skip-git-repo-check --ephemeral"),
+                "{script}"
+            );
+        }
     }
 
     // ---------------- run_cli line handling ----------------
