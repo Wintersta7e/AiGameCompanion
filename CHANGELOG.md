@@ -41,7 +41,8 @@ All notable changes to this project are documented here. The format is based on
   before capturing, as translation does; a window that closed is not captured.
 - **A new Gemini key works on the first question.** The default model was one
   Google no longer opens to newly created keys, so a fresh key failed at once.
-  The default is now `gemini-3.6-flash`.
+  The default is now `gemini-3.6-flash`, and the example `config.toml` no
+  longer names the old model.
 - **Gemini errors give Google's reason.** A refused request shows the HTTP
   status, Google's own message (with the key blanked out) and what to try next,
   instead of a generic line that pointed at `config.toml`.

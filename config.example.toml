@@ -11,4 +11,7 @@
 [api.gemini]
 # Free key: https://aistudio.google.com/apikey
 api_key = "your-gemini-api-key-here"
-model = "gemini-2.5-flash"
+# The model is chosen in Settings -> Providers. A model line here would take
+# precedence over the app's default when Settings says "Default", so leave it out
+# unless you need one:
+# model = "gemini-3.6-flash"
