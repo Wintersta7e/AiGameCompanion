@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { onMount } from 'svelte';
   import { invoke } from '@tauri-apps/api/core';
   import {
     getSelectedGame,
@@ -8,13 +9,23 @@
     type Game,
   } from '../stores/games.svelte';
   import { setAccentFromGame } from '../stores/accent.svelte';
-  import { getProviderMeta } from '../stores/companion.svelte';
+  import {
+    getModelName,
+    getProvider,
+    getProviderMeta,
+    refreshModels,
+  } from '../stores/companion.svelte';
   import { formatPlayTime, formatLastPlayed } from '../utils/format';
 
   let { onOpenSettings }: { onOpenSettings?: () => void } = $props();
 
   let game: Game | undefined = $derived(getSelectedGame());
   let prov = $derived(getProviderMeta());
+  let model = $derived(getModelName(getProvider()));
+
+  onMount(() => {
+    void refreshModels();
+  });
 
   let coverError = $state(false);
   let fileError = $state<string | null>(null);
@@ -377,7 +388,7 @@
             <span class="text-[12.5px] text-t-mid">Model</span>
             <span
               style="color: var(--accent); background: color-mix(in oklab, var(--accent) 10%, transparent);"
-              class="font-mono text-[11px] px-[9px] py-[3px] rounded-md">{prov.model}</span
+              class="font-mono text-[11px] px-[9px] py-[3px] rounded-md">{model}</span
             >
           </div>
           <!-- overlay hotkey -->

@@ -3,7 +3,7 @@
   import { invoke, Channel } from '@tauri-apps/api/core';
   import { listen } from '@tauri-apps/api/event';
   import { hashHue } from '../utils/accent';
-  import { PROVIDERS, type Provider } from '../stores/companion.svelte';
+  import { PROVIDERS, modelName, type ModelNames, type Provider } from '../stores/companion.svelte';
 
   type GameInfo = {
     hwnd: number;
@@ -14,10 +14,11 @@
     linked: boolean;
     accent?: string;
   } | null;
-  interface Availability {
+  interface Availability extends ModelNames {
     gemini: boolean;
     claude: boolean;
     openai: boolean;
+    gemini_fallback_model: string;
   }
   interface SageEvent {
     kind: 'chunk' | 'done' | 'error';
@@ -38,7 +39,15 @@
   const SUGGESTIONS = ['Where do I go next?', "What's this enemy weak to?", 'Explain this screen'];
 
   let game = $state<GameInfo>(null);
-  let availability = $state<Availability>({ gemini: false, claude: false, openai: false });
+  let availability = $state<Availability>({
+    gemini: false,
+    claude: false,
+    openai: false,
+    gemini_model: '',
+    gemini_fallback_model: '',
+    claude_model: '',
+    openai_model: '',
+  });
   let provider = $state<Provider>('gemini');
   let savedProvider: Provider | null = null;
   let dropdownOpen = $state(false);
@@ -67,6 +76,8 @@
 
   const available = $derived(PROVIDER_ORDER.filter((p) => availability[p]));
   const meta = $derived(PROVIDERS[provider]);
+  // The model each provider answers with, as the backend reports it.
+  const modelLabel = (p: Provider) => modelName(availability, p);
   const accent = $derived(
     game ? (game.accent ?? hashHue(game.exe || game.title || 'sage')) : '#e0a23c',
   );
@@ -166,7 +177,7 @@
     messages = [
       ...messages,
       { role: 'user', content: question, screenshot: withShot },
-      { role: 'assistant', content: '', model: meta.model, streaming: true },
+      { role: 'assistant', content: '', model: modelLabel(provider), streaming: true },
     ];
     const idx = messages.length - 1;
     streamIndex = idx;
@@ -480,7 +491,7 @@
               <span style="background: {PROVIDERS[p].dot};" class="pdot"></span>
               <span class="pmeta">
                 <span class="pname">{PROVIDERS[p].label}</span>
-                <span class="pmodel">{PROVIDERS[p].model}</span>
+                <span class="pmodel">{modelLabel(p)}</span>
               </span>
               {#if p === provider}
                 <span class="pcheck">
@@ -634,7 +645,7 @@
             {/if}
           </div>
           <div class="footer">
-            <span>{meta.model} · {asking ? 'streaming' : 'Enter to send'}</span>
+            <span>{modelLabel(provider)} · {asking ? 'streaming' : 'Enter to send'}</span>
             <span>{captureHint}</span>
           </div>
         </div>

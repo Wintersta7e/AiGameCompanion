@@ -16,7 +16,7 @@ use super::ChatMessage;
 
 /// Default Claude model when the user has not configured one. Codex ignores the
 /// model (that CLI rejects an explicit `-m`), so no default is needed there.
-pub(super) const DEFAULT_CLAUDE_MODEL: &str = "claude-haiku-4-5";
+pub(crate) const DEFAULT_CLAUDE_MODEL: &str = "claude-haiku-4-5";
 
 /// Name of the Codex working directory (used as both the WSL `/tmp/<name>` path
 /// and the Windows `temp_dir().join(<name>)` path).

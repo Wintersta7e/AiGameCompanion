@@ -114,6 +114,10 @@ pub(crate) struct ProviderAvailability {
     pub gemini_model: String,
     /// The Gemini model used when Settings names none.
     pub gemini_fallback_model: String,
+    /// The Claude model the CLI is asked for.
+    pub claude_model: String,
+    /// The Codex model; empty because the CLI picks its own default.
+    pub openai_model: String,
 }
 
 /// Parameters of a chat request, deserialized from the `ask_sage` command.
@@ -167,6 +171,8 @@ impl AiState {
             openai_where: cli.codex.location().to_owned(),
             gemini_model: gemini::resolve_model(settings_model, &file_model),
             gemini_fallback_model: gemini::resolve_model("", &file_model),
+            claude_model: cli::DEFAULT_CLAUDE_MODEL.to_owned(),
+            openai_model: String::new(),
         }
     }
 
@@ -519,6 +525,17 @@ mod tests {
             assert!(!line.contains("Real Name"));
             assert!(!line.contains("SECRET-TITLE"));
         }
+    }
+
+    #[test]
+    fn availability_reports_the_models_in_use() {
+        let availability = AiState::default().availability("gemini-3.8-flash");
+        println!("{availability:?}");
+        assert_eq!(availability.claude_model, "claude-haiku-4-5");
+        assert_eq!(availability.claude_model, cli::DEFAULT_CLAUDE_MODEL);
+        assert_eq!(availability.openai_model, "");
+        assert_eq!(availability.gemini_model, "gemini-3.8-flash");
+        assert!(!availability.gemini_fallback_model.is_empty());
     }
 
     #[test]

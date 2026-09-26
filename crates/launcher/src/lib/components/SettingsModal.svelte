@@ -1,14 +1,21 @@
 <script lang="ts">
   import { invoke } from '@tauri-apps/api/core';
-  import { PROVIDERS, getProvider, setProvider, type Provider } from '../stores/companion.svelte';
+  import {
+    PROVIDERS,
+    getProvider,
+    modelName,
+    refreshModels,
+    setProvider,
+    type ModelNames,
+    type Provider,
+  } from '../stores/companion.svelte';
 
-  interface Availability {
+  interface Availability extends ModelNames {
     gemini: boolean;
     claude: boolean;
     openai: boolean;
     claude_where: string;
     openai_where: string;
-    gemini_model: string;
     gemini_fallback_model: string;
   }
   interface Settings {
@@ -41,6 +48,8 @@
     openai_where: '',
     gemini_model: '',
     gemini_fallback_model: '',
+    claude_model: '',
+    openai_model: '',
   });
   // The model select's own state; written to settings.gemini_model on Save.
   let modelChoice = $state('');
@@ -153,6 +162,7 @@
     settings.gemini_model = modelChoice === 'custom' ? customModel.trim() : modelChoice;
     try {
       await invoke('update_settings', { settings });
+      void refreshModels();
       await closeModal();
     } catch (e) {
       saveError = String(e);
@@ -308,7 +318,7 @@
                 <div class="min-w-0">
                   <div class="text-[13.5px] font-semibold text-t-hi">Gemini</div>
                   <div class="font-mono text-[10.5px] text-t-lo">
-                    {PROVIDERS.gemini.model} · API
+                    {modelName(availability, 'gemini')} · API
                   </div>
                 </div>
                 {#if availability.gemini}
@@ -421,7 +431,7 @@
               <div class="min-w-0">
                 <div class="text-[13.5px] font-semibold text-t-hi">Claude</div>
                 <div class="font-mono text-[10.5px] text-t-lo">
-                  {PROVIDERS.claude.model} · CLI{availability.claude_where
+                  {modelName(availability, 'claude')} · CLI{availability.claude_where
                     ? ` · ${availability.claude_where}`
                     : ''}
                 </div>
@@ -444,7 +454,7 @@
               <div class="min-w-0">
                 <div class="text-[13.5px] font-semibold text-t-hi">OpenAI · Codex</div>
                 <div class="font-mono text-[10.5px] text-t-lo">
-                  {PROVIDERS.openai.model} · CLI{availability.openai_where
+                  {modelName(availability, 'openai')} · CLI{availability.openai_where
                     ? ` · ${availability.openai_where}`
                     : ''} · no screenshots
                 </div>
