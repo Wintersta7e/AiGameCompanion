@@ -15,15 +15,15 @@ pub(crate) fn get_games(state: State<'_, AppState>) -> Vec<Game> {
     launcher.games.clone()
 }
 
-/// Fold a scan result into the stored library, always carrying `play_time` and
-/// `last_played` across.
+/// Fold a Steam scan result into the stored library, always carrying
+/// `play_time` and `last_played` across.
 ///
-/// A COMPLETE scan is authoritative: entries it omits really are uninstalled,
-/// so the result replaces the stored list. A PARTIAL scan is not -- Steam was
+/// The scan speaks only for Steam games, so entries from any other source are
+/// always kept. For Steam games a COMPLETE scan is authoritative: entries it
+/// omits really are uninstalled. A PARTIAL scan is not -- Steam was
 /// unreachable, or a library on an unmounted drive failed to read -- so stored
-/// games it does not mention are kept. Replacing wholesale on a partial scan
-/// permanently erases playtime for every game on the drive that was missing,
-/// unattended, because `scan_on_startup` defaults to true.
+/// Steam games it does not mention are kept. Dropping either kind permanently
+/// erases its playtime, unattended, because `scan_on_startup` defaults to true.
 fn merge_scan(existing: &[Game], outcome: ScanOutcome) -> Vec<Game> {
     let ScanOutcome {
         mut games,
@@ -37,20 +37,23 @@ fn merge_scan(existing: &[Game], outcome: ScanOutcome) -> Vec<Game> {
         }
     }
 
-    if !complete {
-        let scanned: std::collections::HashSet<&str> =
-            games.iter().map(|g| g.id.as_str()).collect();
-        let mut kept: Vec<Game> = existing
-            .iter()
-            .filter(|g| !scanned.contains(g.id.as_str()))
-            .cloned()
-            .collect();
-        if !kept.is_empty() {
-            tracing::warn!(
-                "Partial Steam scan -- keeping {} stored game(s) the scan did not reach",
-                kept.len()
-            );
-        }
+    let scanned: std::collections::HashSet<&str> = games.iter().map(|g| g.id.as_str()).collect();
+    let mut kept: Vec<Game> = existing
+        .iter()
+        .filter(|g| !scanned.contains(g.id.as_str()))
+        .filter(|g| g.source != GameSource::Steam || !complete)
+        .cloned()
+        .collect();
+    let unreached = kept
+        .iter()
+        .filter(|g| g.source == GameSource::Steam)
+        .count();
+    if unreached > 0 {
+        tracing::warn!(
+            "Partial Steam scan -- keeping {unreached} stored game(s) the scan did not reach"
+        );
+    }
+    if !kept.is_empty() {
         games.append(&mut kept);
         games.sort_by_key(|g| g.name.to_lowercase());
     }
@@ -274,6 +277,33 @@ mod tests {
         );
         assert_eq!(merged.len(), 1, "a complete scan is authoritative");
         assert_eq!(merged[0].id, "steam_1");
+    }
+
+    /// A Steam scan knows nothing of other launchers: a complete one drops the
+    /// Steam games it omits, never a game from another source.
+    #[test]
+    fn complete_scan_keeps_other_sources() {
+        let mut manual = game("manual_1", "Alpha", 40);
+        manual.source = GameSource::Manual;
+        let mut epic = game("epic_1", "Zeta", 20);
+        epic.source = GameSource::Epic;
+        let stored = vec![
+            manual,
+            game("steam_1", "One", 300),
+            game("steam_2", "Two", 50),
+            epic,
+        ];
+        let merged = merge_scan(
+            &stored,
+            ScanOutcome {
+                games: vec![game("steam_1", "One", 0)],
+                complete: true,
+            },
+        );
+        let ids: Vec<&str> = merged.iter().map(|g| g.id.as_str()).collect();
+        assert_eq!(ids, ["manual_1", "steam_1", "epic_1"], "sorted by name");
+        let minutes: Vec<u64> = merged.iter().map(|g| g.play_time_minutes).collect();
+        assert_eq!(minutes, [40, 300, 20]);
     }
 
     /// The regression that matters: a library on an unavailable drive must not
