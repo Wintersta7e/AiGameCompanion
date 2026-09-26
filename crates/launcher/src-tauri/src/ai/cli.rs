@@ -412,8 +412,8 @@ fn parse_claude_line(line: &str) -> Option<Parsed> {
 }
 
 /// Parse a single line from Codex CLI stdout. `codex exec` prints plain text, so
-/// non-JSON lines are emitted verbatim; JSON lines (refusals, structured output)
-/// are decoded.
+/// non-JSON lines (blank ones included) are emitted verbatim plus their newline;
+/// JSON lines (refusals, structured output) are decoded.
 fn parse_codex_line(line: &str) -> Option<Parsed> {
     if let Ok(v) = serde_json::from_str::<serde_json::Value>(line) {
         if v.get("type").and_then(serde_json::Value::as_str) == Some("refusal") {
@@ -454,7 +454,9 @@ fn parse_codex_line(line: &str) -> Option<Parsed> {
         }
     }
 
-    Some(Parsed::Text(line.to_owned()))
+    // Put back the newline `lines()` removed, so the answer keeps its line
+    // breaks and blank lines (paragraphs, lists).
+    Some(Parsed::Text(format!("{line}\n")))
 }
 
 /// Stream a Claude response by spawning the Claude CLI in stream-json mode.
@@ -645,14 +647,14 @@ where
             }
             // Mirror the Gemini stream cap: `lines()` grows one buffer with no
             // ceiling, so a child emitting a huge blob would otherwise grow the
-            // launcher's memory byte for byte.
-            total_bytes = total_bytes.saturating_add(line.len());
+            // launcher's memory byte for byte. The `+ 1` is the newline `lines()`
+            // strips, so a flood of blank lines counts too.
+            total_bytes = total_bytes.saturating_add(line.len() + 1);
             if total_bytes > MAX_STREAM_BYTES {
                 return Err(format!("{label} response exceeded the size limit."));
             }
-            if line.trim().is_empty() {
-                continue;
-            }
+            // Blank lines reach the parser: they are paragraph breaks in a
+            // plain-text answer, and Claude's JSON parser drops them anyway.
             match parse_line(&line) {
                 Some(Parsed::Text(text)) => {
                     emitted = true;
@@ -968,14 +970,67 @@ mod tests {
         assert_eq!(parse_claude_line(""), None);
     }
 
+    // ---------------- run_cli line handling ----------------
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn codex_output_keeps_line_breaks() {
+        let mut cmd = Command::new("sh");
+        cmd.args(["-c", "printf 'One.\\nTwo.\\n\\n- a\\n- b\\n'"]);
+        let mut chunks = Vec::new();
+        let result = run_cli(
+            &mut cmd,
+            String::new(),
+            |text| {
+                chunks.push(text);
+                Ok(())
+            },
+            parse_codex_line,
+            "Codex",
+            None,
+        )
+        .await;
+        let joined = chunks.concat();
+        println!("{joined:?}");
+        assert_eq!(result, Ok(()));
+        assert_eq!(joined, "One.\nTwo.\n\n- a\n- b\n");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn blank_lines_count_toward_the_byte_cap() {
+        let script = format!(
+            "head -c {} /dev/zero | tr '\\0' '\\n'",
+            MAX_STREAM_BYTES + 10
+        );
+        let mut cmd = Command::new("sh");
+        cmd.args(["-c", &script]);
+        let result = run_cli(
+            &mut cmd,
+            String::new(),
+            |_| Ok(()),
+            parse_codex_line,
+            "Codex",
+            None,
+        )
+        .await;
+        println!("{result:?}");
+        assert_eq!(
+            result,
+            Err("Codex response exceeded the size limit.".to_owned())
+        );
+    }
+
     // ---------------- parse_codex_line ----------------
 
     #[test]
     fn parse_codex_line_emits_plain_text_verbatim() {
         assert_eq!(
             parse_codex_line("PONG"),
-            Some(Parsed::Text("PONG".to_owned()))
+            Some(Parsed::Text("PONG\n".to_owned()))
         );
+        // A blank line is a paragraph break, not nothing.
+        assert_eq!(parse_codex_line(""), Some(Parsed::Text("\n".to_owned())));
     }
 
     #[test]
@@ -1018,8 +1073,11 @@ mod tests {
         let object = r#"{"ok":true}"#;
         assert_eq!(
             parse_codex_line(object),
-            Some(Parsed::Text(object.to_owned()))
+            Some(Parsed::Text(format!("{object}\n")))
         );
-        assert_eq!(parse_codex_line("42"), Some(Parsed::Text("42".to_owned())));
+        assert_eq!(
+            parse_codex_line("42"),
+            Some(Parsed::Text("42\n".to_owned()))
+        );
     }
 }
