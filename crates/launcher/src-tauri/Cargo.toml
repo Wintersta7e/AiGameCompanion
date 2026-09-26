@@ -66,5 +66,10 @@ windows = { version = "0.62", features = [
     "Win32_System_WinRT_Graphics_Capture",
 ] }
 
+# The mock runtime, so a test can check what each window's compiled
+# permissions let through. Test builds only: the feature adds no dependency.
+[dev-dependencies]
+tauri = { version = "2", features = ["test"] }
+
 [features]
 custom-protocol = ["tauri/custom-protocol"]

@@ -61,7 +61,11 @@ mod tests {
     use crate::util::count_in_frontend;
     use std::collections::BTreeSet;
     use std::path::{Path, PathBuf};
-    use tauri::Url;
+    use tauri::http::HeaderMap;
+    use tauri::ipc::{CallbackFn, InvokeBody};
+    use tauri::test::{get_ipc_response, mock_builder, MockRuntime, INVOKE_KEY};
+    use tauri::webview::InvokeRequest;
+    use tauri::{Url, WebviewUrl, WebviewWindow, WebviewWindowBuilder};
 
     #[test]
     fn navigation_allows_only_app_origins() {
@@ -294,6 +298,103 @@ mod tests {
         }
         println!("{}", counts.join(", "));
         assert!(failures.is_empty(), "{failures:#?}");
+    }
+
+    /// Core and plugin commands the overlay must be refused.
+    const OVERLAY_REFUSED: &[&str] = &[
+        "plugin:window|internal_toggle_maximize",
+        "plugin:window|maximize",
+        "plugin:window|set_position",
+        "plugin:window|set_size",
+        "plugin:window|hide",
+        "plugin:window|show",
+        "plugin:window|set_focus",
+        "plugin:window|close",
+        "plugin:image|from_path",
+        "plugin:tray|new",
+        "plugin:menu|new",
+        "plugin:webview|create_webview_window",
+        "plugin:event|emit",
+    ];
+    /// Core commands the overlay's own UI needs.
+    const OVERLAY_ALLOWED: &[&str] = &[
+        "plugin:event|listen",
+        "plugin:event|unlisten",
+        "plugin:window|start_dragging",
+    ];
+    /// Plugin commands no window may call: the opener runs only from Rust.
+    const ALL_REFUSED: &[&str] = &["plugin:opener|open_url", "plugin:opener|open_path"];
+
+    #[test]
+    #[allow(
+        clippy::exit,
+        reason = "tauri's generated context exits the process if building it panics"
+    )]
+    fn acl_denies_everything_unlisted() {
+        let app = mock_builder()
+            .build(tauri::generate_context!(test = true))
+            .unwrap();
+        // The app's own origin: any other URL is remote and would be refused
+        // for that reason instead.
+        let url: Url = if cfg!(windows) {
+            "http://tauri.localhost"
+        } else {
+            "tauri://localhost"
+        }
+        .parse()
+        .unwrap();
+        let denied = |window: &WebviewWindow<MockRuntime>, cmd: &str| {
+            let request = InvokeRequest {
+                cmd: cmd.to_owned(),
+                callback: CallbackFn(0),
+                error: CallbackFn(1),
+                url: url.clone(),
+                body: InvokeBody::default(),
+                headers: HeaderMap::default(),
+                invoke_key: INVOKE_KEY.to_owned(),
+            };
+            get_ipc_response(window, request)
+                .is_err_and(|error| error.to_string().contains("not allowed"))
+        };
+
+        let handlers = handler_commands();
+        let mut mismatches = Vec::new();
+        let mut summary = Vec::new();
+        for (label, listed) in [("main", MAIN_APP), ("overlay", OVERLAY_APP)] {
+            // `build` does not create the configured windows (the run loop
+            // does), and capabilities match windows by label.
+            let window = WebviewWindowBuilder::new(&app, label, WebviewUrl::default())
+                .build()
+                .unwrap();
+            let mut probes: Vec<(&str, bool)> =
+                ALL_REFUSED.iter().map(|&cmd| (cmd, true)).collect();
+            if label == "overlay" {
+                probes.extend(OVERLAY_REFUSED.iter().map(|&cmd| (cmd, true)));
+                probes.extend(OVERLAY_ALLOWED.iter().map(|&cmd| (cmd, false)));
+            }
+            let mut denials = 0;
+            for command in &handlers {
+                let refused = denied(&window, command);
+                denials += usize::from(refused);
+                if refused == listed.contains(&command.as_str()) {
+                    mismatches.push(format!("{label}: {command} refused: {refused}"));
+                }
+            }
+            for &(cmd, expected) in &probes {
+                let refused = denied(&window, cmd);
+                denials += usize::from(refused);
+                if refused != expected {
+                    mismatches.push(format!("{label}: {cmd} refused: {refused}"));
+                }
+            }
+            summary.push(format!(
+                "{label}: {} commands + {} probes, {denials} refused",
+                handlers.len(),
+                probes.len()
+            ));
+        }
+        println!("{}", summary.join("; "));
+        assert!(mismatches.is_empty(), "{mismatches:#?}");
     }
 
     /// The one component allowed to insert raw HTML, and only once it exists.
