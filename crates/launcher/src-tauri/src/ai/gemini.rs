@@ -13,13 +13,16 @@ use super::ChatMessage;
 const GEMINI_ENDPOINT: &str = "https://generativelanguage.googleapis.com/v1beta/models";
 const MAX_STREAM_BYTES: usize = 2 * 1024 * 1024;
 const MAX_OUTPUT_TOKENS: u32 = 4_096;
+/// How much of a refused request's body is read for Google's reason.
+const MAX_ERROR_BODY_BYTES: usize = 8 * 1024;
+/// How much of Google's reason is shown to the user.
+const MAX_ERROR_MESSAGE_CHARS: usize = 300;
 
-/// Gemini API key + model, read transitionally from `config.toml` next to the
-/// executable (Phase 6 replaces this with the Settings UI + secret storage).
+/// The Gemini API key. The model is resolved separately by `resolve_model`: the
+/// one chosen in Settings, then the legacy `config.toml` value, then the default.
 #[derive(Debug)]
 pub(super) struct GeminiConfig {
     pub api_key: String,
-    pub model: String,
 }
 
 #[derive(Default, Deserialize)]
@@ -121,24 +124,38 @@ struct ResponsePart {
     text: Option<String>,
 }
 
-const DEFAULT_MODEL: &str = "gemini-2.5-flash";
+/// The model used when neither Settings nor the legacy file names one. Older
+/// Flash models are closed to newly created keys.
+const DEFAULT_MODEL: &str = "gemini-3.6-flash";
 
-/// Load the Gemini configuration. The API key prefers OS secret storage (set via
-/// Settings), falling back to a legacy `config.toml` next to the executable; the
-/// model falls back to a default. `config.toml` is therefore optional.
+/// Load the Gemini API key. It prefers OS secret storage (set via Settings),
+/// falling back to a legacy `config.toml` next to the executable, so that file
+/// is optional.
 pub(super) fn load_config() -> Result<GeminiConfig, String> {
-    let file = read_config_file();
     let api_key = crate::secrets::gemini_key()
         .or_else(|| {
+            let file = read_config_file();
             let key = file.api.gemini.api_key.trim();
             (!key.is_empty()).then(|| key.to_owned())
         })
         .ok_or_else(|| "Gemini API key is not set. Add it in Settings.".to_owned())?;
-    let model = match file.api.gemini.model.trim() {
-        "" => DEFAULT_MODEL.to_owned(),
-        model => model.to_owned(),
-    };
-    Ok(GeminiConfig { api_key, model })
+    Ok(GeminiConfig { api_key })
+}
+
+/// The model named in the legacy `config.toml`, trimmed, or `""`. Read on its
+/// own so a missing key never hides it.
+pub(super) fn file_model() -> String {
+    read_config_file().api.gemini.model.trim().to_owned()
+}
+
+/// The model a request names: the Settings choice, else the legacy file's,
+/// else the default. Blank values count as no choice.
+pub(crate) fn resolve_model(settings_model: &str, file_model: &str) -> String {
+    [settings_model.trim(), file_model.trim()]
+        .into_iter()
+        .find(|model| !model.is_empty())
+        .unwrap_or(DEFAULT_MODEL)
+        .to_owned()
 }
 
 /// Read the legacy `config.toml` next to the executable, if present. Missing or
@@ -258,13 +275,8 @@ where
 
     let status = response.status();
     if !status.is_success() {
-        return Err(match status.as_u16() {
-            400 => "Bad request. Try a shorter message.".to_owned(),
-            403 => "Invalid API key. Check config.toml.".to_owned(),
-            429 => "Rate limited. Try again later.".to_owned(),
-            500 | 503 => "API server error. Try again.".to_owned(),
-            code => format!("API error (HTTP {code})."),
-        });
+        let body = read_error_body(response).await;
+        return Err(http_error_message(status.as_u16(), &body, api_key));
     }
 
     let mut stream = response.bytes_stream();
@@ -296,13 +308,70 @@ where
     }
 }
 
-fn validate_model(model: &str) -> Result<(), String> {
+/// Read at most `MAX_ERROR_BODY_BYTES` of a refused response, stopping early
+/// instead of draining the whole stream. A read error ends it with what arrived.
+async fn read_error_body(response: reqwest::Response) -> String {
+    let mut stream = response.bytes_stream();
+    let mut body = Vec::new();
+    while let Some(Ok(bytes)) = stream.next().await {
+        body.extend_from_slice(&bytes);
+        if body.len() >= MAX_ERROR_BODY_BYTES {
+            break;
+        }
+    }
+    body.truncate(MAX_ERROR_BODY_BYTES);
+    String::from_utf8_lossy(&body).into_owned()
+}
+
+/// What a refused request tells the user: the status, Google's own reason when
+/// the body carries one (the key blanked out, cut to a readable length), then
+/// what to do about it.
+fn http_error_message(status: u16, body: &str, api_key: &str) -> String {
+    let mut out = format!("Gemini refused the request (HTTP {status})");
+    let message = stream_error_message(body)
+        .map(|message| {
+            let message = if api_key.is_empty() {
+                message
+            } else {
+                message.replace(api_key, "[key]")
+            };
+            message
+                .trim()
+                .chars()
+                .take(MAX_ERROR_MESSAGE_CHARS)
+                .collect::<String>()
+        })
+        .filter(|message| !message.is_empty());
+    if let Some(message) = message {
+        out.push_str(": ");
+        out.push_str(&message);
+    }
+    if !out.ends_with(['.', '!', '?']) {
+        out.push('.');
+    }
+    let hint = match status {
+        400 | 404 => {
+            Some("If this model isn't available for your key, choose another in Settings.")
+        }
+        401 | 403 => Some("Check the Gemini key in Settings."),
+        429 => Some("Rate limited. Try again later."),
+        500..=599 => Some("Gemini is having trouble. Try again."),
+        _ => None,
+    };
+    if let Some(hint) = hint {
+        out.push(' ');
+        out.push_str(hint);
+    }
+    out
+}
+
+pub(crate) fn validate_model(model: &str) -> Result<(), String> {
     if model.is_empty()
         || !model.chars().all(|character| {
             character.is_ascii_alphanumeric() || matches!(character, '-' | '.' | '_')
         })
     {
-        return Err("Invalid model name in config.toml. Use ASCII alphanumeric, hyphens, dots, and underscores only.".to_owned());
+        return Err("Invalid Gemini model name. Use ASCII letters, digits, hyphens, dots and underscores only.".to_owned());
     }
     Ok(())
 }
@@ -391,8 +460,107 @@ mod tests {
     )]
 
     use super::{
-        build_request, process_sse_lines, stream_error_message, validate_model, ChatMessage,
+        build_request, http_error_message, process_sse_lines, resolve_model, stream_error_message,
+        validate_model, ChatMessage,
     };
+
+    #[test]
+    fn resolve_model_precedence() {
+        for (settings, file, expected) in [
+            ("", "", "gemini-3.6-flash"),
+            ("", "gemini-x", "gemini-x"),
+            ("gemini-y", "gemini-x", "gemini-y"),
+            ("  ", " gemini-x ", "gemini-x"),
+        ] {
+            assert_eq!(
+                resolve_model(settings, file),
+                expected,
+                "settings {settings:?}, file {file:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn http_errors_explain_themselves() {
+        const KEY: &str = "AIzaTESTKEY123";
+        let body =
+            |message: &str| serde_json::json!({ "error": { "message": message } }).to_string();
+        let model_hint = "If this model isn't available for your key, choose another in Settings.";
+        let key_hint = "Check the Gemini key in Settings.";
+
+        let cases = [
+            (
+                403,
+                body("API key not valid."),
+                vec!["HTTP 403", "API key not valid.", key_hint],
+            ),
+            (
+                401,
+                body("Unauthorised."),
+                vec!["HTTP 401", "Unauthorised.", key_hint],
+            ),
+            (
+                404,
+                body("models/gemini-nope-1 is not found."),
+                vec!["HTTP 404", "gemini-nope-1", model_hint],
+            ),
+            (
+                400,
+                body("Bad model."),
+                vec!["HTTP 400", "Bad model.", model_hint],
+            ),
+            (
+                429,
+                body("Quota exceeded."),
+                vec!["HTTP 429", "Rate limited. Try again later."],
+            ),
+            (
+                503,
+                body("Overloaded."),
+                vec!["HTTP 503", "Gemini is having trouble. Try again."],
+            ),
+            (418, body("Teapot."), vec!["HTTP 418", "Teapot."]),
+        ];
+        for (status, body, expected) in cases {
+            let out = http_error_message(status, &body, KEY);
+            println!("{out}");
+            assert!(out.starts_with("Gemini refused the request (HTTP "));
+            for part in expected {
+                assert!(out.contains(part), "{out:?} should contain {part:?}");
+            }
+            assert!(!out.contains("config.toml"));
+        }
+
+        let teapot = http_error_message(418, &body("Teapot."), KEY);
+        assert!(!teapot.contains("Settings") && !teapot.contains("Try again"));
+
+        let server = http_error_message(500, "<html>not json</html>", KEY);
+        println!("{server}");
+        assert!(server.contains("HTTP 500"));
+        assert!(server.contains("Gemini is having trouble. Try again."));
+        assert!(!server.contains(": "), "no message part without a message");
+        assert!(!server.contains("config.toml"));
+
+        let long = http_error_message(400, &body(&"\u{e9}".repeat(1_000)), KEY);
+        assert!(long.contains(&"\u{e9}".repeat(300)));
+        assert!(!long.contains(&"\u{e9}".repeat(301)));
+        assert!(!long.contains("config.toml"));
+
+        let leaked = http_error_message(400, &body(&format!("API key {KEY} is not valid.")), KEY);
+        println!("{leaked}");
+        assert!(leaked.contains("API key [key] is not valid."));
+        assert!(!leaked.contains(KEY));
+        assert!(!leaked.contains("config.toml"));
+    }
+
+    #[test]
+    fn validate_model_messages_name_no_file() {
+        let error = validate_model("../x").expect_err("a path is not a model name");
+        println!("{error}");
+        assert!(error.contains("Gemini model name"));
+        assert!(!error.contains("config.toml"));
+        assert!(validate_model("gemini-3.6-flash").is_ok());
+    }
 
     fn turn(role: &str, content: &str) -> ChatMessage {
         ChatMessage {

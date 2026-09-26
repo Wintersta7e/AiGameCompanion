@@ -95,7 +95,8 @@ Sage can talk through **Gemini**, **Claude**, or **OpenAI** -- pick one from the
 in-panel dropdown (only available providers are shown; the choice persists).
 
 - **Gemini** -- direct API with a free key ([Google AI Studio](https://aistudio.google.com/apikey)),
-  entered in Settings and stored in the OS Credential Manager.
+  entered in Settings and stored in the OS Credential Manager. The model is chosen
+  in Settings; the default is `gemini-3.6-flash`.
 - **Claude** -- your existing [Claude Code](https://claude.ai/code) CLI, no separate key.
 - **OpenAI** -- your existing [Codex CLI](https://openai.com/codex/), no separate key.
 

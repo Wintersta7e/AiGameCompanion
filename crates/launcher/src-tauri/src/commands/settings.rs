@@ -32,10 +32,15 @@ pub(crate) fn update_settings(
     if let Some(reason) = state.load_error() {
         return Err(reason.to_owned());
     }
+    let model = settings.gemini_model.trim();
+    if !model.is_empty() {
+        crate::ai::validate_gemini_model(model)?;
+    }
     let launch_on_startup = settings.launch_on_startup;
     {
         let mut launcher = state.launcher.lock();
-        launcher.settings = settings;
+        let merged = merge_settings(&launcher.settings, settings);
+        launcher.settings = merged;
     }
 
     // Sync autostart with OS. Log failures: a registry write blocked by policy
@@ -52,6 +57,16 @@ pub(crate) fn update_settings(
     }
 
     state.save()
+}
+
+/// What Save stores: the modal's values with the model trimmed, except the
+/// provider. Only `set_active_provider` writes that, so a provider picked in the
+/// overlay while Settings is open is not reverted by Save.
+fn merge_settings(stored: &LauncherSettings, incoming: LauncherSettings) -> LauncherSettings {
+    let mut merged = incoming;
+    merged.active_provider.clone_from(&stored.active_provider);
+    merged.gemini_model = merged.gemini_model.trim().to_owned();
+    merged
 }
 
 /// Open an https URL in the default browser (Settings "Get a key" / docs links).
@@ -77,4 +92,31 @@ pub(crate) fn open_config_folder(app: AppHandle) -> Result<(), String> {
     app.opener()
         .open_path(dir.to_string_lossy().as_ref(), None::<&str>)
         .map_err(|e| format!("Failed to open folder: {e}"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::merge_settings;
+    use crate::models::LauncherSettings;
+
+    #[test]
+    fn save_keeps_the_stored_provider() {
+        let stored = LauncherSettings {
+            active_provider: "claude".to_owned(),
+            ..LauncherSettings::default()
+        };
+        let incoming = LauncherSettings {
+            scan_on_startup: false,
+            minimize_to_tray: false,
+            launch_on_startup: true,
+            active_provider: "gemini".to_owned(),
+            gemini_model: " gemini-3.8-flash ".to_owned(),
+        };
+        let merged = merge_settings(&stored, incoming);
+        assert_eq!(merged.active_provider, "claude");
+        assert_eq!(merged.gemini_model, "gemini-3.8-flash");
+        assert!(!merged.scan_on_startup);
+        assert!(!merged.minimize_to_tray);
+        assert!(merged.launch_on_startup);
+    }
 }

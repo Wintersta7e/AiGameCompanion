@@ -8,24 +8,30 @@
     openai: boolean;
     claude_where: string;
     openai_where: string;
+    gemini_model: string;
+    gemini_fallback_model: string;
   }
   interface Settings {
     scan_on_startup: boolean;
     minimize_to_tray: boolean;
     launch_on_startup: boolean;
     active_provider?: string;
+    gemini_model?: string;
   }
 
   let { open = $bindable(false) }: { open: boolean } = $props();
 
   const VERSION = 'v2.0.1'; // keep in sync with tauri.conf.json "version"
   const KEY_URL = 'https://aistudio.google.com/apikey';
+  // Gemini models offered by name; anything else is entered as Custom.
+  const MODEL_PRESETS = ['gemini-3.6-flash', 'gemini-3.8-flash', 'gemini-3.5-flash-lite'];
 
   let section = $state<'providers' | 'hotkeys' | 'launcher' | 'about'>('providers');
   let settings = $state<Settings>({
     scan_on_startup: true,
     minimize_to_tray: true,
     launch_on_startup: false,
+    gemini_model: '',
   });
   let availability = $state<Availability>({
     gemini: false,
@@ -33,7 +39,12 @@
     openai: false,
     claude_where: '',
     openai_where: '',
+    gemini_model: '',
+    gemini_fallback_model: '',
   });
+  // The model select's own state; written to settings.gemini_model on Save.
+  let modelChoice = $state('');
+  let customModel = $state('');
   let provider = $derived(getProvider());
   let geminiKey = $state('');
   let revealKey = $state(false);
@@ -77,6 +88,10 @@
     } catch (e) {
       console.error('settings load failed:', e);
     }
+    const saved = (settings.gemini_model ?? '').trim();
+    const custom = saved !== '' && !MODEL_PRESETS.includes(saved);
+    modelChoice = custom ? 'custom' : saved;
+    customModel = custom ? saved : '';
     try {
       availability = await invoke<Availability>('available_providers');
     } catch (e) {
@@ -135,6 +150,7 @@
   async function save() {
     saving = true;
     saveError = null;
+    settings.gemini_model = modelChoice === 'custom' ? customModel.trim() : modelChoice;
     try {
       await invoke('update_settings', { settings });
       await closeModal();
@@ -366,6 +382,30 @@
                   type="button">Get a key ↗</button
                 >
               </div>
+              <div class="text-[11.5px] text-t-mid mt-3 mb-1.5">Model</div>
+              <select
+                style="background: rgba(0,0,0,0.22); color-scheme: dark;"
+                class="w-full px-[13px] py-[10px] rounded-[10px] border border-line text-t-hi font-mono text-[11.5px] outline-none cursor-pointer transition-colors focus:border-accent"
+                aria-label="Gemini model"
+                bind:value={modelChoice}
+              >
+                <option value="">Default ({availability.gemini_fallback_model})</option>
+                {#each MODEL_PRESETS as id (id)}
+                  <option value={id}>{id}</option>
+                {/each}
+                <option value="custom">Custom…</option>
+              </select>
+              {#if modelChoice === 'custom'}
+                <input
+                  style="background: rgba(0,0,0,0.22);"
+                  class="w-full mt-2 px-[13px] py-[10px] rounded-[10px] border border-line text-t-hi font-mono text-[11.5px] outline-none transition-colors placeholder:text-t-lo focus:border-accent"
+                  aria-label="Custom Gemini model"
+                  placeholder="Gemini model id"
+                  spellcheck="false"
+                  type="text"
+                  bind:value={customModel}
+                />
+              {/if}
             </div>
 
             <!-- Claude -->

@@ -18,6 +18,7 @@ use tauri::ipc::Channel;
 use tauri::{AppHandle, Manager};
 
 use crate::overlay::GameInfo;
+use crate::state::AppState;
 
 pub(crate) use cli::{detect_all, CliConfig};
 
@@ -109,6 +110,10 @@ pub(crate) struct ProviderAvailability {
     /// Where each CLI was detected ("PATH" / "WSL" / "").
     pub claude_where: String,
     pub openai_where: String,
+    /// The Gemini model a request names now.
+    pub gemini_model: String,
+    /// The Gemini model used when Settings names none.
+    pub gemini_fallback_model: String,
 }
 
 /// Parameters of a chat request, deserialized from the `ask_sage` command.
@@ -148,9 +153,11 @@ impl AiState {
         *self.cli.lock() = cfg;
     }
 
-    /// Report which providers can currently serve a request. Gemini depends on a
-    /// readable config with a key + model; Claude / Codex on a detected CLI.
-    pub(crate) fn availability(&self) -> ProviderAvailability {
+    /// Report which providers can currently serve a request, and the Gemini model
+    /// a request would name given `settings_model` (the Settings choice). Gemini
+    /// depends on a stored key; Claude / Codex on a detected CLI.
+    pub(crate) fn availability(&self, settings_model: &str) -> ProviderAvailability {
+        let file_model = gemini::file_model();
         let cli = self.cli.lock();
         ProviderAvailability {
             gemini: gemini::load_config().is_ok(),
@@ -158,6 +165,8 @@ impl AiState {
             openai: cli.codex.is_available(),
             claude_where: cli.claude.location().to_owned(),
             openai_where: cli.codex.location().to_owned(),
+            gemini_model: gemini::resolve_model(settings_model, &file_model),
+            gemini_fallback_model: gemini::resolve_model("", &file_model),
         }
     }
 
@@ -214,6 +223,13 @@ async fn run(app: AppHandle, params: RequestParams, channel: Channel<SageEvent>)
     let system_prompt = build_system_prompt(ctx.game_name.as_deref());
     let capture_target = ctx.capture;
     let cli_cfg = app.state::<AiState>().cli.lock().clone();
+    let settings_model = app
+        .state::<AppState>()
+        .launcher
+        .lock()
+        .settings
+        .gemini_model
+        .clone();
 
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<String>();
     let chan_stream = channel.clone();
@@ -236,11 +252,12 @@ async fn run(app: AppHandle, params: RequestParams, channel: Channel<SageEvent>)
         match provider {
             Provider::Gemini => {
                 let cfg = gemini::load_config()?;
+                let model = gemini::resolve_model(&settings_model, &gemini::file_model());
                 gemini::stream(
                     &messages,
                     &system_prompt,
                     screenshot,
-                    &cfg.model,
+                    &model,
                     &cfg.api_key,
                     on_chunk,
                 )
@@ -387,9 +404,19 @@ const TRANSLATE_SYSTEM: &str =
     "You are a screen translator for a gamer. Read the foreign text in the image and translate it \
      into natural English. Be concise; do not add commentary.";
 
+/// Check a Gemini model id chosen in Settings before it is saved.
+pub(crate) fn validate_gemini_model(model: &str) -> Result<(), String> {
+    gemini::validate_model(model)
+}
+
 /// Capture the linked game window and translate any foreign text in it to
 /// English via Gemini. A one-shot call, independent of the chat request slot.
-pub(crate) async fn translate_capture(hwnd: i64, pid: u32) -> Result<String, String> {
+/// `settings_model` is the Gemini model chosen in Settings (empty for none).
+pub(crate) async fn translate_capture(
+    hwnd: i64,
+    pid: u32,
+    settings_model: String,
+) -> Result<String, String> {
     let png = tokio::task::spawn_blocking(move || {
         crate::overlay_capture::capture_live_window_png(hwnd, pid)
     })
@@ -397,6 +424,7 @@ pub(crate) async fn translate_capture(hwnd: i64, pid: u32) -> Result<String, Str
     .map_err(|error| format!("capture task failed: {error}"))??;
     let screenshot = base64::engine::general_purpose::STANDARD.encode(png);
     let cfg = gemini::load_config()?;
+    let model = gemini::resolve_model(&settings_model, &gemini::file_model());
     let messages = [ChatMessage {
         role: "user".to_owned(),
         content: "Translate any non-English text visible in this screenshot into English. Output \
@@ -409,7 +437,7 @@ pub(crate) async fn translate_capture(hwnd: i64, pid: u32) -> Result<String, Str
         &messages,
         TRANSLATE_SYSTEM,
         Some(screenshot),
-        &cfg.model,
+        &model,
         &cfg.api_key,
         |chunk| {
             out.push_str(&chunk);
