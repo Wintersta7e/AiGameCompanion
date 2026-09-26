@@ -96,6 +96,206 @@ mod tests {
         assert!(wrong.is_empty(), "{wrong:#?}");
     }
 
+    // The only copy of each window's expected grants. A command joins these
+    // lists, `APP_COMMANDS` in build.rs and the capability of each window whose
+    // UI calls it in the change that adds its first caller.
+
+    /// App commands the main window's UI calls.
+    const MAIN_APP: &[&str] = &[
+        "get_games",
+        "scan_games",
+        "launch_game",
+        "open_game_logs",
+        "open_config_folder",
+        "update_settings",
+        "state_health",
+        "set_gemini_key",
+        "recheck_clis",
+        "hotkey_status",
+        "open_url",
+        "get_settings",
+        "available_providers",
+        "set_active_provider",
+    ];
+    /// App commands the overlay's UI calls.
+    const OVERLAY_APP: &[&str] = &[
+        "get_settings",
+        "available_providers",
+        "set_active_provider",
+        "ask_sage",
+        "cancel_sage",
+        "translate_screen",
+        "hide_overlay",
+        "link_game",
+    ];
+    /// Core permissions of the main window.
+    const MAIN_CORE: &[&str] = &[
+        "core:default",
+        "core:window:allow-minimize",
+        "core:window:allow-toggle-maximize",
+        "core:window:allow-close",
+        "core:window:allow-start-dragging",
+        "core:window:allow-set-focus",
+    ];
+    /// Core permissions of the overlay: its event listeners and titlebar drag.
+    const OVERLAY_CORE: &[&str] = &[
+        "core:event:allow-listen",
+        "core:event:allow-unlisten",
+        "core:window:allow-start-dragging",
+    ];
+    const OVERLAY_DESCRIPTION: &str =
+        "Overlay: only the commands its UI calls; no file or folder opens.";
+
+    /// The command names registered in `main.rs`'s `generate_handler!`.
+    fn handler_commands() -> Vec<String> {
+        let (_, list) = include_str!("main.rs")
+            .split_once("generate_handler![")
+            .expect("main.rs registers no command handlers");
+        let (list, _) = list
+            .split_once(']')
+            .expect("the handler list is not closed");
+        list.split(',')
+            .map(str::trim)
+            .filter(|entry| !entry.is_empty())
+            .map(|entry| entry.rsplit("::").next().unwrap_or(entry).to_owned())
+            .collect()
+    }
+
+    /// The command names in build.rs's app manifest.
+    fn manifest_commands() -> Vec<String> {
+        let (_, declaration) = include_str!("../build.rs")
+            .split_once("const APP_COMMANDS")
+            .expect("build.rs declares no APP_COMMANDS");
+        let (_, value) = declaration
+            .split_once('=')
+            .expect("APP_COMMANDS has no value");
+        let (_, list) = value.split_once('[').expect("APP_COMMANDS is not a list");
+        let (list, _) = list.split_once(']').expect("APP_COMMANDS is not closed");
+        list.split('"')
+            .skip(1)
+            .step_by(2)
+            .map(str::to_owned)
+            .collect()
+    }
+
+    /// The permission that grants `command`: `allow-` plus its name in kebab case.
+    fn allow(command: &str) -> String {
+        format!("allow-{}", command.replace('_', "-"))
+    }
+
+    #[test]
+    fn app_manifest_matches_handlers() {
+        let handlers = handler_commands();
+        let manifest = manifest_commands();
+        println!("handlers: {}, manifest: {}", handlers.len(), manifest.len());
+        let handler_set: BTreeSet<&String> = handlers.iter().collect();
+        let manifest_set: BTreeSet<&String> = manifest.iter().collect();
+        assert!(
+            !handlers.is_empty() && !manifest.is_empty(),
+            "a list is empty"
+        );
+        assert_eq!(
+            handler_set.len(),
+            handlers.len(),
+            "duplicate handler: {handlers:?}"
+        );
+        assert_eq!(
+            manifest_set.len(),
+            manifest.len(),
+            "duplicate manifest name: {manifest:?}"
+        );
+        assert_eq!(handler_set, manifest_set);
+    }
+
+    #[test]
+    fn capabilities_grant_exact_lists() {
+        let mut dir = PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/capabilities"));
+        // Same reason as `util::sources_root`: tests run from the package root.
+        if !dir.is_dir() {
+            dir = PathBuf::from("capabilities");
+        }
+        let mut files: Vec<String> = std::fs::read_dir(&dir)
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        files.sort();
+        println!("{} capability files: {files:?}", files.len());
+        assert_eq!(files, ["default.json", "overlay.json"]);
+
+        let manifest = manifest_commands();
+        let mut failures = Vec::new();
+        let mut granted = BTreeSet::new();
+        let mut counts = Vec::new();
+        let windows = [
+            ("default.json", "main", MAIN_APP, MAIN_CORE),
+            ("overlay.json", "overlay", OVERLAY_APP, OVERLAY_CORE),
+        ];
+        for (file, window, app, core) in windows {
+            let text = std::fs::read_to_string(dir.join(file)).unwrap();
+            let capability: serde_json::Value = serde_json::from_str(&text).unwrap();
+            if capability["windows"] != serde_json::json!([window]) {
+                failures.push(format!("{file}: windows {}", capability["windows"]));
+            }
+            if capability.get("remote").is_some() {
+                failures.push(format!("{file}: grants remote pages"));
+            }
+            let mut permissions: Vec<String> = capability["permissions"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|entry| {
+                    entry
+                        .as_str()
+                        .map_or_else(|| entry.to_string(), str::to_owned)
+                })
+                .collect();
+            permissions.sort();
+            let mut expected: Vec<String> = core
+                .iter()
+                .map(|&entry| entry.to_owned())
+                .chain(app.iter().map(|command| allow(command)))
+                .collect();
+            expected.sort();
+            if permissions != expected {
+                failures.push(format!("{file}: {permissions:?}, expected {expected:?}"));
+            }
+            for entry in &permissions {
+                if entry.starts_with("allow-") {
+                    granted.insert(entry.clone());
+                    if !manifest.iter().any(|command| allow(command) == *entry) {
+                        failures.push(format!("{file}: {entry} names no app command"));
+                    }
+                }
+            }
+            if window == "overlay" {
+                for entry in permissions
+                    .iter()
+                    .filter(|entry| entry.ends_with(":default"))
+                {
+                    failures.push(format!("{file}: {entry} grants a whole default set"));
+                }
+                if capability["description"] != OVERLAY_DESCRIPTION {
+                    failures.push(format!("{file}: description {}", capability["description"]));
+                }
+            }
+            let app_count = permissions
+                .iter()
+                .filter(|entry| entry.starts_with("allow-"))
+                .count();
+            counts.push(format!(
+                "{window}: {app_count} app + {} core",
+                permissions.len() - app_count
+            ));
+        }
+        for command in &manifest {
+            if !granted.contains(&allow(command)) {
+                failures.push(format!("{command} is granted to no window"));
+            }
+        }
+        println!("{}", counts.join(", "));
+        assert!(failures.is_empty(), "{failures:#?}");
+    }
+
     /// The one component allowed to insert raw HTML, and only once it exists.
     const SUGGESTION: &str = "src/lib/components/SearchSuggestion.svelte";
 
