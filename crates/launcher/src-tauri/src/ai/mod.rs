@@ -222,9 +222,10 @@ async fn run(app: AppHandle, params: RequestParams, channel: Channel<SageEvent>)
     // Read shared state up front so no state guard is held across an await.
     // Only a linked, still-live target contributes a name or a capture target.
     let ctx = request_context(crate::overlay::linked_game(&app).as_ref());
+    let turns = messages.len();
     tracing::info!(
         "{}",
-        request_log_line(request_id, provider, attach_screenshot, &ctx)
+        request_log_line(request_id, provider, attach_screenshot, turns, &ctx)
     );
     let system_prompt = build_system_prompt(ctx.game_name.as_deref());
     let capture_target = ctx.capture;
@@ -404,16 +405,17 @@ fn request_context(target: Option<&GameInfo>) -> RequestContext {
 }
 
 /// One log line per request recording what the gate let through -- never a name
-/// or a title.
+/// or a title -- and how many chat turns were sent, the new question included.
 fn request_log_line(
     request_id: u64,
     provider: Provider,
     screenshot_requested: bool,
+    turns: usize,
     ctx: &RequestContext,
 ) -> String {
     let yes_no = |flag: bool| if flag { "yes" } else { "no" };
     format!(
-        "Request {request_id}: provider {}, screenshot requested: {}, linked target: {}",
+        "Request {request_id}: provider {}, screenshot requested: {}, linked target: {}, turns: {turns}",
         provider.as_str(),
         yes_no(screenshot_requested),
         yes_no(ctx.capture.is_some()),
@@ -545,15 +547,15 @@ mod tests {
         for (linked, expected) in [
             (
                 true,
-                "Request 3: provider claude, screenshot requested: yes, linked target: yes",
+                "Request 3: provider claude, screenshot requested: yes, linked target: yes, turns: 2",
             ),
             (
                 false,
-                "Request 3: provider claude, screenshot requested: yes, linked target: no",
+                "Request 3: provider claude, screenshot requested: yes, linked target: no, turns: 2",
             ),
         ] {
             let ctx = request_context(Some(&target(linked)));
-            let line = request_log_line(3, Provider::Claude, true, &ctx);
+            let line = request_log_line(3, Provider::Claude, true, 2, &ctx);
             println!("{line}");
             assert_eq!(line, expected);
             assert!(!line.contains("Real Name"));

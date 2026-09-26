@@ -33,6 +33,8 @@
     model?: string;
     screenshot?: boolean;
     streaming?: boolean;
+    // Set only when the answer finished ("done"); stopped and failed ones never are.
+    complete?: boolean;
   }
 
   const PROVIDER_ORDER: Provider[] = ['gemini', 'claude', 'openai'];
@@ -159,6 +161,30 @@
     }
   }
 
+  // The history a request carries: each question with the answer that followed
+  // it, only when that answer finished and has text. A stopped, failed or empty
+  // answer is left out together with its question, so no error text or half
+  // answer is sent back as if the model had said it.
+  function completedHistory(msgs: Msg[]): { role: Msg['role']; content: string }[] {
+    const history: { role: Msg['role']; content: string }[] = [];
+    for (let i = 0; i + 1 < msgs.length; i += 2) {
+      const question = msgs[i];
+      const answer = msgs[i + 1];
+      if (
+        question?.role === 'user' &&
+        answer?.role === 'assistant' &&
+        answer.complete === true &&
+        answer.content.trim() !== ''
+      ) {
+        history.push(
+          { role: 'user', content: question.content },
+          { role: 'assistant', content: answer.content },
+        );
+      }
+    }
+    return history;
+  }
+
   async function send(text?: string) {
     const question = (text ?? prompt).trim();
     if (!question || asking || !canSend) return;
@@ -168,8 +194,8 @@
     activeRequestId = id;
     const withShot = attach && canAttach;
 
-    // History for the backend: prior turns + this question.
-    const outgoing = messages.map((m) => ({ role: m.role, content: m.content }));
+    // History for the backend: finished exchanges + this question.
+    const outgoing = completedHistory(messages);
     outgoing.push({ role: 'user', content: question });
 
     messages = [
@@ -192,6 +218,7 @@
         bubble.content += event.text ?? '';
       } else if (event.kind === 'done') {
         bubble.streaming = false;
+        bubble.complete = true;
         asking = false;
       } else {
         const msg = event.message ?? 'Unknown error';
