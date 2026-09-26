@@ -725,6 +725,12 @@
     border-color: color-mix(in oklab, var(--accent) 34%, transparent);
     background: color-mix(in oklab, var(--accent) 12%, transparent);
   }
+  /* The dropdown list inherits the select's translucent background, which the
+     webview paints over a light popup; give the options an opaque dark one. */
+  option {
+    background-color: var(--color-ink-2);
+    color: var(--color-t-hi);
+  }
   .spin {
     animation: spin 0.9s linear infinite;
   }
