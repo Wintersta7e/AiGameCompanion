@@ -83,12 +83,11 @@
   );
   // Nothing about a window is sent until it is linked; the backend enforces the
   // same gate, this only keeps the controls honest.
-  const canAttach = $derived(Boolean(game?.linked) && provider !== 'openai');
+  const canAttach = $derived(Boolean(game?.linked));
   const canSend = $derived(Boolean(game?.linked) && available.length > 0);
   // The exe's file name, for the link control ("Link foo.exe ...").
   const exeFile = $derived(game?.exe.split(/[\\/]/).pop() ?? '');
   const captureHint = $derived.by(() => {
-    if (provider === 'openai') return 'screenshots unsupported on OpenAI';
     // Name the window Enter will capture: a hotkey pressed while the overlay
     // is open acts on this stored target, not on whatever is in front now.
     if (attach && canAttach && game)
@@ -127,7 +126,6 @@
     provider = p;
     savedProvider = p;
     dropdownOpen = false;
-    if (provider === 'openai') attach = false;
     try {
       await invoke('set_active_provider', { provider: p });
     } catch {
@@ -590,9 +588,7 @@
               aria-label="Attach screenshot"
               disabled={!canAttach}
               onclick={() => (attach = !attach)}
-              title={provider === 'openai'
-                ? 'Screenshots are not supported on OpenAI'
-                : 'Attach a screenshot of the game'}
+              title="Attach a screenshot of the game"
               type="button"
             >
               <svg

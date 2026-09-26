@@ -107,6 +107,15 @@ fn main() {
                 }
             }
 
+            // A Codex screenshot left behind by a crash, a killed process or a
+            // failed delete is removed at the next start.
+            if let Some(dir) = ai::shots_dir(app.handle()) {
+                let removed = ai::sweep_shots(&dir);
+                if removed > 0 {
+                    tracing::info!("Removed {removed} leftover screenshot file(s)");
+                }
+            }
+
             let state_path = app_dir.join("launcher-state.json");
             let app_state = AppState::load(state_path);
 

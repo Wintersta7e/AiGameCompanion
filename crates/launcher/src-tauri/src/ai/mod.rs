@@ -20,7 +20,7 @@ use tauri::{AppHandle, Manager};
 use crate::overlay::GameInfo;
 use crate::state::AppState;
 
-pub(crate) use cli::{detect_all, CliConfig};
+pub(crate) use cli::{detect_all, sweep_shots, CliConfig};
 
 /// Backstop timeout for a single request, covering a hung CLI that never closes
 /// stdout. Gemini has its own (shorter) HTTP timeout, so this is the CLI ceiling.
@@ -236,6 +236,10 @@ async fn run(app: AppHandle, params: RequestParams, channel: Channel<SageEvent>)
         .settings
         .gemini_model
         .clone();
+    // Codex reads a screenshot from a file, so it needs somewhere to put one.
+    let shots = (provider == Provider::Openai && attach_screenshot)
+        .then(|| prepare_shots_dir(&app))
+        .flatten();
 
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<String>();
     let chan_stream = channel.clone();
@@ -245,9 +249,8 @@ async fn run(app: AppHandle, params: RequestParams, channel: Channel<SageEvent>)
         // cancelled once spawned, so awaiting it before the timeout wrapper
         // left the UI stuck on "Streaming" with no done, no error and a leaked
         // blocking-pool thread.
-        // Screenshots are skipped for OpenAI (Codex `--image` is broken upstream).
-        let screenshot = if attach_screenshot && provider != Provider::Openai {
-            capture_base64(capture_target).await
+        let screenshot = if attach_screenshot {
+            capture_png(capture_target).await
         } else {
             None
         };
@@ -262,7 +265,7 @@ async fn run(app: AppHandle, params: RequestParams, channel: Channel<SageEvent>)
                 gemini::stream(
                     &messages,
                     &system_prompt,
-                    screenshot,
+                    screenshot.as_deref().map(encode_png),
                     &model,
                     &cfg.api_key,
                     on_chunk,
@@ -270,18 +273,20 @@ async fn run(app: AppHandle, params: RequestParams, channel: Channel<SageEvent>)
                 .await
             }
             Provider::Claude => {
+                let encoded = screenshot.as_deref().map(encode_png);
                 cli::stream_claude(
                     &cli_cfg,
                     cli::DEFAULT_CLAUDE_MODEL,
                     &system_prompt,
                     &messages,
-                    screenshot.as_deref(),
+                    encoded.as_deref(),
                     on_chunk,
                 )
                 .await
             }
             Provider::Openai => {
-                cli::stream_codex(&cli_cfg, &system_prompt, &messages, on_chunk).await
+                let shot = shots.as_deref().zip(screenshot.as_deref());
+                cli::stream_codex(&cli_cfg, &system_prompt, &messages, shot, on_chunk).await
             }
         }
     };
@@ -326,22 +331,51 @@ async fn run(app: AppHandle, params: RequestParams, channel: Channel<SageEvent>)
     app.state::<AiState>().clear_if(request_id);
 }
 
-/// Capture the linked game window and base64-encode it as PNG for an AI request.
-/// Capture failures are non-fatal: the request proceeds without the screenshot.
-async fn capture_base64(target: Option<(i64, u32)>) -> Option<String> {
+/// Capture the linked game window as PNG bytes for an AI request. Capture
+/// failures are non-fatal: the request proceeds without the screenshot.
+async fn capture_png(target: Option<(i64, u32)>) -> Option<Vec<u8>> {
     let (hwnd, pid) = target?;
     match tokio::task::spawn_blocking(move || {
         crate::overlay_capture::capture_live_window_png(hwnd, pid)
     })
     .await
     {
-        Ok(Ok(png)) => Some(base64::engine::general_purpose::STANDARD.encode(png)),
+        Ok(Ok(png)) => Some(png),
         Ok(Err(error)) => {
             tracing::warn!("screenshot capture failed: {error}");
             None
         }
         Err(error) => {
             tracing::warn!("screenshot capture task failed: {error}");
+            None
+        }
+    }
+}
+
+/// Base64 of a PNG, as Gemini and the Claude CLI take an image.
+fn encode_png(png: &[u8]) -> String {
+    base64::engine::general_purpose::STANDARD.encode(png)
+}
+
+/// Where a Codex screenshot is written while its request runs: `shots` in the
+/// app's local (not roaming) data folder. `None` if the folder is unknown.
+pub(crate) fn shots_dir(app: &AppHandle) -> Option<std::path::PathBuf> {
+    match app.path().app_local_data_dir() {
+        Ok(dir) => Some(dir.join(cli::SHOTS_DIR)),
+        Err(e) => {
+            tracing::warn!("Could not resolve the screenshot folder: {e}");
+            None
+        }
+    }
+}
+
+/// The screenshot folder, created if needed. `None` sends Codex no image.
+fn prepare_shots_dir(app: &AppHandle) -> Option<std::path::PathBuf> {
+    let dir = shots_dir(app)?;
+    match std::fs::create_dir_all(&dir) {
+        Ok(()) => Some(dir),
+        Err(e) => {
+            tracing::warn!("Codex request continues without the screenshot: {e}");
             None
         }
     }

@@ -59,8 +59,8 @@ a working tool you can build and run, not a polished consumer app.
   `claude` / `codex` CLIs), switchable from an in-panel dropdown that shows only
   available providers and persists your choice.
 - Streaming "Sage" replies over a Tauri channel, multi-turn chat, Stop / New chat.
-- Screenshot vision (Gemini + Claude) via **Windows.Graphics.Capture** -- capture
-  the game frame with no injection; skipped for OpenAI (upstream Codex limitation).
+- Screenshot vision for all three providers via **Windows.Graphics.Capture** --
+  capture the game frame with no injection.
 - Translate (**Ctrl+Shift+T**) and quick-ask (**Ctrl+Shift+A**) hotkeys that wait for Enter.
 - Desktop launcher (Tauri 2 + Svelte 5) -- Steam library discovery, cover art,
   one-click launch, tray, launch-on-startup, and play-time via an external process
@@ -70,7 +70,6 @@ a working tool you can build and run, not a polished consumer app.
   toggles.
 
 **Not done yet / out of scope:**
-- OpenAI screenshots -- blocked on an upstream Codex CLI fix.
 - Rebindable hotkeys -- the chords are fixed this build (Settings shows them).
 - Positioning the panel over the game's specific monitor (it opens centered).
 - Offline / local-model translation -- translation currently runs through Gemini.
@@ -106,7 +105,7 @@ are extracted or shared; each user authenticates their own CLIs. Providers never
 fall back to one another silently.
 
 ### Screenshot vision & translation
-Attach the current frame to a question (Gemini / Claude) -- captured via
+Attach the current frame to a question (any provider) -- captured via
 Windows.Graphics.Capture, no injection. The hotkeys stage a request and wait:
 - **Ctrl+Shift+T** opens the translate tab; Enter (or a click) captures and translates.
 - **Ctrl+Shift+A** stages a preset question with the screenshot on; Enter sends it.

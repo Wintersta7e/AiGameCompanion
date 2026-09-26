@@ -456,7 +456,7 @@
                 <div class="font-mono text-[10.5px] text-t-lo">
                   {modelName(availability, 'openai')} · CLI{availability.openai_where
                     ? ` · ${availability.openai_where}`
-                    : ''} · no screenshots
+                    : ''}
                 </div>
               </div>
               <span class="ml-auto pill {availability.openai ? 'ok' : 'off'}"

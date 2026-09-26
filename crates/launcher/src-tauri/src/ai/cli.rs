@@ -25,6 +25,9 @@ const CODEX_WORKDIR: &str = "aigc-codex-workdir";
 const MAX_STREAM_BYTES: usize = 2 * 1024 * 1024;
 /// How many stderr lines to keep for the failure message.
 const STDERR_TAIL_LINES: usize = 5;
+/// Folder, under the app's local data directory, that holds a Codex
+/// screenshot while its request runs.
+pub(crate) const SHOTS_DIR: &str = "shots";
 /// Marker printed by the WSL shell immediately before the CLI runs.
 ///
 /// `bash -lic` sources the user's interactive `.bashrc`, which is where many
@@ -459,6 +462,112 @@ fn parse_codex_line(line: &str) -> Option<Parsed> {
     Some(Parsed::Text(format!("{line}\n")))
 }
 
+/// A new screenshot file name in `dir`. It has to be unique, not secret: the
+/// directory belongs to this user and this app.
+fn shot_path(dir: &std::path::Path) -> std::path::PathBuf {
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |elapsed| elapsed.as_nanos());
+    dir.join(format!("aigc-shot-{}-{nanos}.png", std::process::id()))
+}
+
+/// A screenshot written to disk for one Codex request. Dropping it deletes the
+/// file, so it lives exactly as long as the request's future.
+#[derive(Debug)]
+struct TempShot {
+    path: std::path::PathBuf,
+}
+
+impl TempShot {
+    /// Write `png` to a new file at exactly `path`. Fails if anything already
+    /// exists there, so an existing file is never written through. The file is
+    /// closed before this returns.
+    fn create(path: std::path::PathBuf, png: &[u8]) -> Result<Self, String> {
+        let mut file = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&path)
+            .map_err(|e| format!("could not create the screenshot file: {e}"))?;
+        let written = std::io::Write::write_all(&mut file, png);
+        drop(file);
+        // From here the guard owns the file, so a failed write removes it.
+        let shot = Self { path };
+        written.map_err(|e| format!("could not write the screenshot file: {e}"))?;
+        Ok(shot)
+    }
+}
+
+impl Drop for TempShot {
+    fn drop(&mut self) {
+        if let Err(e) = std::fs::remove_file(&self.path) {
+            tracing::warn!("Could not delete a Codex screenshot file: {e}");
+        }
+    }
+}
+
+/// Delete every regular file in the shots directory: leftovers of a crash, a
+/// failed delete or a killed process. Returns how many were removed; a missing
+/// directory removes none.
+pub(crate) fn sweep_shots(dir: &std::path::Path) -> usize {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return 0;
+    };
+    let mut removed = 0;
+    for entry in entries.flatten() {
+        if !entry.file_type().is_ok_and(|kind| kind.is_file()) {
+            continue;
+        }
+        match std::fs::remove_file(entry.path()) {
+            Ok(()) => removed += 1,
+            Err(e) => tracing::warn!("Could not delete a leftover screenshot: {e}"),
+        }
+    }
+    removed
+}
+
+/// Codex's arguments when it runs from the Windows PATH. The prompt goes on
+/// stdin, never as an argument, and the `=` form keeps the image path bound to
+/// its flag.
+fn codex_args(work_dir: &str, image: Option<&str>) -> Vec<String> {
+    let mut args: Vec<String> = [
+        "-a",
+        "never",
+        "-s",
+        "read-only",
+        "-C",
+        work_dir,
+        "exec",
+        "--skip-git-repo-check",
+    ]
+    .into_iter()
+    .map(str::to_owned)
+    .collect();
+    if let Some(image) = image {
+        args.push(format!("--image={image}"));
+    }
+    args
+}
+
+/// The script `wsl_bash` runs for Codex. With an image, `wslpath` turns its
+/// Windows path into a Linux one inside the same bash; if that fails, Codex
+/// does not start and `wslpath`'s own message is the error.
+fn codex_wsl_script(work_dir: &str, image: Option<&str>) -> String {
+    let codex = format!(
+        "codex -a never -s read-only -C {} exec --skip-git-repo-check",
+        shell_escape(work_dir),
+    );
+    let start = format!("printf '%s\\n' {WSL_SENTINEL}; ");
+    image.map_or_else(
+        || format!("{start}{codex}"),
+        |image| {
+            format!(
+                "{start}img=$(wslpath -u {}) && {codex} --image=\"$img\"",
+                shell_escape(image),
+            )
+        },
+    )
+}
+
 /// Stream a Claude response by spawning the Claude CLI in stream-json mode.
 pub(super) async fn stream_claude<F>(
     cfg: &CliConfig,
@@ -513,10 +622,15 @@ where
 }
 
 /// Stream a Codex response by spawning the Codex CLI in `exec` mode.
+///
+/// `shot` is the shots directory and a PNG to show Codex. The file is written
+/// here and deleted when this future ends, however it ends: answer, error,
+/// timeout, Stop or a newer request.
 pub(super) async fn stream_codex<F>(
     cfg: &CliConfig,
     system_prompt: &str,
     messages: &[ChatMessage],
+    shot: Option<(&std::path::Path, &[u8])>,
     on_chunk: F,
 ) -> Result<(), String>
 where
@@ -526,31 +640,32 @@ where
         return Err("Codex CLI is not available on this system.".to_owned());
     }
 
+    let temp_shot = shot.and_then(|(dir, png)| match TempShot::create(shot_path(dir), png) {
+        Ok(temp) => {
+            tracing::info!("Codex request: screenshot attached");
+            Some(temp)
+        }
+        Err(e) => {
+            tracing::warn!("Codex request continues without the screenshot: {e}");
+            None
+        }
+    });
+    let image = temp_shot
+        .as_ref()
+        .map(|temp| temp.path.to_string_lossy().into_owned());
+
     let work_dir = cfg.codex_workdir.as_str();
     let mut cmd = if cfg.codex == CliMode::Wsl {
-        let codex_cmd = format!(
-            "printf '%s\\n' {WSL_SENTINEL}; codex -a never -s read-only -C {} exec --skip-git-repo-check",
-            shell_escape(work_dir),
-        );
-        Command::from(wsl_bash(&codex_cmd))
+        Command::from(wsl_bash(&codex_wsl_script(work_dir, image.as_deref())))
     } else {
         let mut c = Command::new("codex");
-        c.args([
-            "-a",
-            "never",
-            "-s",
-            "read-only",
-            "-C",
-            work_dir,
-            "exec",
-            "--skip-git-repo-check",
-        ]);
+        c.args(codex_args(work_dir, image.as_deref()));
         c
     };
 
     let input = build_codex_input(system_prompt, messages);
     let sentinel = matches!(cfg.codex, CliMode::Wsl).then_some(WSL_SENTINEL);
-    run_cli(
+    let result = run_cli(
         &mut cmd,
         input,
         on_chunk,
@@ -558,7 +673,10 @@ where
         "Codex",
         sentinel,
     )
-    .await
+    .await;
+    // Only now may the file go: Codex reads it while `run_cli` runs.
+    drop(temp_shot);
+    result
 }
 
 /// Spawn a CLI child, write `input` to stdin, and stream parsed stdout lines to
@@ -968,6 +1086,118 @@ mod tests {
     fn parse_claude_line_skips_malformed_or_empty_lines() {
         assert_eq!(parse_claude_line("not json"), None);
         assert_eq!(parse_claude_line(""), None);
+    }
+
+    // ---------------- Codex screenshot file ----------------
+
+    /// A fresh, empty directory for one test.
+    fn fresh_dir(name: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!("aigc-test-{name}-{}", std::process::id()));
+        if dir.exists() {
+            std::fs::remove_dir_all(&dir).unwrap();
+        }
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[test]
+    fn temp_shot_is_deleted_on_drop() {
+        let dir = fresh_dir("drop");
+        let path = shot_path(&dir);
+        let shot = TempShot::create(path.clone(), b"PNGDATA").unwrap();
+        assert_eq!(std::fs::read(&path).unwrap(), b"PNGDATA");
+        drop(shot);
+        assert!(!path.exists(), "the screenshot outlived its guard");
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn temp_shot_never_writes_through_an_existing_file() {
+        let dir = fresh_dir("existing");
+        let path = dir.join("taken.png");
+        std::fs::write(&path, b"ORIGINAL").unwrap();
+        assert!(TempShot::create(path.clone(), b"NEW").is_err());
+        assert_eq!(std::fs::read(&path).unwrap(), b"ORIGINAL");
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn shot_path_names_a_file_in_the_directory() {
+        let dir = std::path::Path::new("shots-dir");
+        let path = shot_path(dir);
+        assert_eq!(path.parent(), Some(dir));
+        let name = path.file_name().unwrap().to_str().unwrap();
+        println!("{name}");
+        let (pid, nanos) = name
+            .strip_prefix("aigc-shot-")
+            .and_then(|rest| rest.strip_suffix(".png"))
+            .and_then(|middle| middle.split_once('-'))
+            .unwrap();
+        let digits =
+            |text: &str| !text.is_empty() && text.bytes().all(|byte| byte.is_ascii_digit());
+        assert!(digits(pid), "process id {pid:?}");
+        assert!(digits(nanos), "timestamp {nanos:?}");
+    }
+
+    #[test]
+    fn sweep_removes_leftover_shots() {
+        let dir = fresh_dir("sweep");
+        for name in ["a.png", "b.png", "c.png"] {
+            std::fs::write(dir.join(name), b"x").unwrap();
+        }
+        assert_eq!(sweep_shots(&dir), 3);
+        assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 0);
+        std::fs::remove_dir_all(&dir).unwrap();
+        assert_eq!(sweep_shots(&dir), 0, "a missing directory is not an error");
+    }
+
+    #[test]
+    fn codex_args_add_one_image_token() {
+        let plain = codex_args("W", None);
+        assert_eq!(
+            plain,
+            [
+                "-a",
+                "never",
+                "-s",
+                "read-only",
+                "-C",
+                "W",
+                "exec",
+                "--skip-git-repo-check"
+            ]
+        );
+        assert!(plain.iter().all(|arg| !arg.contains("--image")));
+
+        let with_image = codex_args("W", Some(r"C:\shots\a b.png"));
+        let (last, before) = with_image.split_last().unwrap();
+        assert_eq!(before, plain.as_slice());
+        assert_eq!(last, r"--image=C:\shots\a b.png");
+        assert_eq!(
+            with_image
+                .iter()
+                .filter(|arg| arg.contains("--image"))
+                .count(),
+            1
+        );
+    }
+
+    #[test]
+    fn codex_wsl_script_hands_the_image_over() {
+        assert_eq!(
+            codex_wsl_script("/srv/work dir", None),
+            "printf '%s\\n' __AIGC_STREAM_BEGIN__; codex -a never -s read-only -C '/srv/work dir' exec --skip-git-repo-check"
+        );
+
+        let image = r"C:\shots\it's $(x) a.png";
+        let script = codex_wsl_script("/srv/work dir", Some(image));
+        println!("{script}");
+        assert!(script.contains(&format!("wslpath -u {}", shell_escape(image))));
+        assert_eq!(
+            script,
+            r#"printf '%s\n' __AIGC_STREAM_BEGIN__; img=$(wslpath -u 'C:\shots\it'\''s $(x) a.png') && codex -a never -s read-only -C '/srv/work dir' exec --skip-git-repo-check --image="$img""#
+        );
+        assert_eq!(script.matches("--image=").count(), 1);
     }
 
     // ---------------- run_cli line handling ----------------
