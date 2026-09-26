@@ -18,6 +18,10 @@ All notable changes to this project are documented here. The format is based on
 - **Window titles no longer reach any provider.** The prompt names a game by its
   library name, or by the program's file name for a window you linked yourself,
   and only a linked window is ever named or captured.
+- **Codex no longer saves Sage prompts to its session files.** Each Codex
+  request -- Sage's instructions, the game's name and the conversation so far --
+  was kept in Codex's own session files on disk, and a screenshot could have
+  been too. Codex now runs without saving a session, as Claude already did.
 
 ### Fixed
 
@@ -59,6 +63,18 @@ All notable changes to this project are documented here. The format is based on
   see your screen when no screenshot is attached, neither window sends you to
   `config.toml`, Settings no longer says changes apply without Save, and the
   model names shown are the ones that answer.
+- **The Translate tab names Gemini.** It showed the provider picked for chat,
+  although every translation is sent to Gemini; it now reads "Translates with
+  Gemini".
+- **Large screenshots are scaled down.** A frame from a 4K monitor could encode
+  to a picture larger than Gemini and Claude accept. Frames larger than
+  1920x1080 are now scaled down to fit, keeping their shape, before they are
+  sent to any provider.
+- **A fresh install picks an available provider.** A new install started with
+  Gemini chosen, so without a Gemini key the overlay said Gemini was not
+  available even when the Claude or Codex CLI worked. Until you pick one, the
+  overlay and the launcher use the first provider that can answer; a provider
+  you chose before is kept.
 
 ### Changed
 
@@ -72,6 +88,12 @@ All notable changes to this project are documented here. The format is based on
   as Gemini and Claude do. The picture is written to the app's own data folder
   only while the request runs and deleted afterwards, and a file left behind by a
   crash is removed at the next start.
+- **Sage's Claude and Codex helpers no longer load your CLI setup.** Sage starts
+  the Claude CLI without your tools, plugins, hooks, MCP servers or CLAUDE.md
+  instructions, and Codex without your Codex config or its command-running
+  tool, so text in a screenshot cannot steer them into your own setup. Codex
+  therefore answers with its built-in default model and effort, not the ones in
+  your config. A CLI too old for these options fails with its own error message.
 - **Windows outside your library are linked with one click.** The overlay opens
   unlinked over any other window and sends nothing about it until you click
   **Link** for that session. Library games link automatically.
