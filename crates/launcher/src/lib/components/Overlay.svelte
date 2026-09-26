@@ -86,7 +86,7 @@
   // Nothing about a window is sent until it is linked; the backend enforces the
   // same gate, this only keeps the controls honest.
   const canAttach = $derived(Boolean(game?.linked));
-  const canSend = $derived(Boolean(game?.linked) && available.length > 0);
+  const canSend = $derived(Boolean(game?.linked) && availability[provider]);
   // The exe's file name, for the link control ("Link foo.exe ...").
   const exeFile = $derived(game?.exe.split(/[\\/]/).pop() ?? '');
   const captureHint = $derived.by(() => {
@@ -111,8 +111,9 @@
     });
   });
 
-  // Re-query availability (CLI detection can lag startup); restore the saved
-  // provider once it's known-available, else fall back to the first available.
+  // Re-query availability (CLI detection can lag startup). A saved provider
+  // stays selected even while it is unavailable: only the user switches. With
+  // nothing saved, start on the first available one.
   async function refreshProviders() {
     try {
       availability = await invoke<Availability>('available_providers');
@@ -120,7 +121,7 @@
       return;
     }
     const fallback = available[0];
-    if (savedProvider && availability[savedProvider]) provider = savedProvider;
+    if (savedProvider) provider = savedProvider;
     else if (!availability[provider] && fallback) provider = fallback;
   }
 
@@ -342,7 +343,10 @@
     void (async () => {
       try {
         const settings = await invoke<{ active_provider?: string }>('get_settings');
-        savedProvider = (settings.active_provider as Provider | undefined) ?? null;
+        // The saved provider is kept even when unavailable, so an unknown value
+        // (a hand-edited state file) must not be taken as one.
+        const saved = settings.active_provider;
+        savedProvider = saved && saved in PROVIDERS ? (saved as Provider) : null;
       } catch {
         /* defaults apply */
       }
@@ -504,7 +508,7 @@
       >
         <span style="background: {meta.dot}; box-shadow: 0 0 6px {meta.dot};" class="prov-dot"
         ></span>
-        {available.length === 0 ? 'No providers' : meta.label}
+        {availability[provider] ? meta.label : `${meta.label} — not available`}
         <span class="caret">{dropdownOpen ? '▴' : '▾'}</span>
       </button>
 
