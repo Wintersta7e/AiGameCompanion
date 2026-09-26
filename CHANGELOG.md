@@ -22,6 +22,10 @@ All notable changes to this project are documented here. The format is based on
   request -- Sage's instructions, the game's name and the conversation so far --
   was kept in Codex's own session files on disk, and a screenshot could have
   been too. Codex now runs without saving a session, as Claude already did.
+- **Chats are no longer copied into the launcher log.** Codex repeats the whole
+  prompt on its error output, and the launcher logged every line of it, so each
+  conversation ended up in `launcher.log`. That output is now only counted; its
+  last few lines are kept for the error message when the CLI fails.
 
 ### Fixed
 
@@ -75,6 +79,12 @@ All notable changes to this project are documented here. The format is based on
   available even when the Claude or Codex CLI worked. Until you pick one, the
   overlay and the launcher use the first provider that can answer; a provider
   you chose before is kept.
+- **The provider switch stays current in both windows.** The launcher showed
+  Claude and Codex as unavailable after startup until you pointed at them, and
+  neither window followed a provider chosen in the other. Both now update as
+  soon as detection finishes or a choice, key or model changes.
+- **The Gemini model list is readable.** Its options showed light text on a
+  light background.
 
 ### Changed
 
