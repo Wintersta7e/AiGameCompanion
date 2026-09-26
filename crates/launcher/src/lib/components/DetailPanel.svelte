@@ -13,7 +13,7 @@
     getModelName,
     getProvider,
     getProviderMeta,
-    refreshModels,
+    refreshAvailability,
   } from '../stores/companion.svelte';
   import { formatPlayTime, formatLastPlayed } from '../utils/format';
 
@@ -24,7 +24,7 @@
   let model = $derived(getModelName(getProvider()));
 
   onMount(() => {
-    void refreshModels();
+    void refreshAvailability();
   });
 
   let coverError = $state(false);

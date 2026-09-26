@@ -2,7 +2,14 @@
   import { onMount } from 'svelte';
   import { invoke } from '@tauri-apps/api/core';
   import { getCurrentWindow } from '@tauri-apps/api/window';
-  import { PROVIDERS, getProvider, setProvider, type Provider } from '../stores/companion.svelte';
+  import {
+    PROVIDERS,
+    getAvailability,
+    getProvider,
+    refreshAvailability,
+    setProvider,
+    type Provider,
+  } from '../stores/companion.svelte';
   import { formatHotkeyStatus } from '../utils/format';
 
   let { onOpenSettings }: { onOpenSettings: () => void } = $props();
@@ -16,20 +23,10 @@
 
   const providerKeys = Object.keys(PROVIDERS) as Provider[];
   // Which providers can answer; null until known, when no button is disabled.
-  let availability = $state<Record<Provider, boolean> | null>(null);
-
-  function refreshAvailability() {
-    void invoke<Record<Provider, boolean>>('available_providers')
-      .then((a) => {
-        availability = { gemini: a.gemini, claude: a.claude, openai: a.openai };
-      })
-      .catch((err: unknown) => {
-        console.error('Failed to read provider availability:', err);
-      });
-  }
+  let availability = $derived(getAvailability());
 
   onMount(() => {
-    refreshAvailability();
+    void refreshAvailability();
     void invoke<string[]>('hotkey_status')
       .then((failed) => {
         failedHotkeys = failed;
@@ -126,7 +123,7 @@
     <div
       style="background: rgba(255,255,255,0.03); border: 1px solid var(--color-line);"
       class="flex items-center gap-[3px] p-[3px] rounded-[11px]"
-      onpointerenter={refreshAvailability}
+      onpointerenter={() => void refreshAvailability()}
       role="group"
     >
       {#each providerKeys as key (key)}

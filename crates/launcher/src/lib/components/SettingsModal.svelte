@@ -4,7 +4,7 @@
     PROVIDERS,
     getProvider,
     modelName,
-    refreshModels,
+    refreshAvailability,
     setProvider,
     type ModelNames,
     type Provider,
@@ -169,7 +169,7 @@
     settings.gemini_model = modelChoice === 'custom' ? customModel.trim() : modelChoice;
     try {
       await invoke('update_settings', { settings });
-      void refreshModels();
+      void refreshAvailability();
       await closeModal();
     } catch (e) {
       saveError = String(e);

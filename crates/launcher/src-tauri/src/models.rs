@@ -50,7 +50,8 @@ pub(crate) struct LauncherSettings {
     pub scan_on_startup: bool,
     pub minimize_to_tray: bool,
     pub launch_on_startup: bool,
-    /// Overlay AI provider selection ("gemini" / "claude" / "openai").
+    /// Overlay AI provider selection ("gemini" / "claude" / "openai"); empty
+    /// until the user picks one, when the first available provider is shown.
     pub active_provider: String,
     /// Gemini model chosen in Settings; empty = the default model.
     pub gemini_model: String,
@@ -62,7 +63,7 @@ impl Default for LauncherSettings {
             scan_on_startup: true,
             minimize_to_tray: true,
             launch_on_startup: false,
-            active_provider: "gemini".to_owned(),
+            active_provider: String::new(),
             gemini_model: String::new(),
         }
     }
@@ -123,5 +124,16 @@ mod tests {
         assert_eq!(chosen.gemini_model, "gemini-3.8-flash");
         let value = serde_json::to_value(&chosen).expect("settings serialise");
         assert_eq!(value["gemini_model"], "gemini-3.8-flash");
+    }
+
+    #[test]
+    fn new_install_has_no_saved_provider() {
+        assert_eq!(LauncherSettings::default().active_provider, "");
+        let without: LauncherSettings = serde_json::from_str(r#"{"scan_on_startup":false}"#)
+            .expect("settings without a provider load");
+        assert_eq!(without.active_provider, "");
+        let saved: LauncherSettings = serde_json::from_str(r#"{"active_provider":"gemini"}"#)
+            .expect("settings with a provider load");
+        assert_eq!(saved.active_provider, "gemini", "a stored choice is kept");
     }
 }

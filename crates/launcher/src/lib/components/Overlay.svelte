@@ -343,8 +343,9 @@
     void (async () => {
       try {
         const settings = await invoke<{ active_provider?: string }>('get_settings');
-        // The saved provider is kept even when unavailable, so an unknown value
-        // (a hand-edited state file) must not be taken as one.
+        // The saved provider is kept even when unavailable. An empty value (a
+        // new install, nothing picked yet) or an unknown one (a hand-edited
+        // state file) is no saved provider, so the first available one is used.
         const saved = settings.active_provider;
         savedProvider = saved && saved in PROVIDERS ? (saved as Provider) : null;
       } catch {

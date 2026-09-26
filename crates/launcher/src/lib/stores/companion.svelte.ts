@@ -19,6 +19,8 @@ export const PROVIDERS: Record<Provider, ProviderMeta> = {
   openai: { label: 'OpenAI', dot: '#10a37f' },
 };
 
+const PROVIDER_ORDER = Object.keys(PROVIDERS) as Provider[];
+
 /** The model names `available_providers` reports; "" means the CLI's own default. */
 export interface ModelNames {
   gemini_model: string;
@@ -38,19 +40,48 @@ export function modelName(names: ModelNames, p: Provider): string {
 }
 
 let provider = $state<Provider>('gemini');
+// False until a provider is saved or picked. Until then (a new install) the
+// store shows the first available provider and saves nothing.
+let providerChosen = false;
 let models = $state<ModelNames>({ gemini_model: '', claude_model: '', openai_model: '' });
+// Which providers can answer; null until the backend has answered.
+let availability = $state<Record<Provider, boolean> | null>(null);
+
+// Same rule as the overlay: with nothing chosen, move off a provider that
+// cannot answer to the first one that can.
+function showFirstAvailable(): void {
+  if (providerChosen || !availability || availability[provider]) return;
+  const known = availability;
+  const first = PROVIDER_ORDER.find((p) => known[p]);
+  if (first) provider = first;
+}
 
 /** The model label for `p`, as last reported by the backend. */
 export function getModelName(p: Provider): string {
   return modelName(models, p);
 }
 
-/** Re-read the model names, e.g. after Settings saved a new Gemini model. */
-export async function refreshModels(): Promise<void> {
+/** Which providers can answer, as last reported; null until known. */
+export function getAvailability(): Record<Provider, boolean> | null {
+  return availability;
+}
+
+/**
+ * Re-read which providers can answer and the model each uses. CLI detection
+ * finishes after startup, and Settings can change the Gemini model or key.
+ */
+export async function refreshAvailability(): Promise<void> {
   try {
-    models = await invoke<ModelNames>('available_providers');
-  } catch {
-    /* keep the last known names */
+    const a = await invoke<ModelNames & Record<Provider, boolean>>('available_providers');
+    models = {
+      gemini_model: a.gemini_model,
+      claude_model: a.claude_model,
+      openai_model: a.openai_model,
+    };
+    availability = { gemini: a.gemini, claude: a.claude, openai: a.openai };
+    showFirstAvailable();
+  } catch (err: unknown) {
+    console.error('Failed to read provider availability:', err);
   }
 }
 
@@ -64,18 +95,26 @@ export function getProviderMeta(): ProviderMeta {
 
 export function setProvider(p: Provider): void {
   provider = p;
+  providerChosen = true;
   void invoke('set_active_provider', { provider: p }).catch(() => {
     /* selection still applies for this session */
   });
 }
 
-/** Load the persisted provider on startup. */
+/**
+ * Load the persisted provider on startup. An empty value (never chosen) or an
+ * unknown one leaves the choice open, so the first available provider shows.
+ */
 export async function loadProvider(): Promise<void> {
   try {
     const settings = await invoke<{ active_provider?: string }>('get_settings');
     const saved = settings.active_provider;
-    if (saved && saved in PROVIDERS) provider = saved as Provider;
+    if (saved && saved in PROVIDERS) {
+      provider = saved as Provider;
+      providerChosen = true;
+    }
   } catch {
-    /* keep the default */
+    /* no saved choice */
   }
+  showFirstAvailable();
 }
