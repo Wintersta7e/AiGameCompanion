@@ -9,6 +9,7 @@
     type ModelNames,
     type Provider,
   } from '../stores/companion.svelte';
+  import { openLink } from '../utils/links';
 
   interface Availability extends ModelNames {
     gemini: boolean;
@@ -178,11 +179,6 @@
     }
   }
 
-  function openUrl(url: string) {
-    void invoke('open_url', { url }).catch((err: unknown) => {
-      console.error('Failed to open the URL:', err);
-    });
-  }
   function openConfigFolder() {
     void invoke('open_config_folder').catch((err: unknown) => {
       console.error('Failed to open the config folder:', err);
@@ -394,7 +390,7 @@
                   style="color: var(--accent);"
                   class="text-[11px] cursor-pointer"
                   onclick={() => {
-                    openUrl(KEY_URL);
+                    openLink(KEY_URL);
                   }}
                   type="button">Get a key ↗</button
                 >

@@ -58,6 +58,9 @@ mod tests {
     )]
 
     use super::is_app_url;
+    use crate::util::count_in_frontend;
+    use std::collections::BTreeSet;
+    use std::path::{Path, PathBuf};
     use tauri::Url;
 
     #[test]
@@ -91,5 +94,196 @@ mod tests {
         }
         println!("{} rows checked", rows.len());
         assert!(wrong.is_empty(), "{wrong:#?}");
+    }
+
+    /// The one component allowed to insert raw HTML, and only once it exists.
+    const SUGGESTION: &str = "src/lib/components/SearchSuggestion.svelte";
+
+    /// Ways to insert raw HTML, run text as code or leave the app page, none of
+    /// which may appear anywhere in the web frontend.
+    const NEVER_IN_FRONTEND: [&str; 27] = [
+        "{@html",
+        "outerHTML",
+        "insertAdjacentHTML",
+        "document.write",
+        "createContextualFragment",
+        "setHTMLUnsafe",
+        "parseHTMLUnsafe",
+        "DOMParser",
+        "srcdoc",
+        "eval(",
+        "new Function",
+        "<a ",
+        "<a>",
+        "<iframe",
+        "<form",
+        "<object",
+        "<embed",
+        "window.open",
+        "location.href",
+        "location.assign",
+        "location.replace",
+        "no-at-html-tags",
+        "marked.parse",
+        "parseInline",
+        "new Parser",
+        "marked.use",
+        "setOptions",
+    ];
+
+    #[test]
+    fn frontend_has_one_html_sink() {
+        const SINKS: [&str; 2] = ["innerHTML", "attachShadow"];
+        const MARKED: &str = "from 'marked'";
+        const OPEN_URL: &str = "'open_url'";
+        let needles: Vec<&str> = SINKS
+            .iter()
+            .chain(&NEVER_IN_FRONTEND)
+            .chain(&["<style", MARKED, OPEN_URL])
+            .copied()
+            .collect();
+        let scan = count_in_frontend(&needles);
+        let hits_of = |needle: &str| &scan.hits[needles.iter().position(|n| *n == needle).unwrap()];
+        let has = |file: &str| scan.files.iter().any(|scanned| scanned == Path::new(file));
+
+        for kind in ["svelte", "ts", "js", "html"] {
+            let count = scan
+                .files
+                .iter()
+                .filter(|file| file.extension().is_some_and(|ext| ext == kind))
+                .count();
+            println!("{kind}: {count} files");
+        }
+        println!("{} files scanned", scan.files.len());
+        for (needle, hits) in needles.iter().zip(&scan.hits) {
+            println!("{needle}: {}", hits.len());
+            for (file, line) in hits {
+                println!("  {}:{line}", file.display());
+            }
+        }
+
+        let mut failures = Vec::new();
+        let mut required = vec!["src/lib/components/Overlay.svelte"];
+        if has("src/lib/components/Markdown.svelte") || has("src/lib/utils/markdown.ts") {
+            required.extend([
+                "src/lib/components/Markdown.svelte",
+                "src/lib/utils/markdown.ts",
+            ]);
+        }
+        for file in required {
+            if !has(file) {
+                failures.push(format!("{file} was not scanned"));
+            }
+        }
+        let suggestion = has(SUGGESTION);
+        for sink in SINKS {
+            let hits = hits_of(sink);
+            let allowed = if suggestion {
+                hits.len() == 1 && hits[0].0 == Path::new(SUGGESTION)
+            } else {
+                hits.is_empty()
+            };
+            if !allowed {
+                failures.push(format!(
+                    "{sink}: {hits:?}, allowed only once in {SUGGESTION}"
+                ));
+            }
+        }
+        for needle in NEVER_IN_FRONTEND {
+            let hits = hits_of(needle);
+            if !hits.is_empty() {
+                failures.push(format!("{needle} must not appear: {hits:?}"));
+            }
+        }
+        if include_str!("../../eslint.config.js").contains("no-at-html-tags") {
+            failures.push("eslint.config.js turns off or overrides no-at-html-tags".to_owned());
+        }
+        let styles = hits_of("<style");
+        if styles
+            .iter()
+            .any(|(file, _)| file == Path::new("index.html"))
+        {
+            failures.push(format!(
+                "index.html must carry no <style element: {styles:?}"
+            ));
+        }
+        let importers: BTreeSet<&Path> = hits_of(MARKED)
+            .iter()
+            .map(|(file, _)| file.as_path())
+            .filter(|file| !file.to_string_lossy().ends_with(".test.ts"))
+            .collect();
+        let expected: BTreeSet<&Path> = if has("src/lib/utils/markdown.ts") {
+            BTreeSet::from([Path::new("src/lib/utils/markdown.ts")])
+        } else {
+            BTreeSet::new()
+        };
+        if importers != expected {
+            failures.push(format!("{MARKED}: {importers:?}, expected {expected:?}"));
+        }
+        let open_url = hits_of(OPEN_URL);
+        if !(open_url.len() == 1 && open_url[0].0 == Path::new("src/lib/utils/links.ts")) {
+            failures.push(format!(
+                "{OPEN_URL}: {open_url:?}, allowed only once in src/lib/utils/links.ts"
+            ));
+        }
+        assert!(failures.is_empty(), "{failures:#?}");
+    }
+
+    #[test]
+    fn search_suggestion_component_contract() {
+        let scan = count_in_frontend(&["SearchSuggestion.svelte"]);
+        let component = Path::new(SUGGESTION);
+        let importers: Vec<&PathBuf> = scan.hits[0]
+            .iter()
+            .map(|(file, _)| file)
+            .filter(|file| file.as_path() != component)
+            .collect();
+        if !scan.files.iter().any(|file| file == component) {
+            println!("component absent; importers: {}", importers.len());
+            assert!(
+                importers.is_empty(),
+                "{importers:?} import a component that does not exist"
+            );
+            return;
+        }
+        println!("component present; importers: {}", importers.len());
+        let text = std::fs::read_to_string(scan.root.join(component)).unwrap();
+        let mut failures = Vec::new();
+        let mut check = |what: &str, holds: bool| {
+            println!("{what}: {}", if holds { "ok" } else { "FAILED" });
+            if !holds {
+                failures.push(what.to_owned());
+            }
+        };
+        check(
+            "exactly one attachShadow( call",
+            text.matches("attachShadow(").count() == 1,
+        );
+        let options = text
+            .split_once("attachShadow(")
+            .map(|(_, rest)| rest.split_once(')').map_or(rest, |(options, _)| options));
+        check(
+            "the shadow root is closed",
+            options.is_some_and(|options| options.contains("mode: 'closed'")),
+        );
+        check(
+            "the host is contained",
+            text.contains("contain: layout paint"),
+        );
+        check(
+            "links open through openLink",
+            text.lines().any(|line| {
+                line.contains("import")
+                    && line.contains("openLink")
+                    && (line.contains("utils/links'") || line.contains("utils/links\""))
+            }),
+        );
+        for event in ["'click'", "'auxclick'", "'contextmenu'"] {
+            check(&format!("listens for {event}"), text.contains(event));
+        }
+        for banned in ["<iframe", "sanitize", "'open_url'"] {
+            check(&format!("no {banned}"), !text.contains(banned));
+        }
+        assert!(failures.is_empty(), "{failures:#?}");
     }
 }
