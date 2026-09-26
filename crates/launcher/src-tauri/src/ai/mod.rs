@@ -582,7 +582,7 @@ mod tests {
         assert_eq!(availability.claude_model, cli::DEFAULT_CLAUDE_MODEL);
         assert_eq!(availability.openai_model, "");
         assert_eq!(availability.gemini_model, "gemini-3.8-flash");
-        assert!(!availability.gemini_fallback_model.is_empty());
+        assert_ne!(availability.gemini_fallback_model, "");
     }
 
     #[test]

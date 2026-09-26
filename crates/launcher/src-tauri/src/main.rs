@@ -47,9 +47,10 @@ fn show_main_window(app: &tauri::AppHandle) {
     clippy::too_many_lines,
     reason = "Tauri builder + setup is one long, linear wiring"
 )]
-#[expect(
+#[allow(
     clippy::exit,
-    reason = "background threads (CLI detection, global-shortcut) keep the process alive unless it force-exits"
+    reason = "background threads (CLI detection, global-shortcut) keep the process alive unless it force-exits; \
+              allow, not expect: newer clippy no longer lints exit inside main"
 )]
 #[expect(
     clippy::print_stderr,
