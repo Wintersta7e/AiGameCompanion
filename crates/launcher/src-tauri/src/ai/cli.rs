@@ -528,18 +528,24 @@ pub(crate) fn sweep_shots(dir: &std::path::Path) -> usize {
 /// Codex's arguments when it runs from the Windows PATH. The prompt goes on
 /// stdin, never as an argument, and the `=` form keeps the image path bound to
 /// its flag. `--ephemeral` keeps the prompt, the history and the screenshot out
-/// of Codex's own session files.
+/// of Codex's own session files. `--disable shell_tool` takes away the tool
+/// that runs commands, and `--ignore-user-config` skips the user's Codex
+/// config file (MCP servers, model, effort), so Codex answers with its own
+/// default model.
 fn codex_args(work_dir: &str, image: Option<&str>) -> Vec<String> {
     let mut args: Vec<String> = [
         "-a",
         "never",
         "-s",
         "read-only",
+        "--disable",
+        "shell_tool",
         "-C",
         work_dir,
         "exec",
         "--skip-git-repo-check",
         "--ephemeral",
+        "--ignore-user-config",
     ]
     .into_iter()
     .map(str::to_owned)
@@ -555,7 +561,8 @@ fn codex_args(work_dir: &str, image: Option<&str>) -> Vec<String> {
 /// does not start and `wslpath`'s own message is the error.
 fn codex_wsl_script(work_dir: &str, image: Option<&str>) -> String {
     let codex = format!(
-        "codex -a never -s read-only -C {} exec --skip-git-repo-check --ephemeral",
+        "codex -a never -s read-only --disable shell_tool -C {} exec \
+         --skip-git-repo-check --ephemeral --ignore-user-config",
         shell_escape(work_dir),
     );
     let start = format!("printf '%s\\n' {WSL_SENTINEL}; ");
@@ -568,6 +575,49 @@ fn codex_wsl_script(work_dir: &str, image: Option<&str>) -> String {
             )
         },
     )
+}
+
+/// Claude's arguments, the same in both modes. The prompt goes on stdin.
+///
+/// Sage only wants text back, so the child runs without the user's setup:
+/// `--tools ''` offers no tool, `--safe-mode` skips their CLAUDE.md, plugins,
+/// hooks, skills and MCP servers, `--strict-mcp-config` drops every MCP server
+/// not named here (none is), `--permission-mode dontAsk` denies instead of
+/// asking, and `--no-session-persistence` keeps the conversation off disk.
+fn claude_args(model: &str, system_prompt: &str) -> Vec<String> {
+    [
+        "-p",
+        "--input-format",
+        "stream-json",
+        "--output-format",
+        "stream-json",
+        "--verbose",
+        "--include-partial-messages",
+        "--tools",
+        "",
+        "--no-session-persistence",
+        "--safe-mode",
+        "--strict-mcp-config",
+        "--permission-mode",
+        "dontAsk",
+        "--model",
+        model,
+        "--system-prompt",
+        system_prompt,
+    ]
+    .into_iter()
+    .map(str::to_owned)
+    .collect()
+}
+
+/// The script `wsl_bash` runs for Claude: `claude_args`, each one quoted, so
+/// the empty `--tools` value stays a literal `''`.
+fn claude_wsl_script(model: &str, system_prompt: &str) -> String {
+    let args: Vec<String> = claude_args(model, system_prompt)
+        .iter()
+        .map(|arg| shell_escape(arg))
+        .collect();
+    format!("claude {}", args.join(" "))
 }
 
 /// Stream a Claude response by spawning the Claude CLI in stream-json mode.
@@ -588,32 +638,10 @@ where
     validate_model_name(model)?;
 
     let mut cmd = if cfg.claude == CliMode::Wsl {
-        let claude_args = format!(
-            "claude -p --input-format stream-json --output-format stream-json \
-             --verbose --include-partial-messages --tools '' \
-             --no-session-persistence --model {} --system-prompt {}",
-            shell_escape(model),
-            shell_escape(system_prompt),
-        );
-        Command::from(wsl_bash(&claude_args))
+        Command::from(wsl_bash(&claude_wsl_script(model, system_prompt)))
     } else {
         let mut c = Command::new("claude");
-        c.args([
-            "-p",
-            "--input-format",
-            "stream-json",
-            "--output-format",
-            "stream-json",
-            "--verbose",
-            "--include-partial-messages",
-            "--tools",
-            "",
-            "--no-session-persistence",
-            "--model",
-            model,
-            "--system-prompt",
-            system_prompt,
-        ]);
+        c.args(claude_args(model, system_prompt));
         c
     };
 
@@ -1163,11 +1191,14 @@ mod tests {
                 "never",
                 "-s",
                 "read-only",
+                "--disable",
+                "shell_tool",
                 "-C",
                 "W",
                 "exec",
                 "--skip-git-repo-check",
-                "--ephemeral"
+                "--ephemeral",
+                "--ignore-user-config"
             ]
         );
         assert!(plain.iter().all(|arg| !arg.contains("--image")));
@@ -1189,7 +1220,7 @@ mod tests {
     fn codex_wsl_script_hands_the_image_over() {
         assert_eq!(
             codex_wsl_script("/srv/work dir", None),
-            "printf '%s\\n' __AIGC_STREAM_BEGIN__; codex -a never -s read-only -C '/srv/work dir' exec --skip-git-repo-check --ephemeral"
+            "printf '%s\\n' __AIGC_STREAM_BEGIN__; codex -a never -s read-only --disable shell_tool -C '/srv/work dir' exec --skip-git-repo-check --ephemeral --ignore-user-config"
         );
 
         let image = r"C:\shots\it's $(x) a.png";
@@ -1198,7 +1229,7 @@ mod tests {
         assert!(script.contains(&format!("wslpath -u {}", shell_escape(image))));
         assert_eq!(
             script,
-            r#"printf '%s\n' __AIGC_STREAM_BEGIN__; img=$(wslpath -u 'C:\shots\it'\''s $(x) a.png') && codex -a never -s read-only -C '/srv/work dir' exec --skip-git-repo-check --ephemeral --image="$img""#
+            r#"printf '%s\n' __AIGC_STREAM_BEGIN__; img=$(wslpath -u 'C:\shots\it'\''s $(x) a.png') && codex -a never -s read-only --disable shell_tool -C '/srv/work dir' exec --skip-git-repo-check --ephemeral --ignore-user-config --image="$img""#
         );
         assert_eq!(script.matches("--image=").count(), 1);
     }
@@ -1230,6 +1261,85 @@ mod tests {
                 script.contains("--skip-git-repo-check --ephemeral"),
                 "{script}"
             );
+        }
+    }
+
+    /// Every index at which `flag` appears in `args`.
+    fn positions(args: &[String], flag: &str) -> Vec<usize> {
+        args.iter()
+            .enumerate()
+            .filter(|(_, arg)| *arg == flag)
+            .map(|(at, _)| at)
+            .collect()
+    }
+
+    #[test]
+    fn claude_children_are_locked_down() {
+        let prompt = "You are Sage. It's $(x) `y`";
+        let args = claude_args("claude-haiku-4-5", prompt);
+        println!("{args:?}");
+        let after = |flag: &str| {
+            let at = positions(&args, flag);
+            assert_eq!(at.len(), 1, "{flag} in {args:?}");
+            args.get(at[0] + 1).map(String::as_str)
+        };
+        for flag in [
+            "--safe-mode",
+            "--strict-mcp-config",
+            "--no-session-persistence",
+        ] {
+            assert_eq!(positions(&args, flag).len(), 1, "{flag} in {args:?}");
+        }
+        assert_eq!(after("--permission-mode"), Some("dontAsk"));
+        assert_eq!(after("--tools"), Some(""));
+        assert_eq!(after("--model"), Some("claude-haiku-4-5"));
+        assert_eq!(after("--system-prompt"), Some(prompt));
+
+        let script = claude_wsl_script("claude-haiku-4-5", prompt);
+        println!("{script}");
+        assert!(script.starts_with("claude "), "{script}");
+        for flag in [
+            "'--safe-mode'",
+            "'--strict-mcp-config'",
+            "'--permission-mode' 'dontAsk'",
+            "'--tools' ''",
+            "'--no-session-persistence'",
+        ] {
+            assert_eq!(script.matches(flag).count(), 1, "{flag} in {script}");
+        }
+        assert!(script.contains(&shell_escape(prompt)), "{script}");
+    }
+
+    #[test]
+    fn codex_children_are_locked_down() {
+        for image in [None, Some(r"C:\shots\a b.png")] {
+            let args = codex_args("W", image);
+            println!("{args:?}");
+            let exec = positions(&args, "exec");
+            assert_eq!(exec.len(), 1, "{args:?}");
+            let disable = positions(&args, "--disable");
+            assert_eq!(disable.len(), 1, "{args:?}");
+            assert!(disable[0] < exec[0], "--disable must come before exec");
+            assert_eq!(
+                args.get(disable[0] + 1).map(String::as_str),
+                Some("shell_tool")
+            );
+            let ignore = positions(&args, "--ignore-user-config");
+            assert_eq!(ignore.len(), 1, "{args:?}");
+            assert!(ignore[0] > exec[0], "--ignore-user-config must follow exec");
+
+            let script = codex_wsl_script("/srv/work dir", image);
+            println!("{script}");
+            assert_eq!(script.matches(" exec ").count(), 1, "{script}");
+            let (before, after) = script.split_once(" exec ").unwrap();
+            assert_eq!(
+                before.matches("--disable shell_tool").count(),
+                1,
+                "{script}"
+            );
+            assert!(!after.contains("--disable"), "{script}");
+            assert_eq!(after.matches("--ignore-user-config").count(), 1, "{script}");
+            assert!(!before.contains("--ignore-user-config"), "{script}");
         }
     }
 
