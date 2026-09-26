@@ -5,8 +5,8 @@
 #   ./scripts/ci-check.sh
 #
 # Covers the same checks CI enforces: cargo fmt --check, clippy (via cargo-xwin),
-# cargo test, eslint, prettier --check, svelte-check, vite build, npm audit,
-# cargo-deny, and gitleaks.
+# cargo test, eslint, prettier --check, svelte-check, vite build, cargo test and
+# cargo doc with --all-features, npm audit, cargo-deny, and gitleaks.
 #
 # IMPORTANT: always re-run this AFTER `cargo fmt` -- reformatting can grow a
 # function past clippy::too_many_lines, which fmt alone will not report.
@@ -32,6 +32,10 @@ step "eslint" bash -c "cd crates/launcher && npx eslint ."
 step "prettier --check" bash -c "cd crates/launcher && npx prettier --check ."
 step "svelte-check" bash -c "cd crates/launcher && node node_modules/svelte-check/bin/svelte-check --tsconfig ./tsconfig.json --fail-on-warnings"
 step "vite build" bash -c "cd crates/launcher && node node_modules/vite/bin/vite.js build"
+# CI's Rust job tests and documents with --all-features, which embeds the
+# frontend: both need the dist/ the vite build above just wrote.
+step "cargo test --all-features" cargo test --workspace --all-features --locked
+step "cargo doc" env RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps --all-features --locked
 step "npm audit" bash -c "cd crates/launcher && npm audit --audit-level=high"
 # cargo-deny re-fetches the advisory DB on every run, so a lockfile that passed
 # yesterday can fail today. Skipping it locally let RUSTSEC-2026-0285 (rustls)

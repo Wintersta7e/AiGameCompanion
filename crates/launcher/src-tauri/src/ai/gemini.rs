@@ -15,8 +15,8 @@ const MAX_STREAM_BYTES: usize = 2 * 1024 * 1024;
 const MAX_OUTPUT_TOKENS: u32 = 4_096;
 /// How much of a refused request's body is read for Google's reason.
 const MAX_ERROR_BODY_BYTES: usize = 8 * 1024;
-/// How much of Google's reason is shown to the user.
-const MAX_ERROR_MESSAGE_CHARS: usize = 300;
+/// How much of a provider's own error text is shown to the user.
+pub(super) const MAX_ERROR_MESSAGE_CHARS: usize = 300;
 
 /// The Gemini API key. The model is resolved separately by `resolve_model`: the
 /// one chosen in Settings, then the legacy `config.toml` value, then the default.

@@ -30,13 +30,14 @@
         "alwaysOnTop": true,
         "skipTaskbar": true,
         "resizable": true,
+        "maximizable": false,
         "shadow": false,
         "visible": false,
         "focus": false
       }
     ],
     "security": {
-      "csp": "default-src 'self' https://tauri.localhost; img-src 'self' https://cdn.cloudflare.steamstatic.com; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; script-src 'self' https://tauri.localhost; connect-src ipc: http://ipc.localhost https://tauri.localhost"
+      "csp": "default-src 'self' https://tauri.localhost; img-src 'self' https://cdn.cloudflare.steamstatic.com; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; script-src 'self' https://tauri.localhost; connect-src ipc: http://ipc.localhost https://tauri.localhost; object-src 'none'; base-uri 'none'; form-action 'none'; frame-src 'none'"
     }
   },
   "bundle": {

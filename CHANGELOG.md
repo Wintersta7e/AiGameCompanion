@@ -4,6 +4,17 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## Unreleased
+
+### Security
+
+- **The overlay window can use only the commands its own controls need.** Links
+  open only as https web addresses, in your default browser.
+
+### Fixed
+
+- **Claude errors show the Claude CLI's own message** instead of a generic one.
+
 ## 2.0.2 - 2026-09-26
 
 ### Security

@@ -71,7 +71,7 @@ a working tool you can build and run, not a polished consumer app.
 
 **Not done yet / out of scope:**
 - Rebindable hotkeys -- the chords are fixed this build (Settings shows them).
-- Positioning the panel over the game's specific monitor (it opens centered).
+- Positioning the panel over the game's specific monitor.
 - Offline / local-model translation -- translation currently runs through Gemini.
 - Genuine legacy exclusive-fullscreen games -- an external window can't composite
   over those; borderless / FSO windowed is covered.

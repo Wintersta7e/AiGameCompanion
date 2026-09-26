@@ -393,25 +393,62 @@ fn parse_claude_line(line: &str) -> Option<Parsed> {
                 None
             }
         }
-        "result" => {
-            let is_error = v
-                .get("is_error")
-                .and_then(serde_json::Value::as_bool)
-                .unwrap_or(false);
-            if is_error {
-                let error_msg = v
-                    .get("error")
-                    .and_then(serde_json::Value::as_str)
-                    .unwrap_or("Unknown Claude CLI error");
-                Some(Parsed::Error(error_msg.to_owned()))
-            } else {
-                // Successful result -- stream is complete.
-                None
-            }
-        }
+        // A successful result is the stream's end.
+        "result" => claude_result_error(&v).map(Parsed::Error),
         // system, assistant, etc -- ignore.
         _ => None,
     }
+}
+
+/// The message of a Claude CLI `result` frame that reports an error, or `None`
+/// when the frame reports success.
+///
+/// A frame is an error when `is_error` is true or its `subtype` starts with
+/// `error`. The CLI writes its reason to `result` or `errors`; the HTTP status
+/// or the subtype stands in only when neither carries text.
+fn claude_result_error(frame: &serde_json::Value) -> Option<String> {
+    use serde_json::Value;
+    let subtype = frame.get("subtype").and_then(Value::as_str);
+    let is_error = frame.get("is_error").and_then(Value::as_bool) == Some(true)
+        || subtype.is_some_and(|subtype| subtype.starts_with("error"));
+    if !is_error {
+        return None;
+    }
+    let result = frame
+        .get("result")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|text| !text.is_empty())
+        .map(str::to_owned);
+    let errors = || {
+        let list = frame.get("errors").and_then(Value::as_array)?;
+        let texts: Vec<&str> = list
+            .iter()
+            .filter_map(Value::as_str)
+            .map(str::trim)
+            .filter(|text| !text.is_empty())
+            .collect();
+        (!texts.is_empty()).then(|| texts.join("; "))
+    };
+    let status = || {
+        let status = frame.get("api_error_status").and_then(Value::as_u64)?;
+        Some(format!("Claude CLI error (HTTP {status})"))
+    };
+    let named = || {
+        let subtype = subtype.filter(|subtype| !subtype.is_empty() && *subtype != "success")?;
+        Some(format!("Claude CLI error ({subtype})"))
+    };
+    let message = result
+        .or_else(errors)
+        .or_else(status)
+        .or_else(named)
+        .unwrap_or_else(|| "Claude CLI returned an error without a message".to_owned());
+    Some(
+        message
+            .chars()
+            .take(super::gemini::MAX_ERROR_MESSAGE_CHARS)
+            .collect(),
+    )
 }
 
 /// Parse a single line from Codex CLI stdout. `codex exec` prints plain text, so
@@ -1106,10 +1143,10 @@ mod tests {
 
     #[test]
     fn parse_claude_line_surfaces_error_result_message() {
-        let line = r#"{"type":"result","subtype":"error_during_execution","is_error":true,"error":"quota exceeded"}"#;
+        let line = r#"{"type":"result","subtype":"success","is_error":true,"result":"API Error: 529 overloaded"}"#;
         assert_eq!(
             parse_claude_line(line),
-            Some(Parsed::Error("quota exceeded".to_owned()))
+            Some(Parsed::Error("API Error: 529 overloaded".to_owned()))
         );
     }
 
@@ -1118,8 +1155,64 @@ mod tests {
         let line = r#"{"type":"result","is_error":true}"#;
         assert_eq!(
             parse_claude_line(line),
-            Some(Parsed::Error("Unknown Claude CLI error".to_owned()))
+            Some(Parsed::Error(
+                "Claude CLI returned an error without a message".to_owned()
+            ))
         );
+    }
+
+    #[test]
+    fn claude_result_error_table() {
+        use serde_json::json;
+        const FALLBACK: &str = "Claude CLI returned an error without a message";
+        let row = |frame: serde_json::Value| {
+            let got = claude_result_error(&frame);
+            let shown = frame.to_string().chars().take(100).collect::<String>();
+            let message = got
+                .as_deref()
+                .map(|got| got.chars().take(100).collect::<String>());
+            println!("{shown} -> {message:?}");
+            got
+        };
+        assert_eq!(
+            row(json!({"type":"result","subtype":"success","is_error":true,"result":"X"})),
+            Some("X".to_owned())
+        );
+        assert_eq!(
+            row(json!({"type":"result","subtype":"error_during_execution","errors":["A","B"]})),
+            Some("A; B".to_owned())
+        );
+        let http = row(json!({"type":"result","is_error":true,"api_error_status":529})).unwrap();
+        assert!(http.contains("HTTP 529"), "{http}");
+        let turns = row(json!({"type":"result","subtype":"error_max_turns"})).unwrap();
+        assert!(turns.contains("error_max_turns"), "{turns}");
+        assert_eq!(
+            row(json!({"type":"result","is_error":true})),
+            Some(FALLBACK.to_owned())
+        );
+        let long = row(json!({"type":"result","is_error":true,"result":"\u{e9}".repeat(1000)}));
+        assert_eq!(long.map(|message| message.chars().count()), Some(300));
+        assert_eq!(
+            row(json!({"type":"result","subtype":"success","is_error":false,"result":"PONG"})),
+            None
+        );
+        assert_eq!(
+            row(json!({"type":"result","is_error":true,"result":"  ","errors":["  ",7,"B"]})),
+            Some("B".to_owned())
+        );
+        assert_eq!(
+            row(json!({"type":"result","subtype":"success","is_error":true})),
+            Some(FALLBACK.to_owned())
+        );
+    }
+
+    #[test]
+    fn no_generic_claude_error_text() {
+        let needle = concat!("Unknown Claude", " CLI error");
+        let (files, count) = crate::util::count_in_sources(needle, None);
+        println!("scanned {files} files, found {count} occurrence(s) of {needle}");
+        assert!(files > 0, "the source scan found no files");
+        assert_eq!(count, 0, "a Claude error must carry the CLI's own text");
     }
 
     #[test]

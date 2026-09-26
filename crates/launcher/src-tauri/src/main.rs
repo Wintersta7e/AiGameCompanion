@@ -9,6 +9,7 @@ mod overlay_capture;
 mod process_watch;
 mod secrets;
 mod state;
+mod trust;
 mod util;
 
 use ai::AiState;
@@ -58,6 +59,15 @@ fn main() {
     let [toggle, translate, quick_ask] =
         HOTKEYS.map(|(code, _)| Shortcut::new(Some(Modifiers::CONTROL | Modifiers::SHIFT), code));
 
+    let context = tauri::generate_context!();
+    // Tauri loads `devUrl` exactly when it is built without `custom-protocol`,
+    // whatever the profile, so that is when the dev server's pages are the app's.
+    let dev_url = if tauri::is_dev() {
+        context.config().build.dev_url.clone()
+    } else {
+        None
+    };
+
     let run_result = tauri::Builder::default()
         // Must be registered first. Two instances would otherwise share one
         // state file with only a per-process lock: their temp-file writes and
@@ -69,6 +79,7 @@ fn main() {
         .plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| {
             show_main_window(app);
         }))
+        .plugin(trust::navigation_guard(dev_url))
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_autostart::init(
             MacosLauncher::LaunchAgent,
@@ -241,7 +252,7 @@ fn main() {
             overlay::hide_overlay,
             overlay::link_game,
         ])
-        .run(tauri::generate_context!());
+        .run(context);
 
     let code = match run_result {
         Ok(()) => 0,
