@@ -108,8 +108,38 @@ pub(crate) fn open_config_folder(app: AppHandle) -> Result<(), String> {
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::print_stdout, reason = "the scans print what they counted")]
+
     use super::merge_settings;
     use crate::models::LauncherSettings;
+
+    #[test]
+    fn no_config_button_command() {
+        let needle = concat!("open_game", "_config");
+        let (files, count) = crate::util::count_in_sources(needle, None);
+        println!("scanned {files} files, found {count} occurrence(s) of {needle}");
+        assert!(files > 0, "the source scan found no files");
+        assert_eq!(
+            count, 0,
+            "nothing may open a config.toml the app does not ship"
+        );
+    }
+
+    #[test]
+    fn no_error_sends_users_to_config_toml() {
+        for needle in [
+            concat!("Check ", "config.toml"),
+            concat!("in ", "config.toml"),
+        ] {
+            let (files, count) = crate::util::count_in_sources(needle, None);
+            println!("scanned {files} files, found {count} occurrence(s) of {needle}");
+            assert!(files > 0, "the source scan found no files");
+            assert_eq!(
+                count, 0,
+                "settings live in the Settings window, not config.toml"
+            );
+        }
+    }
 
     #[test]
     fn save_keeps_the_stored_provider() {

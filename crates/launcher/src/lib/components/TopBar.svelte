@@ -15,8 +15,21 @@
   let hotkeyDot = $derived(failedHotkeys?.length === 0 ? 'var(--color-ok)' : 'var(--color-err)');
 
   const providerKeys = Object.keys(PROVIDERS) as Provider[];
+  // Which providers can answer; null until known, when no button is disabled.
+  let availability = $state<Record<Provider, boolean> | null>(null);
+
+  function refreshAvailability() {
+    void invoke<Record<Provider, boolean>>('available_providers')
+      .then((a) => {
+        availability = { gemini: a.gemini, claude: a.claude, openai: a.openai };
+      })
+      .catch((err: unknown) => {
+        console.error('Failed to read provider availability:', err);
+      });
+  }
 
   onMount(() => {
+    refreshAvailability();
     void invoke<string[]>('hotkey_status')
       .then((failed) => {
         failedHotkeys = failed;
@@ -108,13 +121,17 @@
 
   <!-- right cluster -->
   <div class="flex items-center gap-[10px]">
-    <!-- provider switch -->
+    <!-- provider switch; availability is re-read on hover because CLI detection
+         can finish after this bar mounts -->
     <div
       style="background: rgba(255,255,255,0.03); border: 1px solid var(--color-line);"
       class="flex items-center gap-[3px] p-[3px] rounded-[11px]"
+      onpointerenter={refreshAvailability}
+      role="group"
     >
       {#each providerKeys as key (key)}
         {const active = $derived(key === provider)}
+        {const avail = $derived(availability?.[key] ?? true)}
         <button
           style="
             border: 1px solid {active
@@ -124,11 +141,15 @@
             ? 'color-mix(in oklab, var(--accent) 20%, transparent)'
             : 'transparent'};
             color: {active ? 'var(--color-t-hi)' : 'var(--color-t-lo)'};
+            opacity: {avail ? 1 : 0.4};
           "
-          class="flex items-center gap-1.5 px-[11px] py-1.5 rounded-lg font-display text-[11.5px] font-medium tracking-[0.02em] cursor-pointer transition-all duration-150"
+          class="flex items-center gap-1.5 px-[11px] py-1.5 rounded-lg font-display text-[11.5px] font-medium tracking-[0.02em] transition-all duration-150"
+          class:cursor-not-allowed={!avail}
+          class:cursor-pointer={avail}
           aria-pressed={active}
+          disabled={!avail}
           onclick={() => {
-            setProvider(key);
+            if (avail) setProvider(key);
           }}
           onmouseenter={(e) => {
             if (!active) (e.currentTarget as HTMLElement).style.color = 'var(--color-t-mid)';
@@ -136,6 +157,7 @@
           onmouseleave={(e) => {
             if (!active) (e.currentTarget as HTMLElement).style.color = 'var(--color-t-lo)';
           }}
+          title={avail ? undefined : 'Not available'}
           type="button"
         >
           <span

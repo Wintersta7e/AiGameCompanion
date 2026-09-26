@@ -93,14 +93,6 @@
     return s === 'gog' ? 'GOG' : s.charAt(0).toUpperCase() + s.slice(1);
   }
 
-  async function openConfig() {
-    fileError = null;
-    try {
-      await invoke('open_game_config');
-    } catch (e) {
-      fileError = String(e);
-    }
-  }
   async function openLogs() {
     fileError = null;
     try {
@@ -303,15 +295,6 @@
           <button
             style="border: 1px solid var(--color-line); background: rgba(255,255,255,0.03);"
             class="px-[18px] py-[13px] rounded-[11px] font-display text-[12.5px] font-medium tracking-[0.03em] text-t-mid cursor-pointer transition-all duration-150 hover:text-t-hi"
-            onclick={openConfig}
-            onmouseenter={fileBtnEnter}
-            onmouseleave={fileBtnLeave}
-            title="Open config.toml"
-            type="button">Config</button
-          >
-          <button
-            style="border: 1px solid var(--color-line); background: rgba(255,255,255,0.03);"
-            class="px-[18px] py-[13px] rounded-[11px] font-display text-[12.5px] font-medium tracking-[0.03em] text-t-mid cursor-pointer transition-all duration-150 hover:text-t-hi"
             onclick={openLogs}
             onmouseenter={fileBtnEnter}
             onmouseleave={fileBtnLeave}
@@ -413,24 +396,6 @@
               style="background: var(--color-ink-3); border: 1px solid var(--color-line); box-shadow: 0 1.5px 0 rgba(0,0,0,0.4);"
               class="font-mono text-[11px] text-t-hi px-[9px] py-[3px] rounded-md"
               >Ctrl+Shift+T</span
-            >
-          </div>
-          <!-- translation (per-game translate config lands with a future setting) -->
-          <div
-            style="background: rgba(255,255,255,0.016);"
-            class="flex items-center justify-between px-[15px] py-[13px] rounded-[11px] border border-line"
-          >
-            <span class="text-[12.5px] text-t-mid">Translation</span>
-            <span class="font-display text-[12px] font-medium text-t-lo">Off</span>
-          </div>
-          <!-- vision -->
-          <div
-            style="background: rgba(255,255,255,0.016);"
-            class="flex items-center justify-between px-[15px] py-[13px] rounded-[11px] border border-line"
-          >
-            <span class="text-[12.5px] text-t-mid">Screenshot vision</span>
-            <span style="color: var(--accent);" class="font-display text-[12px] font-medium"
-              >Enabled</span
             >
           </div>
         </div>

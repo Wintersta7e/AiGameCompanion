@@ -518,9 +518,9 @@
           {#if available.length === 0}
             <div class="msg sage">
               <span class="avatar"></span>
-              <div class="bubble">
-                No AI providers are available. Add a Gemini key in config.toml, or install the
-                Claude / Codex CLI.
+              <div class="bubble intro">
+                No AI providers are available. Add a Gemini key in Settings, or install and sign in
+                to the Claude or Codex CLI.
               </div>
             </div>
           {:else if messages.length === 0}
@@ -528,8 +528,8 @@
               <span class="avatar"></span>
               <div class="bubble intro">
                 {#if game?.linked}
-                  Linked to {game.name || game.exe}. I can see your screen — ask me anything, or tap
-                  a prompt below.
+                  Linked to {game.name || game.exe}. Ask me anything, or tap a prompt below — turn
+                  on the image button to include a screenshot.
                 {:else if game?.exe}
                   Nothing about this window is sent until you link it. Link {exeFile} above to ask about
                   it this session.
@@ -649,10 +649,6 @@
     {:else}
       <!-- translate -->
       <div class="body translate">
-        <div class="capture-box">
-          <div class="capture-head">CAPTURED · Windows.Graphics.Capture</div>
-          <div class="capture-frame" class:busy={translateBusy}></div>
-        </div>
         <div class="lang-row">
           <span class="lang-chip">Auto-detect</span>
           <span class="lang-arrow">→</span>
@@ -669,7 +665,7 @@
             <div class="translate-empty">
               {#if !availability.gemini}
                 <div class="te-title">Translation needs a Gemini key.</div>
-                <div class="te-sub">Set api.gemini.api_key in config.toml.</div>
+                <div class="te-sub">Add a Gemini key in Settings.</div>
               {:else}
                 <div class="te-title">No foreign text captured yet.</div>
                 <div class="te-sub">
@@ -1246,29 +1242,6 @@
     padding: 4px 14px 14px;
     gap: 14px;
   }
-  .capture-box {
-    border-radius: 13px;
-    border: 1px solid var(--color-line);
-    background: linear-gradient(
-      135deg,
-      color-mix(in oklab, var(--accent) 10%, var(--color-ink-2)),
-      var(--color-ink-1)
-    );
-    padding: 12px;
-  }
-  .capture-head {
-    font-family: var(--font-mono);
-    font-size: 9.5px;
-    letter-spacing: 0.06em;
-    color: var(--color-t-mid);
-    margin-bottom: 10px;
-  }
-  .capture-frame {
-    height: 74px;
-    border-radius: 9px;
-    border: 1px dashed color-mix(in oklab, var(--accent) 45%, transparent);
-    background: rgba(0, 0, 0, 0.18);
-  }
   .lang-row {
     display: flex;
     align-items: center;
@@ -1348,8 +1321,5 @@
     color: var(--color-t-hi);
     white-space: pre-wrap;
     word-break: break-word;
-  }
-  .capture-frame.busy {
-    animation: pulse-soft 1.4s ease-in-out infinite;
   }
 </style>

@@ -53,8 +53,8 @@ titles); genuine legacy exclusive-fullscreen games are out of scope. Treat it as
 a working tool you can build and run, not a polished consumer app.
 
 **Implemented:**
-- External transparent overlay window -- topmost, click-through when idle, takes
-  focus on demand; toggled with **Ctrl+Shift+G**. No injection, any graphics API.
+- External transparent overlay window -- topmost, takes focus on demand; toggled
+  with **Ctrl+Shift+G**. No injection, any graphics API.
 - Multi-provider AI -- Gemini (direct API), Claude & OpenAI (through your own
   `claude` / `codex` CLIs), switchable from an in-panel dropdown that shows only
   available providers and persists your choice.

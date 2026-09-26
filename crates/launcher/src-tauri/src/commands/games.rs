@@ -209,29 +209,6 @@ fn do_launch(app: &tauri::AppHandle, game_id: &str) -> Result<(), String> {
     Ok(())
 }
 
-/// Resolve the directory where the companion's `config.toml` lives (next to the
-/// launcher executable).
-fn companion_dir() -> Result<std::path::PathBuf, String> {
-    std::env::current_exe()
-        .ok()
-        .and_then(|p| p.parent().map(std::path::Path::to_path_buf))
-        .ok_or_else(|| "Cannot determine companion directory".to_string())
-}
-
-#[tauri::command]
-#[allow(clippy::needless_pass_by_value)]
-pub(crate) fn open_game_config(app: tauri::AppHandle) -> Result<(), String> {
-    let dir = companion_dir()?;
-    let config_path = dir.join("config.toml");
-    if config_path.exists() {
-        app.opener()
-            .open_path(config_path.to_string_lossy().as_ref(), None::<&str>)
-            .map_err(|e| format!("Failed to open config: {e}"))
-    } else {
-        Err(format!("config.toml not found in {}", dir.display()))
-    }
-}
-
 #[tauri::command]
 #[allow(clippy::needless_pass_by_value)]
 pub(crate) fn open_game_logs(app: tauri::AppHandle) -> Result<(), String> {

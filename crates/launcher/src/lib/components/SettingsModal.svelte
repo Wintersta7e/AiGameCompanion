@@ -307,8 +307,8 @@
           {#if section === 'providers'}
             <h2 class="font-display text-[16px] font-semibold text-t-hi mb-1">AI providers</h2>
             <p class="text-[12.5px] text-t-mid mb-5">
-              Sage runs on your own key and CLIs. Availability is re-checked every time the overlay
-              opens.
+              Sage runs on your own key and CLIs. After installing or signing in to a CLI, press
+              Re-check.
             </p>
 
             <!-- Gemini -->
@@ -662,7 +662,7 @@
         {#if saveError}
           <span style="color: var(--color-err);" class="text-[11.5px] mr-auto">{saveError}</span>
         {:else}
-          <span class="font-mono text-[10px] text-t-lo mr-auto">changes apply immediately</span>
+          <span class="font-mono text-[10px] text-t-lo mr-auto">Save applies these settings</span>
         {/if}
         <div class="flex gap-[10px]">
           <button
