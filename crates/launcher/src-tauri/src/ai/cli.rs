@@ -756,15 +756,18 @@ where
     };
 
     // Keep the last few stderr lines: when the child fails without writing any
-    // stdout, this is the only thing that can explain why.
+    // stdout, this is the only thing that can explain why. They are not logged
+    // line by line -- Codex echoes the whole prompt, and with it the chat, to
+    // stderr -- only counted, and the tail is logged when the CLI fails.
     let stderr_fut = async move {
         let mut tail: Vec<String> = Vec::new();
+        let mut count = 0usize;
         if let Some(stderr) = stderr {
             let reader = BufReader::new(stderr);
             let mut lines = LinesStream::new(reader.lines());
             while let Some(Ok(line)) = lines.next().await {
                 if !line.trim().is_empty() {
-                    tracing::warn!("{label} stderr: {line}");
+                    count += 1;
                     if tail.len() == STDERR_TAIL_LINES {
                         tail.remove(0);
                     }
@@ -772,7 +775,7 @@ where
                 }
             }
         }
-        tail
+        (tail, count)
     };
 
     let read_fut = async {
@@ -815,7 +818,9 @@ where
         Ok(emitted)
     };
 
-    let ((), stderr_tail, read_result) = tokio::join!(write_fut, stderr_fut, read_fut);
+    let ((), (stderr_tail, stderr_lines), read_result) =
+        tokio::join!(write_fut, stderr_fut, read_fut);
+    tracing::debug!("{label} wrote {stderr_lines} stderr line(s)");
     let emitted = read_result?;
 
     // Stdout reaching EOF is NOT success. Without this, a CLI that fails before
@@ -823,17 +828,22 @@ where
     // reached the user as a completed, empty answer with no error at all.
     let status = child.wait().await;
     drop(child);
+    let failed = |stderr_tail: &[String]| {
+        let message = cli_failure_message(label, stderr_tail);
+        tracing::warn!("{message}");
+        Err(message)
+    };
     match status {
         Ok(status) if status.success() => {
             if emitted {
                 Ok(())
             } else {
-                Err(cli_failure_message(label, &stderr_tail))
+                failed(&stderr_tail)
             }
         }
         Ok(status) => {
             tracing::warn!("{label} CLI exited with {status}");
-            Err(cli_failure_message(label, &stderr_tail))
+            failed(&stderr_tail)
         }
         Err(e) => Err(format!("Failed to wait for {label} CLI: {e}")),
     }
@@ -1367,6 +1377,65 @@ mod tests {
         println!("{joined:?}");
         assert_eq!(result, Ok(()));
         assert_eq!(joined, "One.\nTwo.\n\n- a\n- b\n");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn cli_stderr_is_not_copied_into_the_log() {
+        #[derive(Clone, Default)]
+        struct Buf(std::sync::Arc<std::sync::Mutex<Vec<u8>>>);
+        impl std::io::Write for Buf {
+            fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+                self.0
+                    .lock()
+                    .map_err(|_| std::io::Error::other("log buffer poisoned"))?
+                    .extend_from_slice(bytes);
+                Ok(bytes.len())
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+        // A process-wide subscriber, installed once: a thread-local one misses
+        // events whenever a parallel test registered the call site first
+        // (measured: the captured log came back empty in 3 of 5 full runs).
+        static LOG: std::sync::OnceLock<Buf> = std::sync::OnceLock::new();
+        let buf = LOG
+            .get_or_init(|| {
+                let buf = Buf::default();
+                let writer = buf.clone();
+                let subscriber = tracing_subscriber::fmt()
+                    .with_max_level(tracing::Level::TRACE)
+                    .with_writer(move || writer.clone())
+                    .finish();
+                tracing::subscriber::set_global_default(subscriber).unwrap();
+                buf
+            })
+            .clone();
+
+        // Codex echoes the prompt -- and so the conversation -- to stderr. A
+        // label no other test uses keeps their lines out of the assertions.
+        let mut cmd = Command::new("sh");
+        cmd.args(["-c", "echo 'user: SECRET-PROMPT' >&2; echo answer"]);
+        let result = run_cli(
+            &mut cmd,
+            String::new(),
+            |_| Ok(()),
+            parse_codex_line,
+            "Probe",
+            None,
+        )
+        .await;
+        let log = String::from_utf8(buf.0.lock().unwrap().clone()).unwrap();
+        assert_eq!(result, Ok(()));
+        assert!(
+            !log.contains("SECRET-PROMPT"),
+            "stderr text reached the log"
+        );
+        assert!(
+            log.contains("Probe wrote 1 stderr line(s)"),
+            "the stderr line count is logged"
+        );
     }
 
     #[cfg(unix)]
