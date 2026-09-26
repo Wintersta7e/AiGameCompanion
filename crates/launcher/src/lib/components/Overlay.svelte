@@ -500,45 +500,56 @@
           Translate
         </button>
       </div>
-      <button
-        class="provider-pill"
-        disabled={available.length === 0 || asking}
-        onclick={() => (dropdownOpen = !dropdownOpen)}
-        type="button"
-      >
-        <span style="background: {meta.dot}; box-shadow: 0 0 6px {meta.dot};" class="prov-dot"
-        ></span>
-        {availability[provider] ? meta.label : `${meta.label} — not available`}
-        <span class="caret">{dropdownOpen ? '▴' : '▾'}</span>
-      </button>
+      {#if tab === 'chat'}
+        <button
+          class="provider-pill"
+          disabled={available.length === 0 || asking}
+          onclick={() => (dropdownOpen = !dropdownOpen)}
+          type="button"
+        >
+          <span style="background: {meta.dot}; box-shadow: 0 0 6px {meta.dot};" class="prov-dot"
+          ></span>
+          {availability[provider] ? meta.label : `${meta.label} — not available`}
+          <span class="caret">{dropdownOpen ? '▴' : '▾'}</span>
+        </button>
 
-      {#if dropdownOpen && available.length > 0}
-        <div class="dropdown">
-          <div class="dropdown-head">Available providers</div>
-          {#each available as p (p)}
-            <button class="prov-row" onclick={() => selectProvider(p)} type="button">
-              <span style="background: {PROVIDERS[p].dot};" class="pdot"></span>
-              <span class="pmeta">
-                <span class="pname">{PROVIDERS[p].label}</span>
-                <span class="pmodel">{modelLabel(p)}</span>
-              </span>
-              {#if p === provider}
-                <span class="pcheck">
-                  <svg
-                    fill="none"
-                    height="15"
-                    stroke="currentColor"
-                    stroke-linecap="round"
-                    stroke-linejoin="round"
-                    stroke-width="2.2"
-                    viewBox="0 0 24 24"
-                    width="15"><path d="M5 13l4 4L19 7" /></svg
-                  >
+        {#if dropdownOpen && available.length > 0}
+          <div class="dropdown">
+            <div class="dropdown-head">Available providers</div>
+            {#each available as p (p)}
+              <button class="prov-row" onclick={() => selectProvider(p)} type="button">
+                <span style="background: {PROVIDERS[p].dot};" class="pdot"></span>
+                <span class="pmeta">
+                  <span class="pname">{PROVIDERS[p].label}</span>
+                  <span class="pmodel">{modelLabel(p)}</span>
                 </span>
-              {/if}
-            </button>
-          {/each}
-        </div>
+                {#if p === provider}
+                  <span class="pcheck">
+                    <svg
+                      fill="none"
+                      height="15"
+                      stroke="currentColor"
+                      stroke-linecap="round"
+                      stroke-linejoin="round"
+                      stroke-width="2.2"
+                      viewBox="0 0 24 24"
+                      width="15"><path d="M5 13l4 4L19 7" /></svg
+                    >
+                  </span>
+                {/if}
+              </button>
+            {/each}
+          </div>
+        {/if}
+      {:else}
+        <!-- translation always goes to Gemini, whichever chat provider is picked -->
+        <span class="provider-note">
+          <span
+            style="background: {PROVIDERS.gemini.dot}; box-shadow: 0 0 6px {PROVIDERS.gemini.dot};"
+            class="prov-dot"
+          ></span>
+          Translates with Gemini
+        </span>
       {/if}
     </div>
 
@@ -966,6 +977,16 @@
   .provider-pill:disabled {
     cursor: default;
     opacity: 0.6;
+  }
+  .provider-note {
+    margin-left: auto;
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    padding: 8px 12px;
+    color: var(--color-t-mid);
+    font-size: 12.5px;
+    font-weight: 500;
   }
   .prov-dot {
     width: 7px;
