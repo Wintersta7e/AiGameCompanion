@@ -300,6 +300,37 @@ mod tests {
         assert!(failures.is_empty(), "{failures:#?}");
     }
 
+    /// The page policy both windows load under.
+    const CSP: &str = "default-src 'self' https://tauri.localhost; img-src 'self' https://cdn.cloudflare.steamstatic.com; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; script-src 'self' https://tauri.localhost; connect-src ipc: http://ipc.localhost https://tauri.localhost; object-src 'none'; base-uri 'none'; form-action 'none'; frame-src 'none'";
+
+    fn tauri_config() -> serde_json::Value {
+        serde_json::from_str(include_str!("../tauri.conf.json")).unwrap()
+    }
+
+    #[test]
+    fn overlay_window_cannot_maximize() {
+        let config = tauri_config();
+        let overlay = config["app"]["windows"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|window| window["label"] == "overlay")
+            .expect("tauri.conf.json has no overlay window");
+        println!("overlay maximizable: {}", overlay["maximizable"]);
+        assert_eq!(overlay["maximizable"], false);
+    }
+
+    #[test]
+    fn csp_is_exact() {
+        let config = tauri_config();
+        let security = config["app"]["security"].as_object().unwrap();
+        let keys: Vec<&String> = security.keys().collect();
+        println!("security keys: {keys:?}");
+        println!("csp: {}", security["csp"]);
+        assert_eq!(keys, ["csp"]);
+        assert_eq!(security["csp"], CSP);
+    }
+
     /// Core and plugin commands the overlay must be refused.
     const OVERLAY_REFUSED: &[&str] = &[
         "plugin:window|internal_toggle_maximize",
