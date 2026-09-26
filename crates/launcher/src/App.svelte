@@ -10,7 +10,7 @@
   import SettingsModal from './lib/components/SettingsModal.svelte';
   import Overlay from './lib/components/Overlay.svelte';
   import { scanGames, getGames, loadGames } from './lib/stores/games.svelte';
-  import { loadProvider } from './lib/stores/companion.svelte';
+  import { followProviderChanges, loadProvider } from './lib/stores/companion.svelte';
 
   // The overlay companion loads the same SPA in a second window; branch on label.
   const isOverlay = getCurrentWindow().label === 'overlay';
@@ -21,6 +21,7 @@
 
   onMount(async () => {
     if (isOverlay) return;
+    followProviderChanges();
     void loadProvider();
     // Ask before scanning: a scan in read-only mode would replace the stored
     // library in memory with a list that has no playtime and cannot be saved.

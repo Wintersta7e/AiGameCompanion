@@ -123,7 +123,6 @@
     <div
       style="background: rgba(255,255,255,0.03); border: 1px solid var(--color-line);"
       class="flex items-center gap-[3px] p-[3px] rounded-[11px]"
-      onpointerenter={() => void refreshAvailability()}
       role="group"
     >
       {#each providerKeys as key (key)}

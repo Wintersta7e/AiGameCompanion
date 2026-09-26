@@ -68,7 +68,10 @@ pub(crate) fn update_settings(
         tracing::warn!("Failed to set launch-on-startup to {launch_on_startup}: {e}");
     }
 
-    state.save()
+    let saved = state.save();
+    // The Gemini model may have changed, and with it every model label.
+    crate::ai::notify_providers_changed(&app);
+    saved
 }
 
 /// What Save stores: the modal's values with the model trimmed, except the

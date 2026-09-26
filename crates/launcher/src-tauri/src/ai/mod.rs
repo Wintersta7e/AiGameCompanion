@@ -15,12 +15,23 @@ use base64::Engine as _;
 use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
 use tauri::ipc::Channel;
-use tauri::{AppHandle, Manager};
+use tauri::{AppHandle, Emitter, Manager};
 
 use crate::overlay::GameInfo;
 use crate::state::AppState;
 
 pub(crate) use cli::{detect_all, sweep_shots, CliConfig};
+
+/// Tells every window to re-read which providers can answer and which one is
+/// chosen. Each window keeps its own copy; without this, CLI detection that
+/// finishes after startup, or a choice made in the other window, left a stale
+/// provider switch on screen.
+pub(crate) fn notify_providers_changed(app: &AppHandle) {
+    crate::util::log_if_err(
+        "announce a provider change",
+        app.emit("providers-changed", ()),
+    );
+}
 
 /// Backstop timeout for a single request, covering a hung CLI that never closes
 /// stdout. Gemini has its own (shorter) HTTP timeout, so this is the CLI ceiling.
@@ -572,6 +583,17 @@ mod tests {
         assert_eq!(availability.openai_model, "");
         assert_eq!(availability.gemini_model, "gemini-3.8-flash");
         assert!(!availability.gemini_fallback_model.is_empty());
+    }
+
+    #[test]
+    fn every_provider_change_is_announced() {
+        // One definition plus its five callers: CLI detection at startup,
+        // set_active_provider, set_gemini_key, recheck_clis, update_settings.
+        let needle = concat!("notify_providers", "_changed(");
+        let (files, count) = crate::util::count_in_sources(needle, None);
+        println!("scanned {files} files, found {count} occurrence(s) of {needle}");
+        assert!(files > 0, "the source scan found no files");
+        assert_eq!(count, 6, "a provider change that no window hears about");
     }
 
     #[test]

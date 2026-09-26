@@ -335,25 +335,30 @@
     }
   }
 
+  // Read the saved provider: at mount, and again whenever a window announces a
+  // provider change (a choice made in the launcher, a key saved in Settings,
+  // CLI detection finishing).
+  async function loadSavedProvider() {
+    try {
+      const settings = await invoke<{ active_provider?: string }>('get_settings');
+      // The saved provider is kept even when unavailable. An empty value (a
+      // new install, nothing picked yet) or an unknown one (a hand-edited
+      // state file) is no saved provider, so the first available one is used.
+      const saved = settings.active_provider;
+      savedProvider = saved && saved in PROVIDERS ? (saved as Provider) : null;
+    } catch {
+      /* defaults apply */
+    }
+    savedProviderLoaded = true;
+    await refreshProviders();
+  }
+
   onMount(() => {
     // Only the overlay window mounts this; keep its surface transparent.
     document.documentElement.style.background = 'transparent';
     document.body.style.background = 'transparent';
 
-    void (async () => {
-      try {
-        const settings = await invoke<{ active_provider?: string }>('get_settings');
-        // The saved provider is kept even when unavailable. An empty value (a
-        // new install, nothing picked yet) or an unknown one (a hand-edited
-        // state file) is no saved provider, so the first available one is used.
-        const saved = settings.active_provider;
-        savedProvider = saved && saved in PROVIDERS ? (saved as Provider) : null;
-      } catch {
-        /* defaults apply */
-      }
-      savedProviderLoaded = true;
-      await refreshProviders();
-    })();
+    void loadSavedProvider();
 
     const listeners = [
       listen<GameInfo>('overlay-status', (event) => {
@@ -365,6 +370,9 @@
         // Wait for the DOM: `game` above flips canSend, and a still-disabled
         // input silently refuses focus.
         void tick().then(() => inputEl?.focus());
+      }),
+      listen('providers-changed', () => {
+        void loadSavedProvider();
       }),
       listen('translate-request', () => {
         // Stage only: Enter on the focused button, or a click, runs it.

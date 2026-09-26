@@ -4,6 +4,7 @@
  */
 
 import { invoke } from '@tauri-apps/api/core';
+import { listen } from '@tauri-apps/api/event';
 
 export type Provider = 'gemini' | 'claude' | 'openai';
 
@@ -117,4 +118,16 @@ export async function loadProvider(): Promise<void> {
     /* no saved choice */
   }
   showFirstAvailable();
+}
+
+/**
+ * Keep this window's provider switch current: the backend announces CLI
+ * detection finishing, a choice made in the overlay, a key saved, or a model
+ * changed in Settings.
+ */
+export function followProviderChanges(): void {
+  void listen('providers-changed', () => {
+    void refreshAvailability();
+    void loadProvider();
+  });
 }

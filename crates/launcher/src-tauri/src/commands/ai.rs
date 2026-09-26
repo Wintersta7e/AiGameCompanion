@@ -60,6 +60,7 @@ pub(crate) fn cancel_sage(ai: State<'_, AiState>, request_id: u64) {
 #[tauri::command]
 #[allow(clippy::needless_pass_by_value)]
 pub(crate) fn set_active_provider(
+    app: AppHandle,
     provider: Provider,
     state: State<'_, AppState>,
 ) -> Result<(), String> {
@@ -69,7 +70,9 @@ pub(crate) fn set_active_provider(
             .as_str()
             .clone_into(&mut launcher.settings.active_provider);
     }
-    state.save()
+    let saved = state.save();
+    crate::ai::notify_providers_changed(&app);
+    saved
 }
 
 #[derive(serde::Serialize)]
@@ -97,11 +100,13 @@ pub(crate) async fn translate_screen(app: AppHandle) -> Result<TranslateResult, 
 #[tauri::command]
 #[allow(clippy::needless_pass_by_value)]
 pub(crate) fn set_gemini_key(
+    app: AppHandle,
     ai: State<'_, AiState>,
     state: State<'_, AppState>,
     key: String,
 ) -> Result<ProviderAvailability, String> {
     crate::secrets::set_gemini_key(key.trim())?;
+    crate::ai::notify_providers_changed(&app);
     Ok(ai.availability(&settings_model(&state)))
 }
 
@@ -110,6 +115,7 @@ pub(crate) fn set_gemini_key(
 #[tauri::command]
 #[allow(clippy::needless_pass_by_value)]
 pub(crate) async fn recheck_clis(
+    app: AppHandle,
     ai: State<'_, AiState>,
     state: State<'_, AppState>,
 ) -> Result<ProviderAvailability, String> {
@@ -118,5 +124,6 @@ pub(crate) async fn recheck_clis(
         .await
         .map_err(|error| format!("CLI re-check failed: {error}"))?;
     ai.set_cli(cfg);
+    crate::ai::notify_providers_changed(&app);
     Ok(ai.availability(&model))
 }

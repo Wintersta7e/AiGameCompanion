@@ -167,6 +167,7 @@ fn main() {
                     cfg.codex
                 );
                 detect_handle.state::<AiState>().set_cli(cfg);
+                ai::notify_providers_changed(&detect_handle);
             });
 
             // Build system tray (always present, shown/hidden based on setting)
