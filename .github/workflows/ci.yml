@@ -143,7 +143,7 @@ jobs:
     # dependency once put 83 home-directory paths into a release binary;
     # source-level scanners cannot see that.
     runs-on: ubuntu-24.04
-    timeout-minutes: 55
+    timeout-minutes: 60
     permissions:
       contents: read
     defaults:
