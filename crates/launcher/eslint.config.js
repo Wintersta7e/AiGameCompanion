@@ -91,4 +91,13 @@ export default defineConfig([
       globals: { ...globals.node },
     },
   },
+  {
+    // The gate helpers run in Node and are listed in tsconfig.node.json's
+    // include, so they get that program instead of the default project.
+    files: ['scripts/*.ts'],
+    languageOptions: {
+      globals: { ...globals.node },
+      parserOptions: { projectService: false, project: './tsconfig.node.json' },
+    },
+  },
 ]);

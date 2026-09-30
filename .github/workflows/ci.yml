@@ -38,6 +38,7 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+          fetch-depth: 2
       - name: Register problem matchers
         run: echo "::add-matcher::.github/problem-matchers.json"
       - name: Install the Rust toolchain
@@ -64,7 +65,7 @@ jobs:
     # to the Windows job, and stub functions drifted out of lint compliance there
     # unnoticed. This is also the target `cargo test` runs on locally.
     runs-on: ubuntu-24.04
-    timeout-minutes: 10
+    timeout-minutes: 50
     permissions:
       contents: read
     defaults:
@@ -75,6 +76,7 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+          fetch-depth: 2
       - name: Register problem matchers
         run: echo "::add-matcher::.github/problem-matchers.json"
       - name: Install the Rust toolchain
@@ -115,6 +117,7 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+          fetch-depth: 2
       - name: Register problem matchers
         run: echo "::add-matcher::.github/problem-matchers.json"
       - name: Set up Node

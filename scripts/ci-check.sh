@@ -724,17 +724,17 @@ outcome_text() {
 
 print_table() {
 	local k i line first
-	printf '\n%-36s %-40s %8s  %s\n' step outcome seconds 'count lines'
+	printf '\n%-40s %-40s %8s  %s\n' step outcome seconds 'count lines'
 	for k in "${!SEL[@]}"; do
 		i=${SEL[k]}
 		first=yes
 		outcome_text "${i}"
 		while IFS= read -r line; do
 			if [[ "${first}" == yes ]]; then
-				printf '%-36s %-40s %8s  %s\n' "${ROW_NAME[i]}" "${OUTCOME_TEXT}" "${RES_SECS[i]:--}" "${line}"
+				printf '%-40s %-40s %8s  %s\n' "${ROW_NAME[i]}" "${OUTCOME_TEXT}" "${RES_SECS[i]:--}" "${line}"
 				first=no
 			else
-				printf '%-36s %-40s %8s  %s\n' '' '' '' "${line}"
+				printf '%-40s %-40s %8s  %s\n' '' '' '' "${line}"
 			fi
 		done <<<"${RES_COUNTS[i]}"
 	done
@@ -1004,6 +1004,18 @@ secret_scan() {
 	fi
 	rm -f -- "${out}"
 	return "${bad}"
+}
+
+# Prints the uid and fails for root: a root user can read a mode-000 file, so
+# a permission test would pass there without testing anything.
+require_non_root_user() {
+	local uid=${1:-}
+	if [[ -z "${uid}" ]]; then uid=$(id -u); fi
+	printf 'uid %s\n' "${uid}"
+	if [[ "${uid}" == 0 ]]; then
+		printf 'the Linux tests refuse to run as root: a root user can read a mode-000 file, so a permission test would pass without testing anything\n'
+		return 1
+	fi
 }
 
 # The refs follow the CI event: a scheduled run scans every fetched branch and
@@ -1507,6 +1519,8 @@ runner_self_test() {
 	st_tables
 	st_usages
 	st_matchers "${repo}/.github/problem-matchers.json"
+	if require_non_root_user 0 >/dev/null; then st_case 'root is refused' 'uid 0 passed'; else st_case 'root is refused' ''; fi
+	if require_non_root_user 1000 >/dev/null; then st_case 'a user is let through' ''; else st_case 'a user is let through' 'uid 1000 failed'; fi
 	rm -rf -- "${ST_DIR}"
 	printf 'runner self-test: cases %s, as expected %s\n' "${ST_CASES}" "${ST_OK}"
 	[[ "${ST_CASES}" -gt 0 && "${ST_CASES}" -eq "${ST_OK}" ]]
@@ -1529,12 +1543,19 @@ declare_table() {
 	row name=rustfmt tags=rust category=both target=any tools=rust count=none cmd='cargo fmt --all --check -- --color never'
 	row name='clippy (Windows target)' tags=rust category=both target=windows tools=rust requires='vite build' \
 		count=none cmd='cargo clippy --workspace --all-targets --all-features --locked -- -D warnings'
-	row name='tests (Windows target)' tags=rust category=both target=windows tools=rust requires='vite build' \
-		count='^test result:' zero='([0-9]+) passed' cmd='cargo test --workspace --all-features --locked'
+	row name='tests (Windows target)' tags=rust category=both target=windows tools=rust,node requires='vite build' \
+		count='^test result:|^test identity: ' zero='ids ([0-9]+)' \
+		cmd='cargo test --workspace --all-features --locked 2>&1 | node crates/launcher/scripts/test-ids.ts libtest scripts/test-baselines/windows.list'
+	row name='ignored tests (Windows target via WSL)' tags=rust category=local-only target=windows tools=rust,node \
+		requires='vite build' count='^test result:|^test identity: ' zero='ids ([0-9]+)' \
+		cmd='cargo test --workspace --all-features --locked -- --ignored 2>&1 | node crates/launcher/scripts/test-ids.ts libtest-ignored scripts/test-baselines/windows.list'
 	row name='rustdoc (Windows target)' tags=rust category=both target=windows tools=rust requires='vite build' \
 		count=none cmd="RUSTDOCFLAGS='-D warnings' cargo doc --workspace --no-deps --all-features --locked"
 	row name='clippy (Linux host)' tags=rust-host category=both target=linux tools=rust count=none \
 		cmd='cargo clippy --workspace --all-targets --locked -- -D warnings'
+	row name='tests (Linux host)' tags=rust-host category=both target=linux tools=rust,node requires='vite build' \
+		count='^test result:|^test identity: ' zero='ids ([0-9]+)' \
+		cmd='source scripts/ci-check.sh && require_non_root_user && cargo test --workspace --all-features --locked 2>&1 | node crates/launcher/scripts/test-ids.ts libtest scripts/test-baselines/linux.list'
 	row name=eslint tags=frontend category=both target=any tools=node,npm:eslint dir=crates/launcher count=none \
 		cmd='node node_modules/eslint/bin/eslint.js . --max-warnings 0'
 	row name=prettier tags=frontend category=both target=any tools=node,npm:prettier dir=crates/launcher \
@@ -1542,6 +1563,8 @@ declare_table() {
 	row name=svelte-check tags=frontend category=both target=any tools=node,npm:svelte-check dir=crates/launcher \
 		count='COMPLETED [0-9]+ FILES' zero='COMPLETED ([0-9]+) FILES' \
 		cmd='node node_modules/svelte-check/bin/svelte-check --tsconfig ./tsconfig.json --fail-on-warnings --output machine'
+	row name='test identity self-test' tags=frontend category=both target=any tools=node,git \
+		count='^test identity self-test: ' zero='cases ([0-9]+)' cmd='node crates/launcher/scripts/test-ids.selftest.ts'
 	row name='npm audit' tags=frontend category=both target=any tools=node,npm dir=crates/launcher \
 		count=vulnerabilit cmd='npm audit --audit-level=high'
 	row name=cargo-deny tags=supply-chain category=both target=any tools=rust,cargo-deny \
