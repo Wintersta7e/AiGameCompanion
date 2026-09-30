@@ -423,12 +423,6 @@ mod imp {
 
 #[cfg(test)]
 mod tests {
-    #![allow(
-        clippy::unwrap_used,
-        clippy::print_stdout,
-        reason = "a panic is how a test reports a failed assumption, and the tests print what they compared"
-    )]
-
     use super::*;
 
     /// The overlay's hand-written `GameInfo` type must carry every field Rust

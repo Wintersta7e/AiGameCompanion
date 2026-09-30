@@ -453,12 +453,6 @@ fn stream_error_message(json: &str) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
-    #![allow(
-        clippy::expect_used,
-        clippy::print_stdout,
-        reason = "a panic is how a test reports a failed assumption, and the scans print what they counted"
-    )]
-
     use super::{
         build_request, http_error_message, process_sse_lines, resolve_model, stream_error_message,
         validate_model, ChatMessage,

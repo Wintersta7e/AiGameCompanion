@@ -231,11 +231,6 @@ pub(crate) fn open_game_logs(app: tauri::AppHandle) -> Result<(), String> {
 
 #[cfg(test)]
 mod tests {
-    #![allow(
-        clippy::unwrap_used,
-        reason = "a panic is how a test reports a failed assumption"
-    )]
-
     use super::{merge_scan, ScanOutcome};
     use crate::models::{Game, GameSource};
 

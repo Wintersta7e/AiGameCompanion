@@ -147,11 +147,6 @@ pub(crate) fn open_config_folder(app: AppHandle) -> Result<(), String> {
 
 #[cfg(test)]
 mod tests {
-    #![allow(
-        clippy::print_stdout,
-        reason = "the scans and tables print what they checked"
-    )]
-
     use super::{checked_link, merge_settings};
     use crate::models::LauncherSettings;
 

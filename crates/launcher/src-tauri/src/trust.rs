@@ -49,14 +49,6 @@ pub(crate) fn navigation_guard<R: Runtime>(dev_url: Option<Url>) -> TauriPlugin<
 
 #[cfg(test)]
 mod tests {
-    #![allow(
-        clippy::unwrap_used,
-        clippy::expect_used,
-        clippy::panic,
-        clippy::print_stdout,
-        reason = "a panic is how a test reports a failed assumption, and the checks print what they compared"
-    )]
-
     use super::is_app_url;
     use crate::util::count_in_frontend;
     use std::collections::BTreeSet;

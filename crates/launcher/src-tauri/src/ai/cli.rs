@@ -898,12 +898,6 @@ fn cli_failure_message(label: &str, stderr_tail: &[String]) -> String {
 
 #[cfg(test)]
 mod tests {
-    #![allow(
-        clippy::unwrap_used,
-        clippy::print_stdout,
-        reason = "a panic is how a test reports a failed assumption, and the scans print what they counted"
-    )]
-
     use super::*;
 
     fn msg(role: &str, content: &str) -> ChatMessage {

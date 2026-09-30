@@ -224,12 +224,7 @@ fn back_up(state_path: &Path, bytes: &[u8]) -> std::io::Result<PathBuf> {
 
 #[cfg(test)]
 mod tests {
-    #![allow(
-        clippy::unwrap_used,
-        clippy::print_stdout,
-        let_underscore_drop,
-        reason = "a panic is how a test reports a failed assumption, a skipped test says why, and test cleanup is best-effort"
-    )]
+    #![allow(let_underscore_drop, reason = "test cleanup is best-effort")]
 
     use super::*;
     use crate::models::{Game, GameSource};

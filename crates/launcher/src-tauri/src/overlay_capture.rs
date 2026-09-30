@@ -359,8 +359,6 @@ mod imp {
 
 #[cfg(test)]
 mod tests {
-    #![allow(clippy::print_stdout, reason = "the tests print the sizes they got")]
-
     use super::fit_within;
 
     /// A frame of `w` x `h` pixels, every one of them `pixel`.
