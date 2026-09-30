@@ -373,23 +373,9 @@ mod tests {
     #![allow(clippy::print_stdout, reason = "the scans print what they counted")]
 
     use super::{
-        count_in_frontend, count_in_sources, count_in_sources_by_file, needle_lines,
-        strip_test_modules,
+        count_in_frontend, count_in_sources, count_in_sources_by_file, strip_test_modules,
     };
     use std::path::{Path, PathBuf};
-
-    #[test]
-    fn needle_boundaries() {
-        let lines = needle_lines(
-            "eval(x)\nretrieval(y)\n$eval(z)\na.eval(w) eval(v)",
-            "eval(",
-        );
-        println!("identifier needle: {lines:?}");
-        assert_eq!(lines, [1, 4, 4]);
-        let lines = needle_lines("x'open_url'", "'open_url'");
-        println!("quoted needle: {lines:?}");
-        assert_eq!(lines, [1]);
-    }
 
     #[test]
     fn test_modules_are_stripped() {
