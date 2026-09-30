@@ -21,8 +21,9 @@ concurrency:
 
 # Actions are pinned to commit SHAs, not tags: a tag can be moved to point at
 # new code. Dependabot keeps them current (see .github/dependabot.yml).
-# Node, the tool file and runner labels move by hand from the weekly freshness
-# report; the SDK and CRT values move with a deliberate review.
+# Dependabot moves actions, Cargo and npm dependencies and the Rust toolchain
+# file. Node, the tool file and runner labels move by hand from the weekly
+# freshness report; the SDK and CRT values move with a deliberate review.
 jobs:
   rust:
     name: Rust (fmt, clippy, test)

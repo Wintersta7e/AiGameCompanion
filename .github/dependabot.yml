@@ -1,23 +1,57 @@
 version: 2
 updates:
-  - package-ecosystem: "cargo"
-    directory: "/"
+  - package-ecosystem: 'cargo'
+    directory: '/'
     schedule:
-      interval: "weekly"
+      interval: 'weekly'
+    cooldown:
+      default-days: 7
+    groups:
+      cargo-minor-patch:
+        patterns: ['*']
+        update-types: ['minor', 'patch']
+    ignore:
+      # keyring is held at 3.x on purpose: upstream turned 4.x into a sample
+      # app (see the note above keyring in crates/launcher/src-tauri/Cargo.toml).
+      # A move goes to keyring-core, never to a new keyring major.
+      - dependency-name: 'keyring'
+        update-types: ['version-update:semver-major']
 
   # The workflow pins actions to commit SHAs, which only stay current if
   # something updates them.
-  - package-ecosystem: "github-actions"
-    directory: "/"
+  - package-ecosystem: 'github-actions'
+    directory: '/'
     schedule:
-      interval: "weekly"
+      interval: 'weekly'
+    cooldown:
+      default-days: 7
+    groups:
+      actions-minor-patch:
+        patterns: ['*']
+        update-types: ['minor', 'patch']
 
-  - package-ecosystem: "npm"
-    directory: "/crates/launcher"
+  - package-ecosystem: 'npm'
+    directory: '/crates/launcher'
     schedule:
-      interval: "weekly"
+      interval: 'weekly'
+    cooldown:
+      default-days: 7
+    groups:
+      npm-minor-patch:
+        patterns: ['*']
+        update-types: ['minor', 'patch']
     ignore:
       # svelte-check still caps its peer at typescript ^5 || ^6 (checked 4.7.6),
       # so a major TypeScript bump breaks `npm ci`. Drop this once it allows ^7.
-      - dependency-name: "typescript"
-        update-types: ["version-update:semver-major"]
+      - dependency-name: 'typescript'
+        update-types: ['version-update:semver-major']
+      # Its major follows the Node major in .nvmrc and moves in the same PR.
+      - dependency-name: '@types/node'
+        update-types: ['version-update:semver-major']
+
+  - package-ecosystem: 'rust-toolchain'
+    directory: '/'
+    schedule:
+      interval: 'weekly'
+    cooldown:
+      default-days: 7
