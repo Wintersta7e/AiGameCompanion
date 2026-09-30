@@ -1,0 +1,103 @@
+{
+  "problemMatcher": [
+    {
+      "owner": "rustc",
+      "pattern": [
+        {
+          "regexp": "^(error|warning)(?:\\[(\\S+)\\])?: (.+)$",
+          "severity": 1,
+          "code": 2,
+          "message": 3
+        },
+        {
+          "regexp": "^\\s*--> (.+):(\\d+):(\\d+)$",
+          "file": 1,
+          "line": 2,
+          "column": 3
+        }
+      ]
+    },
+    {
+      "owner": "rustfmt",
+      "pattern": [
+        {
+          "regexp": "^(Diff in (?:\\\\\\\\\\?\\\\)?(.+):(\\d+)):$",
+          "message": 1,
+          "file": 2,
+          "line": 3
+        }
+      ]
+    },
+    {
+      "owner": "rust-test-panic",
+      "pattern": [
+        {
+          "regexp": "^thread '([^']+)'(?: \\(\\d+\\))? panicked at (.+):(\\d+):(\\d+):$",
+          "code": 1,
+          "file": 2,
+          "line": 3,
+          "column": 4
+        },
+        {
+          "regexp": "^(.+)$",
+          "message": 1
+        }
+      ]
+    },
+    {
+      "owner": "cargo-deny",
+      "pattern": [
+        {
+          "regexp": "^(error)\\[(\\S+)\\]: (.+)$",
+          "severity": 1,
+          "code": 2,
+          "message": 3
+        },
+        {
+          "regexp": "^\\s+\u250c\u2500 (.+):(\\d+):(\\d+)$",
+          "file": 1,
+          "line": 2,
+          "column": 3
+        }
+      ]
+    },
+    {
+      "owner": "svelte-check",
+      "fromPath": "crates/launcher/package.json",
+      "pattern": [
+        {
+          "regexp": "^\\d+ (ERROR|WARNING) \"(.+)\" (\\d+):(\\d+) \"(.*)\"$",
+          "severity": 1,
+          "file": 2,
+          "line": 3,
+          "column": 4,
+          "message": 5
+        }
+      ]
+    },
+    {
+      "owner": "prettier",
+      "fromPath": "crates/launcher/package.json",
+      "pattern": [
+        {
+          "regexp": "^(\\[warn\\] (\\S+\\.\\w+))$",
+          "message": 1,
+          "file": 2
+        }
+      ]
+    },
+    {
+      "owner": "actionlint",
+      "pattern": [
+        {
+          "regexp": "^(.+?):(\\d+):(\\d+): (.+) \\[(.+)\\]$",
+          "file": 1,
+          "line": 2,
+          "column": 3,
+          "message": 4,
+          "code": 5
+        }
+      ]
+    }
+  ]
+}

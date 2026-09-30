@@ -163,7 +163,8 @@ Built from WSL2 with [`cargo-xwin`][cargo-xwin] -- no native Visual Studio neede
 
 The toolchain is pinned in `rust-toolchain.toml` (run `rustup toolchain install`
 in the repository), Node in `.nvmrc` (`nvm install`), and every CLI tool the
-gates use in `scripts/ci-tools.env` (install each at the version listed there).
+gates use in `scripts/ci-tools.env` (install each at the version listed there;
+the local gate names any that is missing or different).
 
 ```bash
 sudo apt install clang lld llvm
@@ -172,12 +173,9 @@ cargo xwin build -p launcher --target x86_64-pc-windows-msvc   # debug
 ./scripts/build.sh                                              # release -> release/
 ```
 
-Lint + test gates:
-
-```bash
-cargo xwin clippy -p launcher --target x86_64-pc-windows-msvc -- -D warnings
-cargo test -p launcher    # pure-logic tests; run on the Linux host
-```
+Lint and test gates: `./scripts/ci-check.sh` (every check this machine can run),
+`./scripts/ci-check.sh --list` (the table), `./scripts/ci-check.sh --job <tag>`
+(one CI job).
 
 ## Troubleshooting
 
