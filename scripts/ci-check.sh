@@ -40,7 +40,7 @@ step "npm audit" bash -c "cd crates/launcher && npm audit --audit-level=high"
 # cargo-deny re-fetches the advisory DB on every run, so a lockfile that passed
 # yesterday can fail today. Skipping it locally let RUSTSEC-2026-0285 (rustls)
 # reach CI red on PR #124.
-command -v cargo-deny >/dev/null 2>&1 && step "cargo-deny" cargo deny check
+command -v cargo-deny >/dev/null 2>&1 && step "cargo-deny" cargo deny --locked check
 command -v gitleaks >/dev/null 2>&1 && step "gitleaks" gitleaks detect --source . --no-banner --redact
 
 echo

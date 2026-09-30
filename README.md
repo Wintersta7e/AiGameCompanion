@@ -161,9 +161,11 @@ default provider, hotkey reference, launcher toggles).
 
 Built from WSL2 with [`cargo-xwin`][cargo-xwin] -- no native Visual Studio needed.
 
+The toolchain is pinned in `rust-toolchain.toml` (run `rustup toolchain install`
+in the repository), Node in `.nvmrc` (`nvm install`), and every CLI tool the
+gates use in `scripts/ci-tools.env` (install each at the version listed there).
+
 ```bash
-rustup target add x86_64-pc-windows-msvc
-cargo install cargo-xwin
 sudo apt install clang lld llvm
 
 cargo xwin build -p launcher --target x86_64-pc-windows-msvc   # debug
