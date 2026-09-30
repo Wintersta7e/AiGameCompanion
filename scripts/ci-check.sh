@@ -1040,6 +1040,14 @@ outgoing_commits() {
 	return 1
 }
 
+# Runs both hygiene self-tests, the second even when the first fails.
+hygiene_self_tests() {
+	local status=0
+	node crates/launcher/scripts/commit-check.selftest.ts || status=1
+	node crates/launcher/scripts/hygiene-scan.selftest.ts || status=1
+	return "${status}"
+}
+
 # ---------------------------------------------------------------------------
 # The secret scan's self-test: throwaway repositories outside the checkout,
 # git run without the host's config, tokens whose body is generated here at
@@ -1159,8 +1167,8 @@ secret_scan_self_test() {
 	SS_OK=0
 	(
 		export GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1
-		export GIT_AUTHOR_NAME='Scan Test' GIT_AUTHOR_EMAIL='scan-test@example.invalid'
-		export GIT_COMMITTER_NAME='Scan Test' GIT_COMMITTER_EMAIL='scan-test@example.invalid'
+		export GIT_AUTHOR_NAME='Scan Test' GIT_AUTHOR_EMAIL='scan-test@example.com'
+		export GIT_COMMITTER_NAME='Scan Test' GIT_COMMITTER_EMAIL='scan-test@example.com'
 		unset GITLEAKS_CONFIG GITLEAKS_CONFIG_TOML
 		ss_cases "${dir}"
 		printf '%s %s\n' "${SS_CASES}" "${SS_OK}" >"${dir}/counts"
@@ -1407,6 +1415,10 @@ st_matcher_samples() {
 	MS_SAMPLE[actionlint]='.github/workflows/ci.yml:10:5: unexpected key "foo" for "job" section [syntax-check]'
 	MS_SAMPLE[gitleaks]='Fingerprint: 0123abc:notes.txt:github-pat:3'
 	MS_SAMPLE[pin-guard]='pin guard: .github/workflows/ci.yml:23: runner labels: runs-on: ubuntu-latest'
+	MS_SAMPLE[hygiene-scan]='scripts/sample.sh:3: error: local path -- path-home'
+	# Lines of other tools an owner must not complete.
+	MS_MISS=()
+	MS_MISS[hygiene-scan]=$'0123456789ab: subject length: 73 characters, limit 72\npr-body:3: test plan heading\nscripts/sample.sh:3:1: warning: Use cd ... || exit in case cd fails. [SC2164]'
 	MS_GREEN="test result: ok. 110 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.12s
 warning[duplicate]: found 2 duplicate entries for crate 'windows-sys'
    ${box} Cargo.lock:10:1
@@ -1488,9 +1500,26 @@ matcher_green_problems() {
 	done
 }
 
+# Prints a problem for each run of an owner's patterns that completes on its
+# MS_MISS lines.
+matcher_miss_problems() {
+	local owner=$1 k s p hit
+	local -a lines=()
+	mapfile -t lines <<<"${MS_MISS[${owner}]}"
+	k=${MS_PAT_COUNT[${owner}]:-0}
+	[[ "${k}" -gt 0 ]] || return 0
+	for ((s = 0; s + k <= ${#lines[@]}; s++)); do
+		hit=yes
+		for ((p = 0; p < k; p++)); do
+			pcre_matches "${MS_PAT["${owner} ${p}"]}" "${lines[s + p]}" || hit=no
+		done
+		[[ "${hit}" == no ]] || printf 'owner %s matches the other tool line %s\n' "${owner}" "$((s + 1))"
+	done
+}
+
 st_matchers() {
 	local file=$1 owner why
-	declare -gA MS_SAMPLE=() MS_PAT=() MS_PAT_COUNT=()
+	declare -gA MS_SAMPLE=() MS_MISS=() MS_PAT=() MS_PAT_COUNT=()
 	st_matcher_samples
 	matcher_load "${file}"
 	why=$(matcher_file_problems "${file}")
@@ -1506,6 +1535,10 @@ st_matchers() {
 	st_case 'every matcher owner has a sample' "${why}"
 	why=$(matcher_green_problems)
 	st_case 'a green run completes no owner' "${why}"
+	for owner in "${!MS_MISS[@]}"; do
+		why=$(matcher_miss_problems "${owner}")
+		st_case "matcher owner ${owner} misses other tools' lines" "${why}"
+	done
 	sed -e 's/\\u250c\\u2500/'$'\342\224\214\342\224\200''/' "${file}" >"${ST_DIR}/non-ascii.json"
 	why=$(matcher_file_problems "${ST_DIR}/non-ascii.json")
 	if [[ -z "${why}" ]]; then
@@ -1624,11 +1657,14 @@ declare_table() {
 		count='^checked [0-9]+ of [0-9]+ pins' zero='^checked ([0-9]+) of' cmd='node crates/launcher/scripts/freshness.ts'
 	row name='checker self-test' tags=hygiene category=both target=any tools=node,git \
 		count='self-test: ' zero='self-test: planted ([0-9]+)' \
-		cmd='node crates/launcher/scripts/commit-check.selftest.ts'
+		cmd='source scripts/ci-check.sh && hygiene_self_tests'
 	row name='commit messages' tags=hygiene category=both target=any tools=node,git events=pull_request,push \
 		pre='source scripts/ci-check.sh && outgoing_commits' \
 		count='^commits in range: |^hits: |^identity: ' zero='^commits in range: ([0-9]+)' \
 		cmd='node crates/launcher/scripts/commit-check.ts commits'
+	row name='tracked text files' tags=hygiene category=both target=any tools=node,git \
+		count='^files scanned: |^path shapes read: |^exempt |^hits: |^identity: ' zero='^files scanned: ([0-9]+)' \
+		cmd='node crates/launcher/scripts/hygiene-scan.ts scan'
 	# CI only: a pull request's title, body and branch exist only in its event.
 	row name='PR text' tags=pr-text category=ci-only target=any tools=node \
 		count='^pr text: |^hits: ' zero='^pr text: fields read ([0-9]+)' \

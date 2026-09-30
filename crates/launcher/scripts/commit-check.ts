@@ -26,24 +26,24 @@ import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-interface PathShape {
+export interface PathShape {
   readonly label: string;
   readonly ere: string;
   readonly ignoreCase: boolean;
 }
 
-interface PathHit {
+export interface PathHit {
   // The index of the matching line in the lines passed in.
   readonly index: number;
   readonly label: string;
 }
 
-interface TextRecord {
+export interface TextRecord {
   readonly location: string;
   readonly text: string;
 }
 
-interface IdentityResult {
+export interface IdentityResult {
   readonly present: boolean;
   readonly entries: number;
   readonly hits: { location: string; index: number }[];
@@ -53,7 +53,7 @@ interface IdentityResult {
 
 // A condition that stops the check: the event, range, repository or a tool
 // could not be read.
-class CheckFailure extends Error {
+export class CheckFailure extends Error {
   public constructor(message: string) {
     super(message);
     this.name = 'CheckFailure';
@@ -108,7 +108,7 @@ const plural = (n: number, one: string, many: string): string =>
 
 const nonBlank = (lines: readonly string[]): string[] => lines.filter((line) => line.trim() !== '');
 
-function repoRoot(): string {
+export function repoRoot(): string {
   const ran = git(['rev-parse', '--show-toplevel'], process.cwd());
   if (ran.status !== 0)
     throw new CheckFailure(
@@ -121,7 +121,7 @@ const auditScriptPath = (): string =>
   fileURLToPath(new URL('../../../scripts/binary-audit.sh', import.meta.url));
 
 // The path shapes whose scope includes text, from the audit script's list.
-function readPathShapes(): PathShape[] {
+export function readPathShapes(): PathShape[] {
   const ran = run('bash', [auditScriptPath(), 'shapes'], process.cwd());
   if (ran.status !== 0)
     throw new CheckFailure(`scripts/binary-audit.sh shapes exited ${String(ran.status)}`);
@@ -141,7 +141,7 @@ function readPathShapes(): PathShape[] {
 }
 
 // Applies each shape with grep -E, the engine its expression is written for.
-function matchPathShapes(shapes: readonly PathShape[], lines: readonly string[]): PathHit[] {
+export function matchPathShapes(shapes: readonly PathShape[], lines: readonly string[]): PathHit[] {
   if (lines.some((line) => line.includes('\n')))
     throw new CheckFailure('a line passed to the path shapes holds a newline');
   if (lines.length === 0) return [];
@@ -162,7 +162,7 @@ function matchPathShapes(shapes: readonly PathShape[], lines: readonly string[])
 
 // Matches CI_CHECK_IDENTITY's entries against the records through the audit
 // script's identity mode, which reads the variable itself.
-function matchIdentity(records: readonly TextRecord[]): IdentityResult {
+export function matchIdentity(records: readonly TextRecord[]): IdentityResult {
   if (records.some((item) => /[\t\n]/u.test(item.location) || item.text.includes('\n')))
     throw new CheckFailure('an identity record holds a newline, or a tab in its location');
   const input = records.map((item) => `${item.location}\t${item.text}\n`).join('');
@@ -217,7 +217,7 @@ const PLANNING_SHAPES: readonly { readonly kind: string; readonly shape: RegExp 
 ];
 
 // The kinds of planning id the line holds, in the order above.
-function planningIdKinds(line: string): string[] {
+export function planningIdKinds(line: string): string[] {
   return PLANNING_SHAPES.filter((item) => item.shape.test(line)).map((item) => item.kind);
 }
 
@@ -233,7 +233,7 @@ const allowedEmail = (address: string): boolean => {
 };
 
 // The number of email addresses in the line outside the allowed forms.
-function privateEmailCount(line: string): number {
+export function privateEmailCount(line: string): number {
   return [...line.matchAll(EMAIL)].filter((found) => !allowedEmail(found[0])).length;
 }
 
@@ -247,6 +247,10 @@ const NEVER_COMMIT: readonly { readonly kind: string; readonly shape: RegExp }[]
 
 const neverCommitKind = (file: string): string | null =>
   NEVER_COMMIT.find((item) => item.shape.test(file))?.kind ?? null;
+
+export function isNeverCommitPath(file: string): boolean {
+  return neverCommitKind(file) !== null;
+}
 
 // The lower-cased key of a "Key: value" line, or null.
 const lineKey = (line: string): string | null =>

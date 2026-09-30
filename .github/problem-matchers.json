@@ -121,6 +121,17 @@
           "message": 3
         }
       ]
+    },
+    {
+      "owner": "hygiene-scan",
+      "pattern": [
+        {
+          "regexp": "^([^\\s:][^:]*):([0-9]+): error: (.+)$",
+          "file": 1,
+          "line": 2,
+          "message": 3
+        }
+      ]
     }
   ]
 }

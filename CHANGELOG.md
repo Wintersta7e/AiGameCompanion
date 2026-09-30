@@ -15,6 +15,13 @@ All notable changes to this project are documented here. The format is based on
 
 - **Claude errors show the Claude CLI's own message** instead of a generic one.
 
+### Infrastructure
+
+- **CI now checks commit messages, PR titles and branch names against the
+  repository's commit rules, and scans tracked text files for local paths,
+  private email addresses and planning ids.** The checks read shapes, not
+  meaning, and run after a branch is pushed.
+
 ## 2.0.2 - 2026-09-26
 
 ### Security

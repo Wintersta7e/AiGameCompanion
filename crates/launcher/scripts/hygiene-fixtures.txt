@@ -22,6 +22,11 @@
 # others keep clean values) and login (the author's login, by default
 # sample-contributor). A trap's text is clean and is used as a commit message,
 # a pull request body and a file.
+#
+# File keys: path (where the text is written in the scratch repository), exec
+# (yes: tracked with mode 100755; every *.sh is executable on disk whatever
+# its tracked mode) and suppressed (the hits an exempt path must report as
+# suppressed).
 
 @@ commit split-dependabot
 range: split
@@ -794,6 +799,166 @@ field: title
 login: dependabot[bot]
 text:
 build(deps): bump the sample-crates group across 1 directory with 12 updates now
+
+@@ file path-home
+path: notes/home.txt
+expect: local path -- path-home
+needle: /home/sample/
+text:
+Seen in /home/sample/project/notes.txt.
+
+@@ file path-root
+path: notes/root.txt
+expect: local path -- path-root
+needle: /root/sample/
+text:
+Seen in /root/sample/notes.txt.
+
+@@ file path-users
+path: notes/users.txt
+expect: local path -- path-users
+needle: /Users/sample/
+text:
+Seen in /Users/sample/notes.txt.
+
+@@ file path-mnt-drive
+path: notes/mnt.txt
+expect: local path -- path-mnt-drive
+needle: /mnt/d/sample/
+text:
+Seen in /mnt/d/sample/notes.txt.
+
+@@ file path-drive-users
+path: notes/drive.txt
+expect: local path -- path-drive-users
+needle: D:\Users\sample
+text:
+Seen in D:\Users\sample\notes.txt.
+
+@@ file path-wsl-unc
+path: notes/wsl.txt
+expect: local path -- path-wsl-unc
+needle: \\wsl.localhost\sample
+text:
+Seen in \\wsl.localhost\sample\notes.txt.
+
+@@ file email
+path: notes/email.txt
+expect: private email -- 1 address
+needle: person@sample-mail.net
+text:
+Reported by person@sample-mail.net.
+
+@@ file planning-ruling
+path: notes/planning-1.txt
+expect: planning id -- ruling number
+needle: P0A0
+text:
+Applies P0A0.
+
+@@ file planning-criterion
+path: notes/planning-2.txt
+expect: planning id -- criterion number
+needle: AC-P0
+text:
+Meets AC-P0-00-1.
+
+@@ file planning-plan-digits
+path: notes/planning-3.txt
+expect: planning id -- plan name
+needle: p0-00
+text:
+Finishes p0-00.
+
+@@ file planning-plan-suffix
+path: notes/planning-4.txt
+expect: planning id -- plan name
+needle: p0-sample
+text:
+Finishes p0-sample.
+
+@@ file planning-short
+path: notes/planning-5.txt
+expect: planning id -- short id
+needle: R0
+needle: U0
+needle: D0
+needle: V0
+text:
+As R0, U0, D0 and V0 say.
+
+@@ file planning-section
+path: notes/planning-6.txt
+expect: planning id -- section sign
+needle: \u{a7} 0
+text:
+See \u{a7} 0.1.
+
+@@ file planning-directories
+path: notes/planning-7.txt
+expect: planning id -- planning directory
+needle: docs/route/
+needle: docs/plans/
+text:
+As docs/route/sample.md and docs/plans/sample.md say.
+
+@@ file identity
+path: notes/identity.txt
+expect: identity entry -- entry 1
+text:
+Built on the Zarvex-Quillon desk.
+
+@@ file never-env
+path: sub/.env
+expect: never-commit file
+text:
+SAMPLE_SETTING=1
+
+@@ file never-claude
+path: CLAUDE.md
+expect: never-commit file
+text:
+Sample notes.
+
+@@ file script-mode
+path: scripts/mode.sh
+expect: script mode -- 100644, not 100755
+text:
+#!/usr/bin/env bash
+echo sample
+
+@@ file schema-url
+path: schemas/url.json
+expect: schema reference
+text:
+{ "$schema": "https://sample-schemas.invalid/sample.json", "name": "sample" }
+
+@@ file schema-relative
+path: schemas/relative.json
+text:
+{ "$schema": "../node_modules/sample/sample.schema.json", "name": "sample" }
+
+@@ file exempt-audit-script
+path: scripts/binary-audit.sh
+exec: yes
+suppressed: 2
+text:
+#!/usr/bin/env bash
+# The shapes include /home/sample/x and /Users/sample/x.
+
+@@ file exempt-fixtures
+path: crates/launcher/scripts/hygiene-fixtures.txt
+suppressed: 3
+text:
+Planted: /mnt/d/sample/notes.txt, person@sample-mail.net and P0A0.
+
+@@ file exempt-lock
+path: crates/launcher/package-lock.json
+suppressed: 1
+expect: private email -- 1 address
+needle: person@sample-mail.net
+text:
+{"integrity": "sha512-R12+abc", "author": "person@sample-mail.net"}
 
 @@ trap url-password
 text:
