@@ -80,7 +80,7 @@
       "fromPath": "crates/launcher/package.json",
       "pattern": [
         {
-          "regexp": "^(\\[warn\\] (\\S+\\.\\w+))$",
+          "regexp": "^(\\[warn\\] (?!\\.\\./)(\\S+\\.\\w+))$",
           "message": 1,
           "file": 2
         }
@@ -90,7 +90,7 @@
       "owner": "actionlint",
       "pattern": [
         {
-          "regexp": "^(.+?):(\\d+):(\\d+): (.+) \\[(.+)\\]$",
+          "regexp": "^(.+?):(\\d+):(\\d+): (.+) \\[([a-z-]+)\\]$",
           "file": 1,
           "line": 2,
           "column": 3,
@@ -119,6 +119,51 @@
           "file": 1,
           "line": 2,
           "message": 3
+        }
+      ]
+    },
+    {
+      "owner": "hygiene-scan",
+      "pattern": [
+        {
+          "regexp": "^([^\\s:][^:]*):([0-9]+): error: (.+)$",
+          "file": 1,
+          "line": 2,
+          "message": 3
+        }
+      ]
+    },
+    {
+      "owner": "typos",
+      "pattern": [
+        {
+          "regexp": "^([^\\s:][^:]*):([0-9]+):([0-9]+): error: (`[^`]+` should be .+)$",
+          "file": 1,
+          "line": 2,
+          "column": 3,
+          "message": 4
+        }
+      ]
+    },
+    {
+      "owner": "shellcheck",
+      "pattern": [
+        {
+          "regexp": "^([^\\s:][^:]*):([0-9]+):([0-9]+): [a-z]+: (.+ \\[SC[0-9]+\\])$",
+          "file": 1,
+          "line": 2,
+          "column": 3,
+          "message": 4
+        }
+      ]
+    },
+    {
+      "owner": "prettier-root",
+      "pattern": [
+        {
+          "regexp": "^(\\[warn\\] \\.\\./\\.\\./([^ ]+))$",
+          "message": 1,
+          "file": 2
         }
       ]
     }

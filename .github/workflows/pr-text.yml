@@ -1,0 +1,41 @@
+name: PR text
+
+# Its own workflow: a title or body edit re-runs only these checks, and the
+# checker reads the title, body and branch name from the event file itself.
+on:
+  pull_request:
+    types: [opened, edited, synchronize, reopened]
+
+permissions: {}
+
+env:
+  CARGO_TERM_COLOR: never
+  NO_COLOR: '1'
+
+concurrency:
+  group: pr-text-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  pr-text:
+    name: PR title, body and branch name
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Register problem matchers
+        run: echo "::add-matcher::.github/problem-matchers.json"
+      - name: Set up Node
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version-file: .nvmrc
+      - name: Run the pr-text rows of ci-check.sh
+        run: ./scripts/ci-check.sh --job pr-text

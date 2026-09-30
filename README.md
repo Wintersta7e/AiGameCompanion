@@ -39,7 +39,7 @@ now runs as its **own transparent window** that Windows composites over the game
 -- it never injects, never hooks a graphics API, and **cannot crash the game**.
 
 It's deliberately **bring-your-own-AI**: Gemini talks to its own free API, while
-Claude and OpenAI run through your *existing* CLI subscriptions -- no middleman
+Claude and OpenAI run through your _existing_ CLI subscriptions -- no middleman
 service, no shared keys. There's no telemetry, no analytics, and no account.
 
 It's a personal tool, not a product -- open source under MIT. No adoption goal
@@ -53,6 +53,7 @@ titles); genuine legacy exclusive-fullscreen games are out of scope. Treat it as
 a working tool you can build and run, not a polished consumer app.
 
 **Implemented:**
+
 - External transparent overlay window -- topmost, takes focus on demand; toggled
   with **Ctrl+Shift+G**. No injection, any graphics API.
 - Multi-provider AI -- Gemini (direct API), Claude & OpenAI (through your own
@@ -70,6 +71,7 @@ a working tool you can build and run, not a polished consumer app.
   toggles.
 
 **Not done yet / out of scope:**
+
 - Rebindable hotkeys -- the chords are fixed this build (Settings shows them).
 - Positioning the panel over the game's specific monitor.
 - Offline / local-model translation -- translation currently runs through Gemini.
@@ -80,6 +82,7 @@ a working tool you can build and run, not a polished consumer app.
 ## Features
 
 ### The overlay
+
 - A transparent, frameless, always-on-top panel Windows composites over the game
   -- no DLL, no swapchain hook, works regardless of graphics API.
 - **Ctrl+Shift+G** toggles it; while interactive it takes keyboard focus so your
@@ -90,6 +93,7 @@ a working tool you can build and run, not a polished consumer app.
 </p>
 
 ### Multi-provider AI
+
 Sage can talk through **Gemini**, **Claude**, or **OpenAI** -- pick one from the
 in-panel dropdown (only available providers are shown; the choice persists).
 
@@ -105,16 +109,19 @@ are extracted or shared; each user authenticates their own CLIs. Providers never
 fall back to one another silently.
 
 ### Screenshot vision & translation
+
 Attach the current frame to a question (any provider) -- captured via
 Windows.Graphics.Capture, no injection. The hotkeys stage a request and wait:
+
 - **Ctrl+Shift+T** opens the translate tab; Enter (or a click) captures and translates.
 - **Ctrl+Shift+A** stages a preset question with the screenshot on; Enter sends it.
 
-Sage only uses a *linked* window: games in your library link automatically, and
+Sage only uses a _linked_ window: games in your library link automatically, and
 any other window shows a one-click **Link** control for that session. Until a
 window is linked, nothing about it -- not its name, not a screenshot -- is sent.
 
 ### Desktop launcher
+
 A Tauri 2 + Svelte 5 GUI for your library: Steam auto-discovery, Steam-CDN cover
 art, one-click launch, play-time tracking via an external process watcher, tray,
 launch-on-startup, and an in-app Settings panel (provider key + detection,
@@ -122,15 +129,15 @@ default provider, hotkey reference, launcher toggles).
 
 ## Stack
 
-| Layer | Choice | Notes |
-|---|---|---|
-| App | [Tauri 2][tauri] + [Svelte 5][svelte] + Tailwind 4 | One process, two windows: library + transparent overlay |
-| Capture | [windows][windows] crate (WinRT) | Windows.Graphics.Capture -> D3D11 -> PNG; foreground-HWND game detection |
-| Async / HTTP | [tokio][tokio] + [reqwest][reqwest] | Gemini streaming + CLI subprocesses off the UI thread |
-| Shared state | [parking_lot][parking_lot] | Fast mutex for the shared app state |
-| Secrets | [keyring][keyring] | Gemini key in the Windows Credential Manager |
-| Build | [cargo-xwin][cargo-xwin] | MSVC cross-compile from WSL2 |
-| Logging | [tracing][tracing] | Structured logs to `launcher.log` |
+| Layer        | Choice                                             | Notes                                                                    |
+| ------------ | -------------------------------------------------- | ------------------------------------------------------------------------ |
+| App          | [Tauri 2][tauri] + [Svelte 5][svelte] + Tailwind 4 | One process, two windows: library + transparent overlay                  |
+| Capture      | [windows][windows] crate (WinRT)                   | Windows.Graphics.Capture -> D3D11 -> PNG; foreground-HWND game detection |
+| Async / HTTP | [tokio][tokio] + [reqwest][reqwest]                | Gemini streaming + CLI subprocesses off the UI thread                    |
+| Shared state | [parking_lot][parking_lot]                         | Fast mutex for the shared app state                                      |
+| Secrets      | [keyring][keyring]                                 | Gemini key in the Windows Credential Manager                             |
+| Build        | [cargo-xwin][cargo-xwin]                           | MSVC cross-compile from WSL2                                             |
+| Logging      | [tracing][tracing]                                 | Structured logs to `launcher.log`                                        |
 
 ## Quick start
 
@@ -217,12 +224,12 @@ traffic or game logic. You are responsible for complying with each AI provider's
 terms of service. Not chasing adoption, but if it looks useful, you're welcome to
 try it.</sub>
 
-[tauri]:       https://tauri.app
-[svelte]:      https://svelte.dev
-[windows]:     https://github.com/microsoft/windows-rs
-[tokio]:       https://tokio.rs
-[reqwest]:     https://docs.rs/reqwest
+[tauri]: https://tauri.app
+[svelte]: https://svelte.dev
+[windows]: https://github.com/microsoft/windows-rs
+[tokio]: https://tokio.rs
+[reqwest]: https://docs.rs/reqwest
 [parking_lot]: https://docs.rs/parking_lot
-[keyring]:     https://docs.rs/keyring
-[cargo-xwin]:  https://github.com/rust-cross/cargo-xwin
-[tracing]:     https://docs.rs/tracing
+[keyring]: https://docs.rs/keyring
+[cargo-xwin]: https://github.com/rust-cross/cargo-xwin
+[tracing]: https://docs.rs/tracing

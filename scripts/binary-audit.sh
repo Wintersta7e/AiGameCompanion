@@ -5,6 +5,7 @@
 #   scripts/binary-audit.sh audit [--public-runner] [--expected-version <v>] <dir|zip|file>...
 #   scripts/binary-audit.sh self-test
 #   scripts/binary-audit.sh shapes
+#   scripts/binary-audit.sh identity < records
 #
 # audit reads every regular file of each input (a zip is extracted to a
 # temporary directory outside the repository) and prints, per file, one count
@@ -12,7 +13,9 @@
 # comma-separated CI_CHECK_IDENTITY variable and are never printed; without it
 # the audit fails unless --public-runner is given. --expected-version makes
 # every PE's ProductVersion equal to it. Every file is processed and every line
-# printed before the exit status says whether anything failed.
+# printed before the exit status says whether anything failed. identity
+# matches the same entries against text records on stdin and prints the
+# location and entry number of each hit; without entries it matches nothing.
 set -uo pipefail
 
 # The shape list: label, class, case (i = case-insensitive), scope, ERE.
@@ -59,11 +62,14 @@ TEMP_DIRS=()
 cleanup() { if [[ "${#TEMP_DIRS[@]}" -gt 0 ]]; then rm -rf -- "${TEMP_DIRS[@]}"; fi; }
 trap cleanup EXIT
 
+# new_temp_dir <var>: makes a temporary directory, stores its path in <var>
+# and registers it for removal on exit. Called in this shell, never in
+# $(...): a subshell would lose the registration and leave the directory.
 new_temp_dir() {
-	local dir
-	dir=$(mktemp -d) || return 1
-	TEMP_DIRS+=("${dir}")
-	printf '%s\n' "${dir}"
+	local temp_path
+	temp_path=$(mktemp -d) || return 1
+	TEMP_DIRS+=("${temp_path}")
+	printf -v "$1" '%s' "${temp_path}"
 }
 
 # scan_file <file> <work dir>: sets STR_ASCII, STR_UTF16 (string counts) and
@@ -190,7 +196,7 @@ audit_pe() {
 
 audit_file() {
 	local file=$1 label=$2 work bytes sum i n magic=''
-	work=$(new_temp_dir) || return 1
+	new_temp_dir work || return 1
 	bytes=$(wc -c <"${file}")
 	sum=$(sha256sum <"${file}")
 	scan_file "${file}" "${work}"
@@ -242,7 +248,7 @@ audit_input() {
 		sum=$(sha256sum <"${input}")
 		printf 'sha256 %s\n' "${sum%% *}"
 		need_tool unzip || return 0
-		dir=$(new_temp_dir) || return 0
+		new_temp_dir dir || return 0
 		if ! unzip -q -- "${input}" -d "${dir}" >/dev/null 2>&1; then
 			fail_line "${input} could not be extracted"
 			return 0
@@ -272,6 +278,64 @@ identity_load() {
 	done
 }
 
+identity_presence() {
+	if [[ "${#ID_ENTRIES[@]}" -gt 0 ]]; then
+		printf 'identity: present, %s entries\n' "${#ID_ENTRIES[@]}"
+	else
+		printf 'identity: absent\n'
+	fi
+}
+
+# identity_main: text records on stdin, one per line, "<location><TAB><text>"
+# (the location ends at the first tab). Prints the presence line, one
+# "<location><TAB><k>" line per record whose text holds entry k (1-based), then
+# the counts. Only the text is matched, and only k is ever printed.
+identity_main() {
+	local dir k records bad status hits
+	local -a statuses=()
+	if [[ $# -gt 0 ]]; then
+		usage
+		return 2
+	fi
+	if ! command -v -- grep >/dev/null 2>&1; then
+		printf 'identity: FAIL missing tool grep\n'
+		return 2
+	fi
+	identity_load
+	new_temp_dir dir || return 2
+	if ! cat >"${dir}/records"; then
+		printf 'identity: FAIL the records on stdin could not be read\n'
+		return 2
+	fi
+	bad=$(grep -c -v -F -e $'\t' -- "${dir}/records")
+	if [[ "${bad}" -gt 0 ]]; then
+		printf 'identity: FAIL %s records have no tab after their location\n' "${bad}"
+		return 2
+	fi
+	records=$(awk 'END { print NR }' "${dir}/records")
+	cut -f 1 -- "${dir}/records" >"${dir}/locations"
+	cut -f 2- -- "${dir}/records" >"${dir}/text"
+	identity_presence
+	: >"${dir}/hits"
+	for k in "${!ID_ENTRIES[@]}"; do
+		grep -n -F -i -f /dev/fd/3 -- "${dir}/text" 3< <(printf '%s\n' "${ID_ENTRIES[k]}") |
+			awk -F: -v k="$((k + 1))" '{ print $1 "\t" k }' >>"${dir}/hits"
+		statuses=("${PIPESTATUS[@]}")
+		if [[ "${statuses[0]}" -gt 1 ]]; then
+			printf 'identity: FAIL grep exited %s\n' "${statuses[0]}"
+			return 2
+		fi
+	done
+	sort -t $'\t' -k 1,1n -k 2,2n -- "${dir}/hits" |
+		awk -F'\t' 'NR == FNR { location[NR] = $0; next } { print location[$1] "\t" $2 }' "${dir}/locations" -
+	hits=$(awk 'END { print NR }' "${dir}/hits")
+	printf 'identity: records %s hits %s\n' "${records}" "${hits}"
+	rm -rf -- "${dir}"
+	status=0
+	[[ "${hits}" -eq 0 ]] || status=1
+	return "${status}"
+}
+
 audit_main() {
 	local public=no input tool status=0 identity
 	local -a inputs=()
@@ -295,11 +359,9 @@ audit_main() {
 	PE_MISSING=0
 	load_shapes
 	identity_load
-	if [[ "${#ID_ENTRIES[@]}" -gt 0 ]]; then
-		printf 'identity: present, %s entries\n' "${#ID_ENTRIES[@]}"
-	else
-		printf 'identity: absent\n'
-		[[ "${public}" == yes ]] || fail_line 'identity absent: CI_CHECK_IDENTITY is unset and --public-runner was not given'
+	identity_presence
+	if [[ "${#ID_ENTRIES[@]}" -eq 0 && "${public}" != yes ]]; then
+		fail_line 'identity absent: CI_CHECK_IDENTITY is unset and --public-runner was not given'
 	fi
 	for tool in "${AUDIT_TOOLS[@]}"; do need_tool "${tool}" || status=1; done
 	if [[ "${status}" -eq 0 ]]; then
@@ -557,6 +619,53 @@ st_identity() {
 	done
 }
 
+# st_identity_record_case <label> <entries> <records file> <expected exit> <expected hit lines, newline-separated>
+st_identity_record_case() {
+	local out status=0 want got
+	out=$(CI_CHECK_IDENTITY=$2 main identity <"$3" 2>&1) || status=$?
+	printf '%s\n' "${out}" >>"${ST_IDM_DIR}/outputs"
+	want=$(grep -c -v -e '^$' <<<"$5")
+	got=$(grep -v -e '^identity: ' <<<"${out}")
+	ST_IDM_PLANTED=$((ST_IDM_PLANTED + want))
+	if [[ "${status}" -ne "$4" ]]; then
+		ST_IDM_PROBLEMS+=("identity mode case $1 exited ${status}, not $4")
+	elif [[ "${got}" != "$5" ]]; then
+		ST_IDM_PROBLEMS+=("identity mode case $1 did not print exactly its expected hit lines")
+	else
+		ST_IDM_CAUGHT=$((ST_IDM_CAUGHT + want))
+	fi
+}
+
+# The identity mode over literal records. Runs in a subshell: every entry is
+# invented and set here, so the caller's own CI_CHECK_IDENTITY is never read.
+st_identity_mode() {
+	local dir=$1 tab=$'\t'
+	mkdir -p "${dir}/idm"
+	(
+		unset CI_CHECK_IDENTITY
+		ST_IDM_DIR="${dir}/idm"
+		ST_IDM_PLANTED=0 ST_IDM_CAUGHT=0
+		ST_IDM_PROBLEMS=()
+		printf 'loc-1\tfirst line\nloc-2\tthe second line\nloc-3\tthird\n' >"${dir}/idm/plain"
+		printf 'loc-1\tfirst line\nloc-2\tbuilt by Quill-Feather-IDENT here\nloc-3\tthird\n' >"${dir}/idm/one"
+		printf 'loc-1\tno entry here\nquill-feather-ident\tclean text\nloc-3\ta\tb quill-FEATHER-ident\n' >"${dir}/idm/tabs"
+		out=$(main identity <"${dir}/idm/plain" 2>&1) || ST_IDM_PROBLEMS+=('identity mode without entries did not exit 0')
+		grep -q -x -F 'identity: absent' <<<"${out}" || ST_IDM_PROBLEMS+=('identity mode without entries did not print absent')
+		grep -q -x -F 'identity: records 3 hits 0' <<<"${out}" || ST_IDM_PROBLEMS+=('identity mode without entries did not count 3 records and 0 hits')
+		st_identity_record_case 'one entry, mixed case' 'quill-feather-ident' "${dir}/idm/one" 1 "loc-2${tab}1"
+		st_identity_record_case 'the second of two entries' 'first-sample-entry,quill-feather-ident' "${dir}/idm/one" 1 "loc-2${tab}2"
+		st_identity_record_case 'text after a second tab' 'quill-feather-ident' "${dir}/idm/tabs" 1 "loc-3${tab}1"
+		out=$(CI_CHECK_IDENTITY=' one , ,two' main identity <"${dir}/idm/plain" 2>&1)
+		grep -q -x -F 'identity: present, 2 entries' <<<"${out}" || ST_IDM_PROBLEMS+=('identity mode did not count 2 entries in a padded list')
+		if grep -q -i -w -e one -e two <<<"${out}"; then ST_IDM_PROBLEMS+=('the identity mode printed an entry'); fi
+		if grep -q -i -F -e 'feather-ident' -e 'first-sample' "${dir}/idm/outputs"; then
+			ST_IDM_PROBLEMS+=('the identity mode printed an entry')
+		fi
+		printf '%s %s\n' "${ST_IDM_PLANTED}" "${ST_IDM_CAUGHT}"
+		if [[ "${#ST_IDM_PROBLEMS[@]}" -gt 0 ]]; then printf '%s\n' "${ST_IDM_PROBLEMS[@]}"; fi
+	) >"${dir}/idm.out"
+}
+
 # st_refusal <expected failure line> <audit arguments...>: an audit that must exit non-zero.
 st_refusal() {
 	local want=$1 out status=0
@@ -593,7 +702,7 @@ st_refusals() {
 }
 
 self_test() {
-	local dir text output line tool
+	local dir text output line tool planted caught
 	local -a result=()
 	for tool in strings grep sha256sum iconv llvm-readobj; do
 		command -v -- "${tool}" >/dev/null 2>&1 || {
@@ -619,6 +728,12 @@ self_test() {
 	mapfile -t result <"${dir}/refusals.out"
 	read -r ST_REFUSALS ST_REFUSED _ <<<"${result[0]}"
 	ST_PROBLEMS+=("${result[@]:1}")
+	st_identity_mode "${dir}"
+	mapfile -t result <"${dir}/idm.out"
+	read -r planted caught <<<"${result[0]}"
+	ST_PLANTED=$((ST_PLANTED + planted))
+	ST_CAUGHT=$((ST_CAUGHT + caught))
+	ST_PROBLEMS+=("${result[@]:1}")
 	# No planted text may reach the output of any audit over the fixtures.
 	for output in "${ST_OUTPUTS[@]}"; do
 		for text in "${ST_PLANTED_TEXT[@]}"; do
@@ -632,6 +747,10 @@ self_test() {
 		"${ST_TRAPS}" -ge 14 && "${ST_FLAGGED}" -eq 0 && "${ST_REFUSED}" -eq "${ST_REFUSALS}" && "${ST_PE_CASES}" -gt 0 ]]
 }
 
+usage() {
+	printf 'usage: binary-audit.sh audit [--public-runner] [--expected-version <v>] <input>... | self-test | shapes | identity\n' >&2
+}
+
 main() {
 	case "${1:-}" in
 	audit)
@@ -640,8 +759,12 @@ main() {
 		;;
 	self-test) self_test ;;
 	shapes) shapes_table ;;
+	identity)
+		shift
+		identity_main "$@"
+		;;
 	*)
-		printf 'usage: binary-audit.sh audit [--public-runner] [--expected-version <v>] <input>... | self-test | shapes\n' >&2
+		usage
 		return 2
 		;;
 	esac

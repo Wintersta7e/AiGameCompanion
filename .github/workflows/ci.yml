@@ -13,7 +13,7 @@ permissions: {}
 
 env:
   CARGO_TERM_COLOR: never
-  NO_COLOR: "1"
+  NO_COLOR: '1'
 
 concurrency:
   group: ${{ github.event_name == 'pull_request' && format('{0}-pr-{1}', github.workflow, github.ref) || format('{0}-run-{1}', github.workflow, github.run_id) }}
@@ -307,6 +307,38 @@ jobs:
       - name: Run the secrets rows of ci-check.sh
         run: ./scripts/ci-check.sh --job secrets
 
+  hygiene:
+    name: Commit messages, tracked files, spelling, shell scripts
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - name: Register problem matchers
+        run: echo "::add-matcher::.github/problem-matchers.json"
+      - name: Read the tool pins
+        id: pins
+        run: grep -E '^[A-Z][A-Z0-9_]*=' scripts/ci-tools.env >> "$GITHUB_OUTPUT"
+      - name: Set up Node
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version-file: .nvmrc
+      - name: Install typos
+        uses: taiki-e/install-action@26e9283f268b880168bdbd2c545dfcd60ec2c6ab # v2.87.13
+        with:
+          tool: typos@${{ steps.pins.outputs.TYPOS }}
+          fallback: none
+      - name: Run the hygiene rows of ci-check.sh
+        run: ./scripts/ci-check.sh --job hygiene
+
   # The beta canaries re-run the Rust rows on the next Rust release, which is
   # visible six weeks before it becomes stable. They run weekly or by hand, and
   # the aggregate job does not need them, so a red canary never blocks a merge.
@@ -471,7 +503,7 @@ jobs:
   aggregate:
     name: Result of the needed CI jobs
     if: always()
-    needs: [rust, rust-host, frontend, release-audit, supply-chain, workflows, secrets]
+    needs: [rust, rust-host, frontend, release-audit, supply-chain, workflows, secrets, hygiene]
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     permissions: {}

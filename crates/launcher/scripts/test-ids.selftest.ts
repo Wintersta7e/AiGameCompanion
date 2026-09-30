@@ -287,9 +287,9 @@ const git = (cwd: string, args: readonly string[]): void => {
       GIT_CONFIG_GLOBAL: '/dev/null',
       GIT_CONFIG_NOSYSTEM: '1',
       GIT_AUTHOR_NAME: 'Id Test',
-      GIT_AUTHOR_EMAIL: 'id-test@example.invalid',
+      GIT_AUTHOR_EMAIL: 'id-test@example.com',
       GIT_COMMITTER_NAME: 'Id Test',
-      GIT_COMMITTER_EMAIL: 'id-test@example.invalid',
+      GIT_COMMITTER_EMAIL: 'id-test@example.com',
     },
   });
 };

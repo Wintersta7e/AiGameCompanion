@@ -111,6 +111,27 @@ const CLEAN_LIST = [
   '',
 ].join('\n');
 
+const PR_TEXT = [
+  'name: PR text',
+  'on:',
+  '  pull_request:',
+  '    types: [opened, edited, synchronize, reopened]',
+  'permissions: {}',
+  'env:',
+  '  CARGO_TERM_COLOR: never',
+  "  NO_COLOR: '1'",
+  'concurrency:',
+  `  group: pr-text-\${{ github.event.pull_request.number }}`,
+  '  cancel-in-progress: true',
+  'jobs:',
+  job('pr-text', 'PR title, body and branch name', 'ubuntu-24.04', 'pr-text'),
+].join('\n');
+
+const PR_TEXT_LIST = CLEAN_LIST.replace(
+  'rows\t7',
+  `${row('pr text', 'pr-text', 'ci-only', 'node scripts/pr.ts')}\nrows\t8`,
+);
+
 const EIGHT_NAMES = [
   'Rust (fmt, clippy, test)',
   'Rust (non-Windows build)',
@@ -281,6 +302,25 @@ const conditionCases: readonly Case[] = [
     name: 'an anchor in another workflow',
     files: { ...ci(CLEAN_CI), '.github/workflows/other.yml': 'name: &n Other\n' },
     expect: ['shape'],
+  },
+  {
+    name: 'the PR text workflow passes',
+    files: { ...ci(CLEAN_CI), '.github/workflows/pr-text.yml': PR_TEXT },
+    list: PR_TEXT_LIST,
+    expect: [],
+  },
+  {
+    name: 'a PR text workflow that an edited title does not re-run',
+    files: {
+      ...ci(CLEAN_CI),
+      '.github/workflows/pr-text.yml': swap(
+        PR_TEXT,
+        'types: [opened, edited, synchronize, reopened]',
+        'types: [opened, synchronize, reopened]',
+      ),
+    },
+    list: PR_TEXT_LIST,
+    expect: ['triggers'],
   },
 ];
 
