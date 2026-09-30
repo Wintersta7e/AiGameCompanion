@@ -49,6 +49,11 @@ fn show_main_window(app: &tauri::AppHandle) {
     clippy::too_many_lines,
     reason = "Tauri builder + setup is one long, linear wiring"
 )]
+#[expect(
+    clippy::allow_attributes,
+    reason = "version-dependent: clippy::exit fires here on the pinned toolchain but not on newer ones; \
+              the toolchain bump that makes it uniform deletes this and the allow below"
+)]
 #[allow(
     clippy::exit,
     reason = "background threads (CLI detection, global-shortcut) keep the process alive unless it force-exits; \
