@@ -954,6 +954,200 @@ ci_main() {
 	run_selected "${job}"
 }
 # ---------------------------------------------------------------------------
+# The secret scan: one gitleaks run over every commit reachable from the refs,
+# each merge diffed against its first parent so a conflict resolution is
+# scanned too. Every condition is checked and each failed one printed.
+
+# secret_scan <dir> <refs...>
+secret_scan() {
+	local dir=$1 out status=0 count='' scanned='' fingerprints=0 errors bad=0 shallow
+	shift
+	local refs="$*"
+	out=$(mktemp) || return 1
+	printf 'secret scan: log opts --diff-merges=first-parent %s\n' "${refs}"
+	count=$(git -C "${dir}" rev-list --count "$@" 2>/dev/null) || count=''
+	printf 'secret scan: rev-list count %s\n' "${count:-unreadable}"
+	if [[ -f "${dir}/.gitleaksignore" ]]; then
+		fingerprints=$(grep -c -E '^[0-9a-f]{7,40}:.+:[A-Za-z0-9_.-]+:[0-9]+$' "${dir}/.gitleaksignore")
+	fi
+	printf 'secret scan: .gitleaksignore fingerprints %s\n' "${fingerprints}"
+	gitleaks git --no-banner --no-color --redact --verbose --ignore-gitleaks-allow \
+		--log-opts="--diff-merges=first-parent ${refs}" "${dir}" >"${out}" 2>&1 || status=$?
+	cat -- "${out}"
+	shallow=$(git -C "${dir}" rev-parse --is-shallow-repository 2>/dev/null) || shallow=''
+	if [[ "${shallow}" != false ]]; then
+		printf 'secret scan: FAIL the clone is shallow, so the commits before its cut were not scanned\n'
+		bad=1
+	fi
+	if [[ ! "${count}" =~ ^[0-9]+$ || "${count}" -lt 1 ]]; then
+		printf 'secret scan: FAIL the range %s lists no commit or does not resolve\n' "${refs}"
+		bad=1
+	fi
+	if [[ -e "${dir}/.gitleaks.toml" || -n "${GITLEAKS_CONFIG:-}" || -n "${GITLEAKS_CONFIG_TOML:-}" ]]; then
+		printf 'secret scan: FAIL a .gitleaks.toml, GITLEAKS_CONFIG or GITLEAKS_CONFIG_TOML would replace the built-in rules\n'
+		bad=1
+	fi
+	if [[ "${status}" -ne 0 ]]; then
+		printf 'secret scan: FAIL gitleaks exited %s\n' "${status}"
+		bad=1
+	fi
+	scanned=$(grep -o -E '[0-9]+ commits scanned\.' "${out}" | tail -n 1)
+	scanned=${scanned%% *}
+	if [[ ! "${scanned}" =~ ^[0-9]+$ || "${scanned}" -lt 1 ]]; then
+		printf 'secret scan: FAIL gitleaks scanned %s commits\n' "${scanned:-no count of}"
+		bad=1
+	fi
+	errors=$(grep -c -E '^[^ ]+ (ERR|FTL) ' "${out}")
+	if [[ "${errors}" -gt 0 ]]; then
+		printf 'secret scan: FAIL gitleaks logged %s error lines\n' "${errors}"
+		bad=1
+	fi
+	rm -f -- "${out}"
+	return "${bad}"
+}
+
+# The refs follow the CI event: a scheduled run scans every fetched branch and
+# tag, any other run (and the local gate) what HEAD reaches.
+secret_scan_event() {
+	if [[ "${GITHUB_EVENT_NAME:-}" == schedule ]]; then
+		secret_scan "$1" --all
+	else
+		secret_scan "$1" HEAD
+	fi
+}
+
+# ---------------------------------------------------------------------------
+# The secret scan's self-test: throwaway repositories outside the checkout,
+# git run without the host's config, tokens whose body is generated here at
+# run time. Each case checks the verdict and the reason the scan printed. The
+# scan output stays in files so a planted finding never reaches the log.
+
+# Sets TOKEN to a fresh token of the ghp_ shape.
+ss_token() {
+	local alphabet=ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789 body='' i
+	for ((i = 0; i < 36; i++)); do body+=${alphabet:RANDOM%62:1}; done
+	TOKEN="ghp_${body}"
+}
+
+ss_commit() {
+	git -C "$1" add -A && git -C "$1" commit -q -m "$2"
+}
+
+# Three clean commits.
+ss_repo_clean() {
+	local i
+	git init -q -b main "$1" || return 1
+	for i in 1 2 3; do
+		printf 'line %s\n' "${i}" >>"$1/notes.txt"
+		ss_commit "$1" "commit ${i}" || return 1
+	done
+}
+
+# Token A added then removed on a branch; token B only in the merge's
+# conflict resolution, so only the merge's own diff shows it.
+ss_repo_merge() {
+	git init -q -b main "$1" || return 1
+	printf 'shared\n' >"$1/shared.txt"
+	ss_commit "$1" base || return 1
+	git -C "$1" checkout -q -b topic
+	ss_token
+	printf 'key = %s\n' "${TOKEN}" >"$1/topic.txt"
+	ss_commit "$1" 'add a file'
+	rm -- "$1/topic.txt"
+	ss_commit "$1" 'remove the file'
+	printf 'topic side\n' >"$1/shared.txt"
+	ss_commit "$1" 'topic edit'
+	git -C "$1" checkout -q main
+	printf 'main side\n' >"$1/shared.txt"
+	ss_commit "$1" 'main edit'
+	git -C "$1" merge -q topic -m merge >/dev/null 2>&1
+	ss_token
+	printf 'key = %s\n' "${TOKEN}" >"$1/shared.txt"
+	git -C "$1" add shared.txt && git -C "$1" commit -q --no-edit
+}
+
+# ss_check <label> <output file> <scan status> <pass|fail> <findings in distinct files, or -> <reasons, |-separated>
+ss_check() {
+	local out=$2 status=$3 why='' n files names reason
+	local -a reasons=()
+	SS_CASES=$((SS_CASES + 1))
+	if [[ "$4" == pass && "${status}" -ne 0 ]] || [[ "$4" == fail && "${status}" -eq 0 ]]; then
+		why+="scan exit ${status}, expected a $4; "
+	fi
+	if [[ "$5" != - ]]; then
+		n=$(grep -c '^Fingerprint:' "${out}")
+		names=$(grep '^Fingerprint:' "${out}" | cut -d: -f3 | LC_ALL=C sort -u | tr '\n' ' ')
+		files=$(wc -w <<<"${names}")
+		[[ "${n}" -eq "$5" && "${files}" -eq "$5" ]] ||
+			why+="${n} findings in ${files} files (${names% }), expected $5 in $5; "
+	fi
+	IFS='|' read -r -a reasons <<<"$6"
+	for reason in "${reasons[@]}"; do
+		grep -q -F -- "secret scan: FAIL ${reason}" "${out}" || why+="no failure line '${reason}'; "
+	done
+	if [[ -z "${why}" ]]; then
+		SS_OK=$((SS_OK + 1))
+	else
+		printf 'secret scan self-test: case "%s" not as expected: %s\n' "$1" "${why}"
+	fi
+}
+
+ss_cases() {
+	local dir=$1 status merge
+	ss_repo_clean "${dir}/clean" >/dev/null 2>&1
+	status=0
+	secret_scan "${dir}/clean" HEAD >"${dir}/t1.out" 2>&1 || status=$?
+	ss_check 'a clean history passes' "${dir}/t1.out" "${status}" pass - ''
+	grep -q -E '[1-9][0-9]* commits scanned' "${dir}/t1.out" || printf 'secret scan self-test: the clean case scanned no commit\n'
+	ss_repo_merge "${dir}/merge" >/dev/null 2>&1
+	status=0
+	secret_scan "${dir}/merge" HEAD >"${dir}/t2.out" 2>&1 || status=$?
+	ss_check 'a removed token and a merge-only token are both found' "${dir}/t2.out" "${status}" fail 2 'gitleaks exited'
+	git clone -q --depth 1 "file://${dir}/merge" "${dir}/shallow" >/dev/null 2>&1
+	status=0
+	secret_scan "${dir}/shallow" HEAD >"${dir}/t3.out" 2>&1 || status=$?
+	ss_check 'a shallow clone fails' "${dir}/t3.out" "${status}" fail - 'the clone is shallow'
+	merge=$(git -C "${dir}/merge" rev-parse HEAD)
+	status=0
+	secret_scan "${dir}/merge" --no-merges --first-parent "${merge}^1..${merge}" >"${dir}/t4.out" 2>&1 || status=$?
+	ss_check 'a range with no commit fails' "${dir}/t4.out" "${status}" fail - 'the range|gitleaks scanned'
+	cp -R "${dir}/merge" "${dir}/config"
+	printf '[allowlist]\npaths = ['"'''"'.*'"'''"']\n' >"${dir}/config/.gitleaks.toml"
+	status=0
+	secret_scan "${dir}/config" HEAD >"${dir}/t5.out" 2>&1 || status=$?
+	ss_check 'a replaced rule set fails' "${dir}/t5.out" "${status}" fail - 'a .gitleaks.toml, GITLEAKS_CONFIG or GITLEAKS_CONFIG_TOML'
+	git init -q -b main "${dir}/allow" >/dev/null 2>&1
+	ss_token
+	printf 'key = %s # gitleaks:allow\n' "${TOKEN}" >"${dir}/allow/notes.txt"
+	ss_commit "${dir}/allow" 'allow comment' >/dev/null 2>&1
+	status=0
+	secret_scan "${dir}/allow" HEAD >"${dir}/t6.out" 2>&1 || status=$?
+	ss_check 'an allow comment does not hide a token' "${dir}/t6.out" "${status}" fail 1 'gitleaks exited'
+	status=0
+	secret_scan "${dir}/clean" no-such-revision >"${dir}/t7.out" 2>&1 || status=$?
+	ss_check 'an unknown revision fails' "${dir}/t7.out" "${status}" fail - 'the range|gitleaks logged'
+}
+
+secret_scan_self_test() {
+	local dir
+	dir=$(mktemp -d) || return 1
+	SS_CASES=0
+	SS_OK=0
+	(
+		export GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1
+		export GIT_AUTHOR_NAME='Scan Test' GIT_AUTHOR_EMAIL='scan-test@example.invalid'
+		export GIT_COMMITTER_NAME='Scan Test' GIT_COMMITTER_EMAIL='scan-test@example.invalid'
+		unset GITLEAKS_CONFIG GITLEAKS_CONFIG_TOML
+		ss_cases "${dir}"
+		printf '%s %s\n' "${SS_CASES}" "${SS_OK}" >"${dir}/counts"
+	)
+	read -r SS_CASES SS_OK <"${dir}/counts"
+	rm -rf -- "${dir}"
+	printf 'secret scan self-test: cases run %s, as expected %s\n' "${SS_CASES}" "${SS_OK}"
+	[[ "${SS_CASES}" -gt 0 && "${SS_CASES}" -eq "${SS_OK}" ]]
+}
+
+# ---------------------------------------------------------------------------
 # Runner self-test: the runner's own functions on literal rows. Each nested
 # run gets a scratch root, scratch pin files and a scratch PATH entry, and
 # runs in a subshell, so the real table and environment are untouched.
@@ -977,7 +1171,7 @@ st_run() {
 		for word in "${env_words[@]}"; do
 			export "${word?}"
 		done
-		ROOT="${ST_DIR}/root"
+		ROOT="${ST_DIR}/tree"
 		TOOL_FILE="${ST_DIR}/ci-tools.env"
 		TOOLCHAIN_FILE="${ST_DIR}/rust-toolchain.toml"
 		NVMRC_FILE="${ST_DIR}/nvmrc"
@@ -1075,7 +1269,7 @@ st_rows() {
 		'job rows passed; not run -- local-only: local-row' GITHUB_ACTIONS=true -- --job t
 	st_outcome 'a missing tool fails its row' st_t_absent 1 \
 		'-- absent: FAIL -- tool selftest-absent: pinned 4.5.6, found not found' -- --job t
-	if [[ -e "${ST_DIR}/root/marker" ]]; then
+	if [[ -e "${ST_DIR}/tree/marker" ]]; then
 		st_case 'a missing tool leaves its command unrun' 'the command ran'
 	else
 		st_case 'a missing tool leaves its command unrun' ''
@@ -1145,11 +1339,11 @@ st_t_nodir() { row name=no-dir tags=t category=both target=any dir=no-such-dir c
 # st_table <label> <table-function> <row name the error must name>
 st_table() {
 	local status=0 why=''
-	rm -f -- "${ST_DIR}/root/marker"
+	rm -f -- "${ST_DIR}/tree/marker"
 	st_run "${ST_DIR}/out" "$2" -- --job t || status=$?
 	[[ "${status}" -eq 2 ]] || why+="runner exit ${status}, expected 2; "
 	grep -q -F -- "table error: row '$3'" "${ST_DIR}/out" || why+="no table error naming '$3'; "
-	[[ ! -e "${ST_DIR}/root/marker" ]] || why+='a row ran; '
+	[[ ! -e "${ST_DIR}/tree/marker" ]] || why+='a row ran; '
 	st_case "$1" "${why}"
 }
 
@@ -1187,6 +1381,7 @@ st_matcher_samples() {
 	MS_SAMPLE[svelte-check]='1759999999999 ERROR "src/a.ts" 1:14 "Cannot find name '\''total'\''."'
 	MS_SAMPLE[prettier]='[warn] src/lib/a.ts'
 	MS_SAMPLE[actionlint]='.github/workflows/ci.yml:10:5: unexpected key "foo" for "job" section [syntax-check]'
+	MS_SAMPLE[gitleaks]='Fingerprint: 0123abc:notes.txt:github-pat:3'
 	MS_GREEN="test result: ok. 110 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.12s
 warning[duplicate]: found 2 duplicate entries for crate 'windows-sys'
    ${box} Cargo.lock:10:1
@@ -1300,7 +1495,7 @@ runner_self_test() {
 	ST_DIR=$(mktemp -d) || return 1
 	ST_CASES=0
 	ST_OK=0
-	mkdir -p "${ST_DIR}/root" "${ST_DIR}/bin" "${ST_DIR}/temp"
+	mkdir -p "${ST_DIR}/tree" "${ST_DIR}/bin" "${ST_DIR}/temp"
 	printf 'SELFTEST_TOOL=1.2.3\nSELFTEST_ABSENT=4.5.6\n' >"${ST_DIR}/ci-tools.env"
 	printf '[toolchain]\nchannel = "0.0.1"\n' >"${ST_DIR}/rust-toolchain.toml"
 	printf '0.0.1\n' >"${ST_DIR}/nvmrc"
@@ -1352,6 +1547,21 @@ declare_table() {
 	row name=cargo-deny tags=supply-chain category=both target=any tools=rust,cargo-deny \
 		count='gathered [0-9]+ crates|^advisories (ok|FAILED)' zero='gathered ([0-9]+) crates' \
 		cmd='cargo deny --locked -L info check --show-stats'
+	row name='binary audit self-test' tags=release-audit category=both target=any \
+		tools=strings,iconv,llvm-readobj,sha256sum count='^self-test: ' zero='planted ([0-9]+)' \
+		cmd='scripts/binary-audit.sh self-test'
+	row name='release build' tags=release-audit category=ci-only target=linux \
+		tools=rust,node,npm:vite,cargo-xwin,jq,clang,lld-link count='Finished .release. profile|^release build: ' \
+		cmd=scripts/build.sh
+	row name='binary audit' tags=release-audit category=ci-only target=any requires='release build' \
+		tools=strings,llvm-readobj,sha256sum count='^audit: ' zero='files ([0-9]+)' \
+		cmd='scripts/binary-audit.sh audit --public-runner release crates/launcher/dist'
+	row name='secret scan self-test' tags=secrets category=both target=any tools=gitleaks,git \
+		count='^secret scan self-test: ' zero='cases run ([0-9]+)' \
+		cmd='source scripts/ci-check.sh && secret_scan_self_test'
+	row name='secret scan' tags=secrets category=both target=any tools=gitleaks,git \
+		count='commits scanned|leaks found|no leaks found|^secret scan: ' zero='([0-9]+) commits scanned' \
+		cmd='source scripts/ci-check.sh && secret_scan_event .'
 	ci_only_item name='npm ci' \
 		reason='CI installs the frontend packages; locally they are installed by hand and npm ci would delete them'
 	ci_only_item name='aggregate job' reason="reads the needed jobs' results; nothing to run locally"

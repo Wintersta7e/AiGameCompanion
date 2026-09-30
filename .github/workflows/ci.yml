@@ -9,8 +9,7 @@ on:
     - cron: '23 3 * * 1-6'
     - cron: '23 3 * * 0'
 
-permissions:
-  contents: read
+permissions: {}
 
 env:
   CARGO_TERM_COLOR: never
@@ -29,12 +28,16 @@ jobs:
     # tested with the MSVC toolchain.
     runs-on: windows-2025-vs2026
     timeout-minutes: 35
+    permissions:
+      contents: read
     defaults:
       run:
         shell: bash
     steps:
       - name: Check out the repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - name: Register problem matchers
         run: echo "::add-matcher::.github/problem-matchers.json"
       - name: Install the Rust toolchain
@@ -62,12 +65,16 @@ jobs:
     # unnoticed. This is also the target `cargo test` runs on locally.
     runs-on: ubuntu-24.04
     timeout-minutes: 10
+    permissions:
+      contents: read
     defaults:
       run:
         shell: bash
     steps:
       - name: Check out the repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - name: Register problem matchers
         run: echo "::add-matcher::.github/problem-matchers.json"
       - name: Install the Rust toolchain
@@ -98,12 +105,16 @@ jobs:
     name: Frontend (lint, types, build)
     runs-on: ubuntu-24.04
     timeout-minutes: 10
+    permissions:
+      contents: read
     defaults:
       run:
         shell: bash
     steps:
       - name: Check out the repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - name: Register problem matchers
         run: echo "::add-matcher::.github/problem-matchers.json"
       - name: Set up Node
@@ -120,29 +131,45 @@ jobs:
 
   release-audit:
     name: Release build + binary audit
-    # Builds the artifact users actually download, through the same script the
-    # maintainer runs, and fails if the binary carries build-host paths or
-    # anything key-shaped. A dependency compiling C put 83 such paths into a
-    # release binary once; source-level scanners cannot see that.
+    # Builds the release the way scripts/build.sh does and audits this run's
+    # build of the tree -- the exe, the plaintext of the frontend bundle it
+    # embeds, and the config template -- for the path and key shapes listed in
+    # scripts/binary-audit.sh, in ASCII and UTF-16LE, and for the PE hardening
+    # flags the exe has today. Any SHA256 it prints is this run's build. The
+    # release checklist runs the same script on the zip that is published. A C
+    # dependency once put 83 home-directory paths into a release binary;
+    # source-level scanners cannot see that.
     runs-on: ubuntu-24.04
     timeout-minutes: 55
+    permissions:
+      contents: read
     defaults:
       run:
         shell: bash
     steps:
       - name: Check out the repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - name: Register problem matchers
         run: echo "::add-matcher::.github/problem-matchers.json"
       - name: Read the tool pins
         id: pins
-        run: grep -E '^[A-Z][A-Z0-9_]*=' scripts/ci-tools.env >> "$GITHUB_OUTPUT"
+        run: |
+          grep -E '^[A-Z][A-Z0-9_]*=' scripts/ci-tools.env >> "$GITHUB_OUTPUT"
+          echo "image=${ImageOS}" >> "$GITHUB_OUTPUT"
       - name: Install the Rust toolchain
         run: rustup toolchain install --no-self-update
       - name: Cache the Rust build
         uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           save-if: ${{ github.ref == 'refs/heads/main' }}
+      - name: Restore the Windows SDK cache
+        id: sdk
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.cache/cargo-xwin/xwin
+          key: xwin-sdk-${{ steps.pins.outputs.image }}-${{ steps.pins.outputs.CARGO_XWIN }}-${{ steps.pins.outputs.XWIN_SDK_VERSION }}-${{ steps.pins.outputs.XWIN_CRT_VERSION }}
       - name: Set up Node
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
@@ -156,39 +183,32 @@ jobs:
           fallback: none
       - name: Install LLVM
         run: sudo apt-get update && sudo apt-get install -y clang llvm lld
-      - name: Install frontend deps
+      - name: Install the frontend packages
         run: npm ci
         working-directory: crates/launcher
-      - name: Release build
-        run: ./scripts/build.sh
-      - name: Audit the binary
-        run: |
-          set -euo pipefail
-          fail=0
-          for pattern in "/home/" "/mnt/c/" "C:\\\\Users" "/Users/"; do
-            n=$(strings -a release/launcher.exe | grep -cF "$pattern" || true)
-            echo "$pattern -> $n"
-            [ "$n" -eq 0 ] || fail=1
-          done
-          keys=$(strings -a release/launcher.exe |
-            grep -coE "AIza[0-9A-Za-z_-]{15,}|sk-[A-Za-z0-9]{20,}" || true)
-          echo "key-shaped strings -> ${keys:-0}"
-          [ "${keys:-0}" -eq 0 ] || fail=1
-          if [ "$fail" -ne 0 ]; then
-            echo "::error::the release binary leaks build-host paths or secrets"
-            exit 1
-          fi
+      - name: Run the release-audit rows of ci-check.sh
+        run: ./scripts/ci-check.sh --job release-audit
+      - name: Save the Windows SDK cache
+        if: github.ref == 'refs/heads/main' && steps.sdk.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.cache/cargo-xwin/xwin
+          key: xwin-sdk-${{ steps.pins.outputs.image }}-${{ steps.pins.outputs.CARGO_XWIN }}-${{ steps.pins.outputs.XWIN_SDK_VERSION }}-${{ steps.pins.outputs.XWIN_CRT_VERSION }}
 
   supply-chain:
     name: Supply chain (cargo-deny)
     runs-on: ubuntu-24.04
     timeout-minutes: 10
+    permissions:
+      contents: read
     defaults:
       run:
         shell: bash
     steps:
       - name: Check out the repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - name: Register problem matchers
         run: echo "::add-matcher::.github/problem-matchers.json"
       - name: Read the tool pins
@@ -208,12 +228,16 @@ jobs:
     name: Workflows (actionlint)
     runs-on: ubuntu-24.04
     timeout-minutes: 10
+    permissions:
+      contents: read
     defaults:
       run:
         shell: bash
     steps:
       - name: Check out the repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - name: Register problem matchers
         run: echo "::add-matcher::.github/problem-matchers.json"
       - name: Read the tool pins
@@ -241,6 +265,8 @@ jobs:
     name: Secrets (gitleaks)
     runs-on: ubuntu-24.04
     timeout-minutes: 10
+    permissions:
+      contents: read
     defaults:
       run:
         shell: bash
@@ -248,13 +274,28 @@ jobs:
       - name: Check out the repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          persist-credentials: false
           fetch-depth: 0
       - name: Register problem matchers
         run: echo "::add-matcher::.github/problem-matchers.json"
-      - name: Scan for secrets
-        uses: gitleaks/gitleaks-action@e0c47f4f8be36e29cdc102c57e68cb5cbf0e8d1e # v3
+      - name: Read the tool pins
+        id: pins
+        run: grep -E '^[A-Z][A-Z0-9_]*=' scripts/ci-tools.env >> "$GITHUB_OUTPUT"
+      - name: Install gitleaks
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ steps.pins.outputs.GITLEAKS }}
+          SHA256: ${{ steps.pins.outputs.GITLEAKS_SHA256 }}
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/bin"
+          archive="$RUNNER_TEMP/gitleaks_${VERSION}_linux_x64.tar.gz"
+          curl -fsSL -o "$archive" \
+            "https://github.com/gitleaks/gitleaks/releases/download/v${VERSION}/gitleaks_${VERSION}_linux_x64.tar.gz"
+          echo "${SHA256}  ${archive}" | sha256sum -c -
+          tar xzf "$archive" -C "$RUNNER_TEMP/bin" gitleaks
+          echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
+      - name: Run the secrets rows of ci-check.sh
+        run: ./scripts/ci-check.sh --job secrets
 
   aggregate:
     name: Result of the needed CI jobs

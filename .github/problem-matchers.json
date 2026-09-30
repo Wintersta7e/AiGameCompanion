@@ -98,6 +98,18 @@
           "code": 5
         }
       ]
+    },
+    {
+      "owner": "gitleaks",
+      "pattern": [
+        {
+          "regexp": "^Fingerprint:\\s+([0-9a-f]{7,40}):(.+):([\\w.-]+):(\\d+)$",
+          "file": 2,
+          "message": 3,
+          "code": 3,
+          "line": 4
+        }
+      ]
     }
   ]
 }
