@@ -1536,6 +1536,10 @@ declare_table() {
 	row name='runner self-test' tags=workflows category=both target=any tools=jq \
 		count='^runner self-test: ' zero='cases ([0-9]+)' \
 		cmd='source scripts/ci-check.sh && runner_self_test'
+	row name='wiring self-check self-test' tags=workflows category=both target=any tools=node,bash,jq,git \
+		count='^wiring self-check self-test: ' zero='cases ([0-9]+)' cmd='node crates/launcher/scripts/wiring-check.selftest.ts'
+	row name='wiring self-check' tags=workflows category=both target=any tools=node,bash,jq,git \
+		count='^wiring self-check: ' zero='jobs ([0-9]+)' cmd='node crates/launcher/scripts/wiring-check.ts'
 	row name=actionlint tags=workflows category=both target=any tools=actionlint count=none cmd=actionlint
 	row name='vite build' tags=rust,rust-host,frontend category=both target=any tools=node,npm:vite \
 		dir=crates/launcher count='modules transformed' zero='([0-9]+) modules transformed' \

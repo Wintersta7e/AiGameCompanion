@@ -246,6 +246,10 @@ jobs:
       - name: Read the tool pins
         id: pins
         run: grep -E '^[A-Z][A-Z0-9_]*=' scripts/ci-tools.env >> "$GITHUB_OUTPUT"
+      - name: Set up Node
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version-file: .nvmrc
       # actionlint is a Go binary, so install-action's cargo fallback cannot
       # resolve it. Pinned version + checksum instead of an unverified download.
       - name: Install actionlint
