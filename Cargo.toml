@@ -74,6 +74,8 @@ pointer_format = "warn"
 unnecessary_safety_comment = "warn"
 unnecessary_safety_doc = "warn"
 cognitive_complexity = "warn"
+allow_attributes_without_reason = "warn"
+allow_attributes = "warn"
 # The tauri/windows dependency trees ship several versions of the same crate
 # (syn, windows-sys, bitflags, ...). Nothing first-party can collapse them.
 multiple_crate_versions = "allow"

@@ -27,8 +27,8 @@ fn capture_window_png(_hwnd: i64) -> Result<Vec<u8>, String> {
 /// covers (an area filter); the blocks tile the frame, so every source pixel
 /// counts exactly once. A frame that already fits comes back unchanged.
 #[cfg_attr(
-    not(windows),
-    allow(
+    all(not(windows), not(test)),
+    expect(
         dead_code,
         reason = "only the Windows capture calls it; its tests run everywhere"
     )

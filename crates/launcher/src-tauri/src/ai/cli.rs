@@ -147,12 +147,13 @@ fn windowless(cmd: &mut std::process::Command) -> &mut std::process::Command {
 
 /// Apply the Windows no-window flag to a tokio `Command`. No-op on non-Windows
 /// so the launcher crate compiles for the Linux test runner.
-#[allow(unused_variables, clippy::needless_pass_by_ref_mut)]
 #[cfg_attr(
     not(windows),
     expect(
+        unused_variables,
+        clippy::needless_pass_by_ref_mut,
         clippy::missing_const_for_fn,
-        reason = "the Windows build calls creation_flags, which is not const"
+        reason = "off Windows the command is left untouched, and the Windows build calls creation_flags, which is not const"
     )
 )]
 fn no_window(cmd: &mut Command) {

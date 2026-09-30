@@ -232,7 +232,6 @@ fn build_request(
 /// Stream a Gemini response, passing each complete Gemini text chunk to `on_chunk`.
 ///
 /// `screenshot` is a base64-encoded PNG attached to the most recent user turn.
-#[allow(clippy::too_many_lines)] // linear request-build + SSE-parse pipeline
 pub(super) async fn stream<F>(
     messages: &[ChatMessage],
     system_prompt: &str,

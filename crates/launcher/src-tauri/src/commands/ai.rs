@@ -15,7 +15,10 @@ fn settings_model(state: &AppState) -> String {
 
 /// Report which providers can currently serve a request (for the UI dropdown).
 #[tauri::command]
-#[allow(clippy::needless_pass_by_value)]
+#[expect(
+    clippy::needless_pass_by_value,
+    reason = "a Tauri command receives its arguments by value"
+)]
 pub(crate) fn available_providers(
     ai: State<'_, AiState>,
     state: State<'_, AppState>,
@@ -26,7 +29,10 @@ pub(crate) fn available_providers(
 /// Start a streaming chat request. Tokens arrive on `channel`; issuing a newer
 /// request cancels this one.
 #[tauri::command]
-#[allow(clippy::too_many_arguments, clippy::needless_pass_by_value)]
+#[expect(
+    clippy::needless_pass_by_value,
+    reason = "a Tauri command receives its arguments by value"
+)]
 pub(crate) fn ask_sage(
     app: AppHandle,
     request_id: u64,
@@ -51,14 +57,20 @@ pub(crate) fn ask_sage(
 
 /// Cancel the in-flight request if it matches `request_id` (Stop button).
 #[tauri::command]
-#[allow(clippy::needless_pass_by_value)]
+#[expect(
+    clippy::needless_pass_by_value,
+    reason = "a Tauri command receives its arguments by value"
+)]
 pub(crate) fn cancel_sage(ai: State<'_, AiState>, request_id: u64) {
     ai.cancel(request_id);
 }
 
 /// Persist the user's selected provider so it survives restarts.
 #[tauri::command]
-#[allow(clippy::needless_pass_by_value)]
+#[expect(
+    clippy::needless_pass_by_value,
+    reason = "a Tauri command receives its arguments by value"
+)]
 pub(crate) fn set_active_provider(
     app: AppHandle,
     provider: Provider,
@@ -83,7 +95,6 @@ pub(crate) struct TranslateResult {
 /// Capture the linked game window and translate its on-screen foreign text to
 /// English. One-shot (not part of the streaming chat slot).
 #[tauri::command]
-#[allow(clippy::needless_pass_by_value)]
 pub(crate) async fn translate_screen(app: AppHandle) -> Result<TranslateResult, String> {
     // Linked and revalidated, not just read: an unlinked window is never
     // captured, and a recycled handle would screenshot an unrelated window.
@@ -98,7 +109,10 @@ pub(crate) async fn translate_screen(app: AppHandle) -> Result<TranslateResult, 
 /// the refreshed availability so the UI can flip the Gemini pill without a
 /// restart. The key is never returned or logged.
 #[tauri::command]
-#[allow(clippy::needless_pass_by_value)]
+#[expect(
+    clippy::needless_pass_by_value,
+    reason = "a Tauri command receives its arguments by value"
+)]
 pub(crate) fn set_gemini_key(
     app: AppHandle,
     ai: State<'_, AiState>,
@@ -113,7 +127,6 @@ pub(crate) fn set_gemini_key(
 /// Re-run CLI detection (claude/codex) off the UI thread and return the refreshed
 /// availability.
 #[tauri::command]
-#[allow(clippy::needless_pass_by_value)]
 pub(crate) async fn recheck_clis(
     app: AppHandle,
     ai: State<'_, AiState>,
