@@ -1569,8 +1569,11 @@ declare_table() {
 		cmd='node node_modules/svelte-check/bin/svelte-check --tsconfig ./tsconfig.json --fail-on-warnings --output machine'
 	row name='test identity self-test' tags=frontend category=both target=any tools=node,git \
 		count='^test identity self-test: ' zero='cases ([0-9]+)' cmd='node crates/launcher/scripts/test-ids.selftest.ts'
+	# shellcheck disable=SC2016 # the row's own bash expands these, not this file
 	row name='npm audit' tags=frontend category=both target=any tools=node,npm dir=crates/launcher \
-		count=vulnerabilit cmd='npm audit --audit-level=high'
+		count='^found [0-9]+ vulnerabilit|^[0-9]+ (info|low|moderate|high|critical) severity vulnerabilit|^[0-9]+ vulnerabilities \(|^npm audit: dependencies audited: ' \
+		zero='^npm audit: dependencies audited: ([0-9]+)$' \
+		cmd='npm audit --audit-level=low; status=$?; json=$(npm audit --audit-level=low --json 2>/dev/null) || true; total=$(printf %s "${json}" | node -p "JSON.parse(fs.readFileSync(0)).metadata.dependencies.total" 2>/dev/null) || true; echo "npm audit: dependencies audited: ${total:-none}"; case ${total} in "" | 0 | *[!0-9]*) status=1 ;; *) ;; esac; exit "${status}"'
 	row name=cargo-deny tags=supply-chain category=both target=any tools=rust,cargo-deny \
 		count='gathered [0-9]+ crates|^advisories (ok|FAILED)' zero='gathered ([0-9]+) crates' \
 		cmd='cargo deny --locked -L info check --show-stats'
