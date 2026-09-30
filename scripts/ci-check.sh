@@ -1412,12 +1412,19 @@ st_matcher_samples() {
 	MS_SAMPLE[cargo-deny]="error[vulnerability]: a sample advisory"$'\n'"   ${box} Cargo.lock:181:1"
 	MS_SAMPLE[svelte-check]='1759999999999 ERROR "src/a.ts" 1:14 "Cannot find name '\''total'\''."'
 	MS_SAMPLE[prettier]='[warn] src/lib/a.ts'
+	MS_SAMPLE[prettier-root]='[warn] ../../README.md'
 	MS_SAMPLE[actionlint]='.github/workflows/ci.yml:10:5: unexpected key "foo" for "job" section [syntax-check]'
 	MS_SAMPLE[gitleaks]='Fingerprint: 0123abc:notes.txt:github-pat:3'
 	MS_SAMPLE[pin-guard]='pin guard: .github/workflows/ci.yml:23: runner labels: runs-on: ubuntu-latest'
 	MS_SAMPLE[hygiene-scan]='scripts/sample.sh:3: error: local path -- path-home'
+	# The planted misspelling is written with an escape so typos passes this file.
+	MS_SAMPLE[typos]=$'src/main.rs:12:9: error: `te\x68` should be `the`'
+	MS_SAMPLE[shellcheck]='scripts/sample.sh:3:1: warning: Use cd ... || exit in case cd fails. [SC2164]'
 	# Lines of other tools an owner must not complete.
 	MS_MISS=()
+	MS_MISS[prettier]='[warn] ../../README.md'
+	MS_MISS[prettier-root]='[warn] src/lib/a.ts'
+	MS_MISS[actionlint]='scripts/sample.sh:3:1: warning: Use cd ... || exit in case cd fails. [SC2164]'
 	MS_MISS[hygiene-scan]=$'0123456789ab: subject length: 73 characters, limit 72\npr-body:3: test plan heading\nscripts/sample.sh:3:1: warning: Use cd ... || exit in case cd fails. [SC2164]'
 	MS_GREEN="test result: ok. 110 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.12s
 warning[duplicate]: found 2 duplicate entries for crate 'windows-sys'
@@ -1625,6 +1632,9 @@ declare_table() {
 		cmd='node node_modules/eslint/bin/eslint.js . --max-warnings 0'
 	row name=prettier tags=frontend category=both target=any tools=node,npm:prettier dir=crates/launcher \
 		count='^All matched files use|Code style issues' cmd='node node_modules/prettier/bin/prettier.cjs --check .'
+	row name='root text files formatting (prettier)' tags=frontend category=both target=any tools=node,npm:prettier \
+		count='^root prettier: files|All matched files use|Code style issues' zero='^root prettier: files ([0-9]+)' \
+		cmd='node crates/launcher/scripts/hygiene-scan.ts prettier'
 	row name=svelte-check tags=frontend category=both target=any tools=node,npm:svelte-check dir=crates/launcher \
 		count='COMPLETED [0-9]+ FILES' zero='COMPLETED ([0-9]+) FILES' \
 		cmd='node node_modules/svelte-check/bin/svelte-check --tsconfig ./tsconfig.json --fail-on-warnings --output machine'
@@ -1632,7 +1642,7 @@ declare_table() {
 		count='^test identity self-test: ' zero='cases ([0-9]+)' cmd='node crates/launcher/scripts/test-ids.selftest.ts'
 	# shellcheck disable=SC2016 # the row's own bash expands these, not this file
 	row name='npm audit' tags=frontend category=both target=any tools=node,npm dir=crates/launcher \
-		count='^found [0-9]+ vulnerabilit|^[0-9]+ (info|low|moderate|high|critical) severity vulnerabilit|^[0-9]+ vulnerabilities \(|^npm audit: dependencies audited: ' \
+		count='^found [0-9]+ (vulnerability|vulnerabilities)|^[0-9]+ (info|low|moderate|high|critical) severity (vulnerability|vulnerabilities)|^[0-9]+ vulnerabilities \(|^npm audit: dependencies audited: ' \
 		zero='^npm audit: dependencies audited: ([0-9]+)$' \
 		cmd='npm audit --audit-level=low; status=$?; json=$(npm audit --audit-level=low --json 2>/dev/null) || true; total=$(printf %s "${json}" | node -p "JSON.parse(fs.readFileSync(0)).metadata.dependencies.total" 2>/dev/null) || true; echo "npm audit: dependencies audited: ${total:-none}"; case ${total} in "" | 0 | *[!0-9]*) status=1 ;; *) ;; esac; exit "${status}"'
 	row name=cargo-deny tags=supply-chain category=both target=any tools=rust,cargo-deny \
@@ -1665,6 +1675,12 @@ declare_table() {
 	row name='tracked text files' tags=hygiene category=both target=any tools=node,git \
 		count='^files scanned: |^path shapes read: |^exempt |^hits: |^identity: ' zero='^files scanned: ([0-9]+)' \
 		cmd='node crates/launcher/scripts/hygiene-scan.ts scan'
+	row name='spelling (typos)' tags=hygiene category=both target=any tools=node,git,typos \
+		count='^typos: files checked' zero='^typos: files checked ([0-9]+)' \
+		cmd='node crates/launcher/scripts/hygiene-scan.ts typos'
+	row name='shell scripts (shellcheck)' tags=hygiene category=both target=any tools=node,git,shellcheck \
+		count='^shellcheck: scripts' zero='^shellcheck: scripts ([0-9]+)' \
+		cmd='node crates/launcher/scripts/hygiene-scan.ts shellcheck'
 	# CI only: a pull request's title, body and branch exist only in its event.
 	row name='PR text' tags=pr-text category=ci-only target=any tools=node \
 		count='^pr text: |^hits: ' zero='^pr text: fields read ([0-9]+)' \

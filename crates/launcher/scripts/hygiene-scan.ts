@@ -7,13 +7,26 @@
 // path; and every text file for the eol attribute lf. Three paths are exempt
 // from the first three rules by their exact path; every run prints what each
 // of them suppressed, and an exempt path that is no longer tracked fails.
+// The tool modes run a tool over a fixed list and pass its output through.
 //
 //   node crates/launcher/scripts/hygiene-scan.ts scan
+//   node crates/launcher/scripts/hygiene-scan.ts typos
+//   node crates/launcher/scripts/hygiene-scan.ts shellcheck
+//   node crates/launcher/scripts/hygiene-scan.ts prettier
+//
+// typos: the scan's list of tracked text files, in a temporary file outside
+// the repository; a listing pass prints the count, then the check runs over
+// the same list. shellcheck: the tracked *.sh files, at .shellcheckrc's level.
+// prettier: the tracked markdown, YAML and JSON files but the two npm writes,
+// run from crates/launcher with its config (the config's plugin resolves only
+// there) and without its ignore file, which would skip an explicit src-tauri/
+// path and still report success.
 //
 // A hit line names the file, the line and the rule, never the matched text.
 // Exit status: 0 pass, 1 a hit or a failed condition, 2 usage.
 import { spawnSync } from 'node:child_process';
-import { readFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import path from 'node:path';
 import {
   CheckFailure,
@@ -227,21 +240,129 @@ function scan(write: (line: string) => void): number {
   return hits.length === 0 && failures.length === 0 ? 0 : 1;
 }
 
-const USAGE = 'usage: hygiene-scan.ts scan';
+// ---------------------------------------------------------------------------
+// The tool modes.
+
+interface Ran {
+  readonly status: number;
+  readonly stdout: string;
+  readonly stderr: string;
+}
+
+const run = (command: string, args: readonly string[], cwd: string): Ran => {
+  const result = spawnSync(command, args, {
+    cwd,
+    encoding: 'utf8',
+    maxBuffer: MAX_BUFFER,
+    env: { ...process.env, LC_ALL: 'C.UTF-8' },
+  });
+  if (result.error !== undefined)
+    throw new CheckFailure(`${command} could not be run (${result.error.message})`);
+  return { status: result.status ?? 128, stdout: result.stdout, stderr: result.stderr };
+};
+
+// The tool's own output, unchanged, and its exit status.
+const passThrough = (ran: Ran): number => {
+  process.stdout.write(ran.stdout);
+  process.stderr.write(ran.stderr);
+  return ran.status;
+};
+
+// Writes the list to a file in a new temporary directory outside the
+// repository, hands its path to use and removes the directory after.
+const withListFile = (files: readonly string[], use: (list: string) => number): number => {
+  const dir = mkdtempSync(path.join(tmpdir(), 'hygiene-list-'));
+  try {
+    const list = path.join(dir, 'files.txt');
+    writeFileSync(list, files.map((file) => `${file}\n`).join(''));
+    return use(list);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+};
+
+function typos(write: (line: string) => void): number {
+  const root = repoRoot();
+  const files = textFiles(root);
+  return withListFile(files, (list) => {
+    const listed = run('typos', ['--file-list', list, '--files'], root);
+    if (listed.status !== 0) {
+      process.stderr.write(listed.stderr);
+      write(`typos: FAIL the listing pass exited ${String(listed.status)}`);
+      return 1;
+    }
+    const count = listed.stdout.split('\n').filter((line) => line !== '').length;
+    write(`typos: files checked ${String(count)}`);
+    if (count === 0) {
+      write(`typos: FAIL typos listed 0 of the ${String(files.length)} tracked text files`);
+      return 1;
+    }
+    return passThrough(run('typos', ['--file-list', list, '--format', 'brief'], root));
+  });
+}
+
+function shellcheck(write: (line: string) => void): number {
+  const root = repoRoot();
+  const scripts = nulList(git(root, ['ls-files', '-z', '--', '*.sh']));
+  write(`shellcheck: scripts ${String(scripts.length)}`);
+  if (scripts.length === 0) {
+    write('shellcheck: FAIL no tracked *.sh file was found');
+    return 1;
+  }
+  return passThrough(run('shellcheck', ['-f', 'gcc', '--', ...scripts], root));
+}
+
+// npm writes these two; the launcher's own prettier row leaves them out too.
+const PRETTIER_SKIPPED = ['crates/launcher/package.json', 'crates/launcher/package-lock.json'];
+
+function prettier(write: (line: string) => void): number {
+  const root = repoRoot();
+  const files = nulList(git(root, ['ls-files', '-z'])).filter(
+    (file) => /\.(?:md|ya?ml|json)$/u.test(file) && !PRETTIER_SKIPPED.includes(file),
+  );
+  write(`root prettier: files ${String(files.length)}`);
+  if (files.length === 0) {
+    write('root prettier: FAIL no tracked markdown, YAML or JSON file was found');
+    return 1;
+  }
+  const args = ['--check', '--config', '.prettierrc.json', '--ignore-path='];
+  return passThrough(
+    run(
+      process.execPath,
+      ['node_modules/prettier/bin/prettier.cjs', ...args, ...files.map((file) => `../../${file}`)],
+      path.join(root, 'crates', 'launcher'),
+    ),
+  );
+}
+
+const MODES: Readonly<Record<string, (write: (line: string) => void) => number>> = {
+  scan,
+  typos,
+  shellcheck,
+  prettier,
+};
+
+const USAGE = `usage: hygiene-scan.ts ${Object.keys(MODES).join(' | ')}`;
 
 const main = (args: readonly string[]): number => {
   const write = (line: string): void => {
     process.stdout.write(`${line}\n`);
   };
-  if (args.length !== 1 || args[0] !== 'scan') {
+  const [name = ''] = args;
+  const mode = Object.hasOwn(MODES, name) ? MODES[name] : undefined;
+  if (args.length !== 1 || mode === undefined) {
     process.stderr.write(`${USAGE}\n`);
     return 2;
   }
   try {
-    return scan(write);
+    return mode(write);
   } catch (error: unknown) {
     if (!(error instanceof CheckFailure)) throw error;
-    write(`hygiene scan: FAIL ${error.message}`);
+    const prefix: Readonly<Record<string, string>> = {
+      scan: 'hygiene scan',
+      prettier: 'root prettier',
+    };
+    write(`${prefix[name] ?? name}: FAIL ${error.message}`);
     return 1;
   }
 };

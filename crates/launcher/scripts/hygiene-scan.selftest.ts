@@ -13,6 +13,7 @@ import {
   copyFileSync,
   mkdirSync,
   mkdtempSync,
+  readFileSync,
   rmSync,
   statSync,
   writeFileSync,
@@ -338,6 +339,237 @@ const copiedHelpers = (c: Context): void => {
   );
 };
 
+// A stub tool first on PATH: it copies the file list it was handed to
+// $STUB_RECORD, answers a listing pass with the first $STUB_FILES paths, and
+// exits $STUB_EXIT otherwise.
+const STUB_TOOL = [
+  '#!/usr/bin/env bash',
+  "list='' listing=no",
+  ': >"$STUB_RECORD"',
+  'while [ $# -gt 0 ]; do',
+  '  case "$1" in',
+  '  --file-list) list=$2; cat -- "$2" >>"$STUB_RECORD"; shift ;;',
+  '  --files) listing=yes ;;',
+  '  --format | -f) shift ;;',
+  '  -*) ;;',
+  '  *) printf \'%s\\n\' "$1" >>"$STUB_RECORD" ;;',
+  '  esac',
+  '  shift',
+  'done',
+  'if [ "$listing" = yes ]; then head -n "$STUB_FILES" -- "$list"; exit 0; fi',
+  'exit "$STUB_EXIT"',
+  '',
+].join('\n');
+
+interface Wrapped {
+  readonly ran: Ran;
+  // The file list the stub tool was handed, one path per line.
+  readonly list: string[];
+}
+
+// Runs one wrapper mode in a scratch repository with the stub tool first on PATH.
+const runWrapped = (
+  c: Context,
+  name: string,
+  tool: string,
+  dir: string,
+  env: Readonly<Record<string, string>>,
+): Wrapped => {
+  const bin = path.join(c.root, `${name}-bin`);
+  mkdirSync(bin, { recursive: true });
+  writeFileSync(path.join(bin, tool), STUB_TOOL);
+  chmodSync(path.join(bin, tool), 0o755);
+  const list = path.join(c.root, `${name}-list.txt`);
+  writeFileSync(list, '');
+  const ran = runScan(dir, [tool], {
+    PATH: `${bin}${path.delimiter}${process.env['PATH'] ?? ''}`,
+    STUB_RECORD: list,
+    STUB_FILES: '1000',
+    STUB_EXIT: '0',
+    ...env,
+  });
+  checkOutput(c, name, ran);
+  return {
+    ran,
+    list: readFileSync(list, 'utf8')
+      .split('\n')
+      .filter((line) => line !== ''),
+  };
+};
+
+const sameList = (a: readonly string[], b: readonly string[]): boolean =>
+  [...a].sort().join('\n') === [...b].sort().join('\n');
+
+const reasons = (items: readonly (string | null)[]): string | null => {
+  const found = items.filter((item) => item !== null);
+  return found.length === 0 ? null : found.join('; ');
+};
+
+// typos gets the scan's own text-file list: a listing pass for the count,
+// then the check over the same list.
+const typosWrapper = (c: Context): void => {
+  const dir = makeTree(c, 'typos', DEFAULT_TREE);
+  const files = git(dir, ['grep', '-I', '-l', ''])
+    .split('\n')
+    .filter((line) => line !== '');
+  const three = runWrapped(c, 'typos-three', 'typos', dir, { STUB_FILES: '3' });
+  record(
+    c.tally,
+    false,
+    'typos over the text-file list',
+    reasons([
+      three.ran.status === 0 ? null : `exit ${String(three.ran.status)}`,
+      three.ran.out.split('\n').includes('typos: files checked 3')
+        ? null
+        : 'no line "typos: files checked 3"',
+      sameList(three.list, files) ? null : 'the list handed to typos is not the tracked text files',
+    ]),
+  );
+  const failing = runWrapped(c, 'typos-failing', 'typos', dir, { STUB_EXIT: '2' });
+  record(
+    c.tally,
+    true,
+    'typos reporting a misspelling',
+    failing.ran.status === 0 ? 'the wrapper passed' : null,
+  );
+  const none = runWrapped(c, 'typos-none', 'typos', dir, { STUB_FILES: '0' });
+  record(
+    c.tally,
+    true,
+    'typos checking 0 files',
+    reasons([
+      none.ran.status === 0 ? 'the wrapper passed' : null,
+      none.ran.out.includes('typos: files checked 0') ? null : 'no line "typos: files checked 0"',
+    ]),
+  );
+};
+
+// shellcheck gets the tracked *.sh files only: an untracked script next to
+// them is not handed over.
+const shellcheckWrapper = (c: Context): void => {
+  const dir = makeTree(c, 'shellcheck', DEFAULT_TREE);
+  writeFileSync(path.join(dir, 'scripts', 'untracked.sh'), '#!/usr/bin/env bash\necho x\n');
+  const scripts = git(dir, ['ls-files', '--', '*.sh'])
+    .split('\n')
+    .filter((line) => line !== '');
+  const passing = runWrapped(c, 'shellcheck-passing', 'shellcheck', dir, {});
+  record(
+    c.tally,
+    false,
+    'shellcheck over the tracked scripts',
+    reasons([
+      passing.ran.status === 0 ? null : `exit ${String(passing.ran.status)}`,
+      passing.ran.out.includes(`shellcheck: scripts ${String(scripts.length)}`)
+        ? null
+        : `no line "shellcheck: scripts ${String(scripts.length)}"`,
+      sameList(passing.list, scripts)
+        ? null
+        : 'the list handed to shellcheck is not the tracked scripts',
+      passing.list.includes('scripts/untracked.sh') ? 'the untracked script was handed over' : null,
+    ]),
+  );
+  const failing = runWrapped(c, 'shellcheck-failing', 'shellcheck', dir, { STUB_EXIT: '1' });
+  record(
+    c.tally,
+    true,
+    'shellcheck reporting a finding',
+    failing.ran.status === 0 ? 'the wrapper passed' : null,
+  );
+  const bare = new Map(DEFAULT_TREE);
+  bare.delete('scripts/sample.sh');
+  bare.delete('scripts/binary-audit.sh');
+  const none = runWrapped(c, 'shellcheck-none', 'shellcheck', makeTree(c, 'no-scripts', bare), {});
+  record(
+    c.tally,
+    true,
+    'shellcheck with no tracked script',
+    reasons([
+      none.ran.status === 0 ? 'the wrapper passed' : null,
+      none.ran.out.includes('shellcheck: scripts 0') ? null : 'no line "shellcheck: scripts 0"',
+    ]),
+  );
+};
+
+// A stub prettier at the launcher's by-path entry point: it records its
+// arguments, one per line, and exits $STUB_EXIT.
+const STUB_PRETTIER = [
+  "const { writeFileSync } = require('node:fs');",
+  "writeFileSync(process.env.STUB_RECORD, process.argv.slice(2).join('\\n') + '\\n');",
+  'process.exitCode = Number(process.env.STUB_EXIT);',
+  '',
+].join('\n');
+
+const PRETTIER_TREE = withFiles(DEFAULT_TREE, [
+  ['crates/launcher/package.json', { text: '{}\n', exec: false }],
+  ['crates/launcher/src-tauri/sample.json', { text: '{}\n', exec: false }],
+  ['.github/sample.yml', { text: 'name: sample\n', exec: false }],
+]);
+
+const runPrettier = (c: Context, name: string, files: Tree, exit: string): Wrapped => {
+  const dir = makeTree(c, name, files);
+  const bin = path.join(dir, 'crates', 'launcher', 'node_modules', 'prettier', 'bin');
+  mkdirSync(bin, { recursive: true });
+  writeFileSync(path.join(bin, 'prettier.cjs'), STUB_PRETTIER);
+  const list = path.join(c.root, `${name}-argv.txt`);
+  writeFileSync(list, '');
+  const ran = runScan(dir, ['prettier'], { STUB_RECORD: list, STUB_EXIT: exit });
+  checkOutput(c, name, ran);
+  return {
+    ran,
+    list: readFileSync(list, 'utf8')
+      .split('\n')
+      .filter((line) => line !== ''),
+  };
+};
+
+// The root prettier check: the launcher's config, its ignore file off, and
+// exactly the tracked markdown, YAML and JSON files but the two npm writes.
+const prettierWrapper = (c: Context): void => {
+  const passing = runPrettier(c, 'prettier-passing', PRETTIER_TREE, '0');
+  const files = ['.github/sample.yml', 'README.md', 'crates/launcher/src-tauri/sample.json'];
+  const argv = passing.list;
+  const listed = argv.filter((arg) => arg.startsWith('../../'));
+  record(
+    c.tally,
+    false,
+    'prettier over the root text files',
+    reasons([
+      passing.ran.status === 0 ? null : `exit ${String(passing.ran.status)}`,
+      passing.ran.out.includes(`root prettier: files ${String(files.length)}`)
+        ? null
+        : `no line "root prettier: files ${String(files.length)}"`,
+      argv.includes('--check') ? null : 'no --check',
+      argv.join(' ').includes('--config .prettierrc.json') ? null : 'no --config .prettierrc.json',
+      argv.includes('--ignore-path=') ? null : 'the ignore file is not turned off',
+      sameList(
+        listed,
+        files.map((file) => `../../${file}`),
+      )
+        ? null
+        : 'the list is not the tracked root text files',
+    ]),
+  );
+  const failing = runPrettier(c, 'prettier-failing', PRETTIER_TREE, '1');
+  record(
+    c.tally,
+    true,
+    'prettier reporting a file',
+    failing.ran.status === 0 ? 'the wrapper passed' : null,
+  );
+  const bare = new Map(DEFAULT_TREE);
+  bare.delete('README.md');
+  const none = runPrettier(c, 'prettier-none', bare, '0');
+  record(
+    c.tally,
+    true,
+    'prettier with no root text file',
+    reasons([
+      none.ran.status === 0 ? 'the wrapper passed' : null,
+      none.ran.out.includes('root prettier: files 0') ? null : 'no line "root prettier: files 0"',
+    ]),
+  );
+};
+
 const main = (): number => {
   const blocks = readFixtures();
   const c: Context = {
@@ -353,6 +585,9 @@ const main = (): number => {
     refusals(c);
     lineEndings(c);
     copiedHelpers(c);
+    typosWrapper(c);
+    shellcheckWrapper(c);
+    prettierWrapper(c);
   } finally {
     rmSync(c.root, { recursive: true, force: true });
   }

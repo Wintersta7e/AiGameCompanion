@@ -1,0 +1,3 @@
+# Every optional check, except the two that only restyle variable references and tests.
+enable=all
+disable=SC2250,SC2292

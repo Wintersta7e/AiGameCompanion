@@ -13,7 +13,7 @@ permissions: {}
 
 env:
   CARGO_TERM_COLOR: never
-  NO_COLOR: "1"
+  NO_COLOR: '1'
 
 concurrency:
   group: ${{ github.event_name == 'pull_request' && format('{0}-pr-{1}', github.workflow, github.ref) || format('{0}-run-{1}', github.workflow, github.run_id) }}
@@ -324,10 +324,18 @@ jobs:
           fetch-depth: 0
       - name: Register problem matchers
         run: echo "::add-matcher::.github/problem-matchers.json"
+      - name: Read the tool pins
+        id: pins
+        run: grep -E '^[A-Z][A-Z0-9_]*=' scripts/ci-tools.env >> "$GITHUB_OUTPUT"
       - name: Set up Node
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version-file: .nvmrc
+      - name: Install typos
+        uses: taiki-e/install-action@26e9283f268b880168bdbd2c545dfcd60ec2c6ab # v2.87.13
+        with:
+          tool: typos@${{ steps.pins.outputs.TYPOS }}
+          fallback: none
       - name: Run the hygiene rows of ci-check.sh
         run: ./scripts/ci-check.sh --job hygiene
 

@@ -1,0 +1,6 @@
+# Words typos would change that are right where they stand, each accepted as itself.
+[default.extend-words]
+caf = "caf"
+mis = "mis"
+ue = "ue"
+unparseable = "unparseable"
