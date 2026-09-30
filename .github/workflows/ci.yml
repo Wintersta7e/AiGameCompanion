@@ -314,7 +314,7 @@ jobs:
     name: Rust beta canary (host rows)
     if: github.event_name == 'workflow_dispatch' || github.event.schedule == '23 3 * * 0'
     runs-on: ubuntu-24.04
-    timeout-minutes: 30
+    timeout-minutes: 50
     permissions:
       contents: read
     defaults:
@@ -358,7 +358,7 @@ jobs:
     name: Rust beta canary (Windows rows)
     if: github.event_name == 'workflow_dispatch' || github.event.schedule == '23 3 * * 0'
     runs-on: windows-2025-vs2026
-    timeout-minutes: 30
+    timeout-minutes: 35
     permissions:
       contents: read
     defaults:
@@ -398,7 +398,7 @@ jobs:
   coverage:
     name: Coverage report (Windows, measure only)
     runs-on: windows-2025-vs2026
-    timeout-minutes: 60
+    timeout-minutes: 20
     permissions:
       contents: read
     defaults:
