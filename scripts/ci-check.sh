@@ -1028,6 +1028,18 @@ secret_scan_event() {
 	fi
 }
 
+# The commit-message row's local precondition: prints the reason and exits 1
+# when HEAD has no commit beyond origin/main. An origin/main that does not
+# resolve lets the row run, and the checker fails on it.
+outgoing_commits() {
+	local n
+	git rev-parse -q --verify 'origin/main^{commit}' >/dev/null || return 0
+	n=$(git rev-list --count origin/main..HEAD) || return 2
+	if [[ "${n}" -gt 0 ]]; then return 0; fi
+	printf 'no outgoing commits\n'
+	return 1
+}
+
 # ---------------------------------------------------------------------------
 # The secret scan's self-test: throwaway repositories outside the checkout,
 # git run without the host's config, tokens whose body is generated here at
@@ -1610,6 +1622,17 @@ declare_table() {
 		cmd='source scripts/ci-check.sh && secret_scan_event .'
 	row name='pin freshness report' tags=freshness category=non-blocking target=any tools=node \
 		count='^checked [0-9]+ of [0-9]+ pins' zero='^checked ([0-9]+) of' cmd='node crates/launcher/scripts/freshness.ts'
+	row name='checker self-test' tags=hygiene category=both target=any tools=node,git \
+		count='self-test: ' zero='self-test: planted ([0-9]+)' \
+		cmd='node crates/launcher/scripts/commit-check.selftest.ts'
+	row name='commit messages' tags=hygiene category=both target=any tools=node,git events=pull_request,push \
+		pre='source scripts/ci-check.sh && outgoing_commits' \
+		count='^commits in range: |^hits: |^identity: ' zero='^commits in range: ([0-9]+)' \
+		cmd='node crates/launcher/scripts/commit-check.ts commits'
+	# CI only: a pull request's title, body and branch exist only in its event.
+	row name='PR text' tags=pr-text category=ci-only target=any tools=node \
+		count='^pr text: |^hits: ' zero='^pr text: fields read ([0-9]+)' \
+		cmd='node crates/launcher/scripts/commit-check.ts pr-text'
 	ci_only_item name='npm ci' \
 		reason='CI installs the frontend packages; locally they are installed by hand and npm ci would delete them'
 	ci_only_item name='aggregate job' reason="reads the needed jobs' results; nothing to run locally"

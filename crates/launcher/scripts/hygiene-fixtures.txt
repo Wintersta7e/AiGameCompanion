@@ -1,0 +1,840 @@
+# Samples for the commit checker's and the hygiene scan's self-tests
+# (commit-check.selftest.ts, hygiene-scan.selftest.ts). Every name, address,
+# path and id in this file is invented.
+#
+# A block is a line "@@ <kind> <name>", then "key: value" lines, then a line
+# "text:"; the text runs from the next line to the next line that starts with
+# "@@ ". "expect: <rule>" names a rule the sample must hit, and
+# "expect: <rule> -- <words>" also names words its hit line holds; a block
+# without an expect line must pass. "needle: <text>" is planted text that no
+# output may repeat. In a text, \u{<hex>} stands for that code point, so this
+# file stays ASCII.
+#
+# Commit keys: class (dependabot, github-merge, maintainer or other), author
+# and committer (addresses; the committer defaults to the author, the author
+# to the maintainer's plain noreply address), parents (2 makes a merge whose
+# second parent is the range's base), adds (paths the commit adds), renames
+# (<old> -> <new>), range (the group the commit is built into, in file order),
+# branch and branch-expect (the group's branch name and what it must hit).
+# The synthetic repository owner is sample-owner.
+#
+# Pull request keys: field (title, body or branch: the one the text fills; the
+# others keep clean values) and login (the author's login, by default
+# sample-contributor). A trap's text is clean and is used as a commit message,
+# a pull request body and a file.
+
+@@ commit split-dependabot
+range: split
+class: dependabot
+author: 49699333+dependabot[bot]@users.noreply.github.com
+committer: noreply@github.com
+text:
+build(deps): bump sample-crate from 1.0.0 to 1.0.1
+
+Bumps sample-crate from 1.0.0 to 1.0.1.
+- Release notes line one
+- Release notes line two
+- Release notes line three
+- Release notes line four
+- Release notes line five
+- Release notes line six
+- Release notes line seven
+- Release notes line eight
+- Release notes line nine
+- Release notes line ten
+
+Signed-off-by: dependabot[bot] <support@github.com>
+
+@@ commit split-merge
+range: split
+class: github-merge
+author: 12345+Sample-Owner@users.noreply.github.com
+committer: noreply@github.com
+parents: 2
+text:
+Merge pull request #1 from sample-owner/a-branch-name-that-runs-past-the-limit
+
+a pull request title
+
+@@ commit split-maintainer-plain
+range: split
+class: maintainer
+author: sample-owner@users.noreply.github.com
+text:
+fix: keep the sample list sorted
+
+The list was read in file order.
+
+Co-Authored-By: Rooty
+
+@@ commit split-maintainer-id
+range: split
+class: maintainer
+author: 12345+Sample-Owner@users.noreply.github.com
+text:
+docs: say where the sample list lives
+
+Co-Authored-By: Leafy
+
+@@ commit split-other
+range: split
+class: other
+author: contributor@example.org
+text:
+feat: add a sample option
+
+@@ commit subject-maintainer
+range: planted
+expect: subject length -- 73 characters, limit 72
+text:
+fix: keep the sample list sorted when two entries share one long displays
+
+Co-Authored-By: Rooty
+
+@@ commit subject-other
+range: planted
+author: contributor@example.org
+expect: subject length -- 73 characters, limit 72
+text:
+fix: keep the sample list sorted when two entries share one long displays
+
+@@ commit body-maintainer
+range: planted
+expect: body length -- 9 lines, limit 8
+text:
+fix: keep the sample list sorted
+
+Line one of the body.
+Line two of the body.
+Line three of the body.
+
+Line four of the body.
+Line five of the body.
+Line six of the body.
+
+Line seven of the body.
+Line eight of the body.
+Line nine of the body.
+
+Co-Authored-By: Rooty
+
+@@ commit body-other
+range: planted
+author: contributor@example.org
+expect: body length -- 9 lines, limit 8
+text:
+fix: keep the sample list sorted
+
+Line one of the body.
+Line two of the body.
+Line three of the body.
+Line four of the body.
+Line five of the body.
+Line six of the body.
+Line seven of the body.
+Line eight of the body.
+Line nine of the body.
+
+Signed-off-by: Pat Sample <pat@sample-mail.net>
+
+@@ commit attribution-session
+range: planted
+expect: AI attribution -- session trailer
+needle: sample-session-4711
+text:
+fix: keep the sample list sorted
+
+Claude-Session: sample-session-4711
+
+Co-Authored-By: Rooty
+
+@@ commit attribution-generated
+range: planted
+expect: AI attribution -- generated-with link
+needle: Generated with [
+text:
+fix: keep the sample list sorted
+
+Generated with [Sample Tool](https://sample-tool.invalid)
+
+Co-Authored-By: Rooty
+
+@@ commit attribution-code-link
+range: planted
+expect: AI attribution -- tool link
+needle: claude.ai/code/
+text:
+fix: keep the sample list sorted
+
+Session: https://claude.ai/code/sample-4711
+
+Co-Authored-By: Rooty
+
+@@ commit attribution-product-link
+range: planted
+expect: AI attribution -- tool link
+needle: claude.com/claude-code
+text:
+fix: keep the sample list sorted
+
+Made with https://claude.com/claude-code today.
+
+Co-Authored-By: Rooty
+
+@@ commit attribution-robot
+range: planted
+expect: AI attribution -- robot sign
+needle: \u{1F916}
+text:
+fix: keep the sample list sorted
+
+\u{1F916} made with a tool
+
+Co-Authored-By: Rooty
+
+@@ commit attribution-other
+range: planted
+author: contributor@example.org
+expect: AI attribution -- AI co-author
+needle: Codex Sample
+text:
+fix: keep the sample list sorted
+
+Co-Authored-By: Codex Sample
+
+@@ commit planning-ruling-maintainer
+range: planted
+expect: planning id -- ruling number
+needle: P0A0
+text:
+fix: apply P0A0 to the sample list
+
+Co-Authored-By: Rooty
+
+@@ commit planning-criterion-maintainer
+range: planted
+expect: planning id -- criterion number
+needle: AC-P0
+text:
+fix: keep the sample list sorted
+
+Meets AC-P0-00-1.
+
+Co-Authored-By: Rooty
+
+@@ commit planning-plan-digits-maintainer
+range: planted
+expect: planning id -- plan name
+needle: p0-00
+text:
+fix: finish p0-00 for the sample list
+
+Co-Authored-By: Rooty
+
+@@ commit planning-plan-suffix-maintainer
+range: planted
+expect: planning id -- plan name
+needle: p0-sample
+text:
+fix: finish p0-sample for the sample list
+
+Co-Authored-By: Rooty
+
+@@ commit planning-r-maintainer
+range: planted
+expect: planning id -- short id
+needle: R0
+text:
+fix: keep the sample list sorted (R0)
+
+Co-Authored-By: Rooty
+
+@@ commit planning-u-maintainer
+range: planted
+expect: planning id -- short id
+needle: U0
+text:
+fix: keep the sample list sorted, as U0 says
+
+Co-Authored-By: Rooty
+
+@@ commit planning-d-maintainer
+range: planted
+expect: planning id -- short id
+needle: D0
+text:
+fix: keep the sample list sorted per D0
+
+Co-Authored-By: Rooty
+
+@@ commit planning-v-maintainer
+range: planted
+expect: planning id -- short id
+needle: V0
+text:
+fix: keep the sample list sorted
+
+Found by V0.
+
+Co-Authored-By: Rooty
+
+@@ commit planning-section-maintainer
+range: planted
+expect: planning id -- section sign
+needle: \u{a7} 0
+text:
+fix: keep the sample list sorted
+
+See \u{a7} 0.1 for the order.
+
+Co-Authored-By: Rooty
+
+@@ commit planning-route-maintainer
+range: planted
+expect: planning id -- planning directory
+needle: docs/route/
+text:
+fix: keep the sample list sorted
+
+As written in docs/route/sample.md.
+
+Co-Authored-By: Rooty
+
+@@ commit planning-plans-maintainer
+range: planted
+expect: planning id -- planning directory
+needle: docs/plans/
+text:
+fix: keep the sample list sorted
+
+As written in docs/plans/sample.md.
+
+Co-Authored-By: Rooty
+
+@@ commit planning-other
+range: planted
+author: contributor@example.org
+expect: planning id -- ruling number
+needle: P0A0
+text:
+fix: apply P0A0 to the sample list
+
+@@ commit path-home-maintainer
+range: planted
+expect: local path -- path-home
+needle: /home/sample/
+text:
+fix: keep the sample list sorted
+
+Seen in /home/sample/project/notes.txt.
+
+Co-Authored-By: Rooty
+
+@@ commit path-root-maintainer
+range: planted
+expect: local path -- path-root
+needle: /root/sample/
+text:
+fix: keep the sample list sorted
+
+Seen in /root/sample/notes.txt.
+
+Co-Authored-By: Rooty
+
+@@ commit path-users-maintainer
+range: planted
+expect: local path -- path-users
+needle: /Users/sample/
+text:
+fix: keep the sample list sorted
+
+Seen in /Users/sample/notes.txt.
+
+Co-Authored-By: Rooty
+
+@@ commit path-mnt-drive-maintainer
+range: planted
+expect: local path -- path-mnt-drive
+needle: /mnt/d/sample/
+text:
+fix: keep the sample list sorted
+
+Seen in /mnt/d/sample/notes.txt.
+
+Co-Authored-By: Rooty
+
+@@ commit path-drive-users-maintainer
+range: planted
+expect: local path -- path-drive-users
+needle: D:\Users\sample
+text:
+fix: keep the sample list sorted
+
+Seen in D:\Users\sample\notes.txt.
+
+Co-Authored-By: Rooty
+
+@@ commit path-wsl-unc-maintainer
+range: planted
+expect: local path -- path-wsl-unc
+needle: \\wsl.localhost\sample
+text:
+fix: keep the sample list sorted
+
+Seen in \\wsl.localhost\sample\notes.txt.
+
+Co-Authored-By: Rooty
+
+@@ commit path-other
+range: planted
+author: contributor@example.org
+expect: local path -- path-mnt-drive
+needle: /mnt/d/sample/
+text:
+fix: keep the sample list sorted
+
+Seen in /mnt/d/sample/notes.txt.
+
+@@ commit email-maintainer
+range: planted
+expect: private email -- 1 address
+needle: person@sample-mail.net
+text:
+fix: keep the sample list sorted
+
+Reported by person@sample-mail.net.
+
+Co-Authored-By: Rooty
+
+@@ commit email-other
+range: planted
+author: contributor@example.org
+expect: private email -- 1 address
+needle: person@sample-mail.net
+text:
+fix: keep the sample list sorted
+
+Reported by person@sample-mail.net.
+
+@@ commit never-claude
+range: planted
+adds: CLAUDE.md
+expect: never-commit file -- CLAUDE.md
+text:
+chore: add the sample notes
+
+Co-Authored-By: Rooty
+
+@@ commit never-config
+range: planted
+adds: sample/config.toml
+expect: never-commit file -- config.toml
+text:
+chore: add the sample settings
+
+Co-Authored-By: Rooty
+
+@@ commit never-env
+range: planted
+adds: sub/.env
+expect: never-commit file -- .env
+text:
+chore: add the sample environment
+
+Co-Authored-By: Rooty
+
+@@ commit never-pem
+range: planted
+adds: certs/sample.pem
+expect: never-commit file -- key or certificate
+text:
+chore: add the sample certificate
+
+Co-Authored-By: Rooty
+
+@@ commit never-docs
+range: planted
+adds: docs/sample.md
+expect: never-commit file -- docs/
+text:
+chore: add the sample page
+
+Co-Authored-By: Rooty
+
+@@ commit never-rename-env
+range: planted
+renames: sample.txt -> .env
+expect: never-commit file -- .env
+text:
+chore: rename the sample file
+
+Co-Authored-By: Rooty
+
+@@ commit never-merge
+range: planted
+parents: 2
+adds: sub/CLAUDE.md
+expect: never-commit file -- CLAUDE.md
+text:
+Merge branch 'sample-topic'
+
+Co-Authored-By: Rooty
+
+@@ commit never-other
+range: planted
+author: contributor@example.org
+adds: certs/sample.key
+expect: never-commit file -- key or certificate
+text:
+chore: add the sample key
+
+@@ commit trailer-missing-maintainer
+range: planted
+expect: co-author trailer
+text:
+fix: keep the sample list sorted
+
+@@ commit trailer-missing-other
+range: planted
+author: contributor@example.org
+text:
+fix: keep the sample list sorted
+
+@@ commit trailer-lower-case-maintainer
+range: planted
+expect: co-author trailer
+text:
+fix: keep the sample list sorted
+
+Co-authored-by: Rooty
+
+@@ commit trailer-lower-case-other
+range: planted
+author: contributor@example.org
+text:
+fix: keep the sample list sorted
+
+Co-authored-by: Rooty
+
+@@ commit trailer-both-names-maintainer
+range: planted
+expect: co-author trailer
+text:
+fix: keep the sample list sorted
+
+Co-Authored-By: Rooty
+Co-Authored-By: Leafy
+
+@@ commit trailer-both-names-other
+range: planted
+author: contributor@example.org
+text:
+fix: keep the sample list sorted
+
+Co-Authored-By: Rooty
+Co-Authored-By: Leafy
+
+@@ commit trailer-signed-off-maintainer
+range: planted
+expect: co-author trailer
+text:
+fix: keep the sample list sorted
+
+Signed-off-by: Pat Sample <pat@sample-mail.net>
+Co-Authored-By: Rooty
+
+@@ commit trailer-signed-off-other
+range: planted
+author: contributor@example.org
+text:
+fix: keep the sample list sorted
+
+Signed-off-by: Pat Sample <pat@sample-mail.net>
+Co-Authored-By: Rooty
+
+@@ commit trailer-address-maintainer
+range: planted
+expect: co-author trailer
+text:
+fix: keep the sample list sorted
+
+Co-Authored-By: Rooty <x@y.invalid>
+
+@@ commit trailer-address-other
+range: planted
+author: contributor@example.org
+text:
+fix: keep the sample list sorted
+
+Co-Authored-By: Rooty <x@y.invalid>
+
+@@ commit trailer-harness-maintainer
+range: planted
+expect: co-author trailer
+expect: AI attribution -- AI co-author
+expect: private email -- 1 address
+needle: noreply@anthropic.com
+text:
+fix: keep the sample list sorted
+
+Co-Authored-By: Claude <noreply@anthropic.com>
+
+Co-Authored-By: Rooty
+
+@@ commit trailer-harness-other
+range: planted
+author: contributor@example.org
+expect: AI attribution -- AI co-author
+expect: private email -- 1 address
+needle: noreply@anthropic.com
+text:
+fix: keep the sample list sorted
+
+Co-Authored-By: Claude <noreply@anthropic.com>
+
+Co-Authored-By: Rooty
+
+@@ commit committer-maintainer
+range: planted
+committer: sample@example.com
+expect: noreply identity -- committer email
+text:
+fix: keep the sample list sorted
+
+Co-Authored-By: Rooty
+
+@@ commit committer-other
+range: planted
+author: contributor@example.org
+committer: sample@example.com
+text:
+fix: keep the sample list sorted
+
+Co-Authored-By: Rooty
+
+@@ commit clean-subject-72
+range: clean
+text:
+fix: keep the sample list sorted when two entries share one long display
+
+Co-Authored-By: Rooty
+
+@@ commit clean-body-8
+range: clean
+text:
+fix: keep the sample list sorted
+
+Line one of the body.
+Line two of the body.
+
+Line three of the body.
+Line four of the body.
+
+Line five of the body.
+Line six of the body.
+
+Line seven of the body.
+Line eight of the body.
+
+Co-Authored-By: Rooty
+
+@@ commit clean-other-trailers
+range: clean
+author: contributor@example.org
+text:
+feat: add a sample option
+
+Signed-off-by: Pat Sample <pat@sample-mail.net>
+Co-Authored-By: Lee Sample <lee@sample-mail.net>
+
+@@ commit branch-planning
+range: branch-planning
+branch: feature/p0-sample
+branch-expect: planning id -- plan name
+text:
+fix: keep the sample list sorted
+
+Co-Authored-By: Rooty
+
+@@ commit branch-path
+range: branch-path
+branch: wip/mnt/c/sample
+branch-expect: local path -- path-mnt-drive
+text:
+fix: keep the sample list sorted
+
+Co-Authored-By: Rooty
+
+@@ pr title-planning
+field: title
+expect: planning id -- ruling number
+needle: P0A0
+text:
+fix: apply P0A0 to the sample list
+
+@@ pr title-attribution
+field: title
+expect: AI attribution -- robot sign
+needle: \u{1F916}
+text:
+fix: keep the sample list sorted \u{1F916}
+
+@@ pr title-path
+field: title
+expect: local path -- path-home
+needle: /home/sample/
+text:
+fix: read /home/sample/notes.txt in order
+
+@@ pr title-email
+field: title
+expect: private email -- 1 address
+needle: person@sample-mail.net
+text:
+fix: sort the list, as person@sample-mail.net asked
+
+@@ pr title-test-plan
+field: title
+text:
+Test plan for the sample list
+
+@@ pr body-test-plan
+field: body
+expect: test plan heading
+text:
+Sorts the sample list.
+
+## Test plan
+- ran it by hand
+
+@@ pr body-bold-test-plan
+field: body
+expect: test plan heading
+text:
+Sorts the sample list.
+**Test plan**: ran it by hand
+
+@@ pr body-attribution
+field: body
+expect: AI attribution -- generated-with link
+needle: Generated with [
+text:
+Sorts the sample list.
+
+Generated with [Sample Tool](https://sample-tool.invalid)
+
+@@ pr body-planning
+field: body
+expect: planning id -- planning directory
+needle: docs/plans/
+text:
+Sorts the sample list, as docs/plans/sample.md says.
+
+@@ pr body-path
+field: body
+expect: local path -- path-drive-users
+needle: D:\Users\sample
+text:
+Seen in D:\Users\sample\notes.txt.
+
+@@ pr body-email
+field: body
+expect: private email -- 1 address
+needle: person@sample-mail.net
+text:
+Reported by person@sample-mail.net.
+
+@@ pr branch-planning
+field: branch
+expect: planning id -- plan name
+needle: p0-sample
+text:
+feature/p0-sample
+
+@@ pr branch-path
+field: branch
+expect: local path -- path-mnt-drive
+needle: wip/mnt/c/sample
+text:
+wip/mnt/c/sample
+
+@@ pr branch-email
+field: branch
+text:
+fix/person@sample-mail.net
+
+@@ pr bot-body
+field: body
+login: dependabot[bot]
+expect: planning id -- not counted
+expect: private email -- not counted
+needle: P0A0
+needle: person@sample-mail.net
+text:
+Bumps sample-crate. The release notes name P0A0 and person@sample-mail.net.
+
+@@ pr bot-title
+field: title
+login: dependabot[bot]
+expect: planning id -- ruling number
+needle: P0A0
+text:
+build(deps): bump P0A0 sample-crate
+
+@@ pr bot-branch
+field: branch
+login: dependabot[bot]
+expect: planning id -- ruling number
+needle: P0A0
+text:
+dependabot/cargo/P0A0-sample
+
+@@ pr bot-long-title
+field: title
+login: dependabot[bot]
+text:
+build(deps): bump the sample-crates group across 1 directory with 12 updates now
+
+@@ trap url-password
+text:
+https://user:pw@example.com/
+
+@@ trap image-name
+text:
+128x128@2x.png
+
+@@ trap temp-dir
+text:
+/tmp/sample
+
+@@ trap drive-a
+text:
+C:\a\b\Game.EXE
+
+@@ trap home-variable
+text:
+$HOME/.cargo
+
+@@ identity entry
+text:
+zarvex-quillon
+
+@@ commit identity-message
+range: identity
+branch: feature/zarvex-quillon-work
+branch-expect: identity entry
+expect: identity entry
+text:
+fix: keep the sample list sorted
+
+Checked on the Zarvex-Quillon desk.
+
+Co-Authored-By: Rooty
+
+@@ commit identity-author
+range: identity
+author: zarvex-quillon@example.org
+committer: contributor@example.org
+expect: identity entry -- author email
+text:
+feat: add a sample option
