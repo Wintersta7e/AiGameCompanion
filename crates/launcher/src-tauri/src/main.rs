@@ -1,3 +1,5 @@
+//! Desktop launcher and in-game AI companion overlay.
+
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod ai;

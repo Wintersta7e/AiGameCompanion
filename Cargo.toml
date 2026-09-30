@@ -8,8 +8,9 @@ strip = true
 codegen-units = 1
 
 # Strict lint gate. Every member opts in with `[lints] workspace = true`.
-# CI runs `cargo clippy --workspace --all-targets -- -D warnings`, so each
-# "warn" below is a hard error on a PR.
+# Each "warn" below is a hard error in the gate: the clippy rows in
+# scripts/ci-check.sh pass `-D warnings`, and for the rustdoc table the
+# docs row sets RUSTDOCFLAGS=-D warnings.
 [workspace.lints.rust]
 unsafe_op_in_unsafe_fn = "deny"
 # unsafe only inside the Windows FFI modules (mod imp), each of which expects this lint.
@@ -89,3 +90,6 @@ multiple_crate_versions = "allow"
 # one wants `pub` inside a private module, that one wants `pub(crate)`. Keeping
 # both makes `--fix` flip every item back and forth forever.
 redundant_pub_crate = "allow"
+
+[workspace.lints.rustdoc]
+all = { level = "warn", priority = -1 }
