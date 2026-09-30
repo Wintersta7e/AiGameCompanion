@@ -21,6 +21,8 @@ concurrency:
 
 # Actions are pinned to commit SHAs, not tags: a tag can be moved to point at
 # new code. Dependabot keeps them current (see .github/dependabot.yml).
+# Node, the tool file and runner labels move by hand from the weekly freshness
+# report; the SDK and CRT values move with a deliberate review.
 jobs:
   rust:
     name: Rust (fmt, clippy, test)
@@ -303,6 +305,167 @@ jobs:
           echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
       - name: Run the secrets rows of ci-check.sh
         run: ./scripts/ci-check.sh --job secrets
+
+  # The beta canaries re-run the Rust rows on the next Rust release, which is
+  # visible six weeks before it becomes stable. They run weekly or by hand, and
+  # the aggregate job does not need them, so a red canary never blocks a merge.
+  canary-linux:
+    name: Rust beta canary (host rows)
+    if: github.event_name == 'workflow_dispatch' || github.event.schedule == '23 3 * * 0'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    defaults:
+      run:
+        shell: bash
+    env:
+      RUSTUP_TOOLCHAIN: beta
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 2
+      - name: Register problem matchers
+        run: echo "::add-matcher::.github/problem-matchers.json"
+      - name: Install the beta toolchain
+        run: rustup toolchain install beta --profile minimal --component rustfmt,clippy --no-self-update
+      - name: Cache the Rust build
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          save-if: false
+      # Tauri links against the GTK/WebKit stack on Linux.
+      - name: Install system libraries
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libglib2.0-dev libgtk-3-dev libsoup-3.0-dev \
+            libwebkit2gtk-4.1-dev libjavascriptcoregtk-4.1-dev librsvg2-dev
+      - name: Set up Node
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+          cache-dependency-path: crates/launcher/package-lock.json
+      - name: Install the frontend packages
+        run: npm ci
+        working-directory: crates/launcher
+      - name: Run the host Rust rows on beta
+        run: ./scripts/ci-check.sh --job rust-host
+
+  canary-windows:
+    name: Rust beta canary (Windows rows)
+    if: github.event_name == 'workflow_dispatch' || github.event.schedule == '23 3 * * 0'
+    runs-on: windows-2025-vs2026
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    defaults:
+      run:
+        shell: bash
+    env:
+      RUSTUP_TOOLCHAIN: beta
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 2
+      - name: Register problem matchers
+        run: echo "::add-matcher::.github/problem-matchers.json"
+      - name: Install the beta toolchain
+        run: rustup toolchain install beta --profile minimal --component rustfmt,clippy --no-self-update
+      - name: Cache the Rust build
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          save-if: false
+      - name: Set up Node
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+          cache-dependency-path: crates/launcher/package-lock.json
+      - name: Install the frontend packages
+        run: npm ci
+        working-directory: crates/launcher
+      - name: Run the Windows Rust rows on beta
+        run: ./scripts/ci-check.sh --job rust
+
+  # Measures the Windows tests' coverage on every run from its own instrumented
+  # build. The aggregate job does not need it: coverage is reported, never
+  # required, and the job fails only when nothing was measured.
+  coverage:
+    name: Coverage report (Windows, measure only)
+    runs-on: windows-2025-vs2026
+    timeout-minutes: 60
+    permissions:
+      contents: read
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 2
+      - name: Register problem matchers
+        run: echo "::add-matcher::.github/problem-matchers.json"
+      - name: Read the tool pins
+        id: pins
+        run: grep -E '^[A-Z][A-Z0-9_]*=' scripts/ci-tools.env >> "$GITHUB_OUTPUT"
+      - name: Install the Rust toolchain
+        run: rustup toolchain install --no-self-update
+      - name: Add the coverage component
+        run: rustup component add llvm-tools
+      - name: Cache the Rust build
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      - name: Set up Node
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+          cache-dependency-path: crates/launcher/package-lock.json
+      - name: Install the frontend packages
+        run: npm ci
+        working-directory: crates/launcher
+      - name: Install cargo-llvm-cov
+        uses: taiki-e/install-action@26e9283f268b880168bdbd2c545dfcd60ec2c6ab # v2.87.13
+        with:
+          tool: cargo-llvm-cov@${{ steps.pins.outputs.CARGO_LLVM_COV }}
+          fallback: none
+      - name: Measure coverage
+        run: ./scripts/ci-check.sh --job coverage
+
+  # Lists each pin beside the newest upstream release, weekly or by hand. The
+  # aggregate job does not need it.
+  freshness:
+    name: Pin freshness report
+    if: github.event_name == 'workflow_dispatch' || github.event.schedule == '23 3 * * 0'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Register problem matchers
+        run: echo "::add-matcher::.github/problem-matchers.json"
+      - name: Set up Node
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version-file: .nvmrc
+      - name: Report pin freshness
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: ./scripts/ci-check.sh --job freshness
 
   aggregate:
     name: Result of the needed CI jobs

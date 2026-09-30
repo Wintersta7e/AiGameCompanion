@@ -1541,7 +1541,7 @@ declare_table() {
 	row name='wiring self-check' tags=workflows category=both target=any tools=node,bash,jq,git \
 		count='^wiring self-check: ' zero='jobs ([0-9]+)' cmd='node crates/launcher/scripts/wiring-check.ts'
 	row name=actionlint tags=workflows category=both target=any tools=actionlint count=none cmd=actionlint
-	row name='vite build' tags=rust,rust-host,frontend category=both target=any tools=node,npm:vite \
+	row name='vite build' tags=rust,rust-host,frontend,coverage category=both target=any tools=node,npm:vite \
 		dir=crates/launcher count='modules transformed' zero='([0-9]+) modules transformed' \
 		cmd='node node_modules/vite/bin/vite.js build'
 	row name=rustfmt tags=rust category=both target=any tools=rust count=none cmd='cargo fmt --all --check -- --color never'
@@ -1555,6 +1555,12 @@ declare_table() {
 		cmd='cargo test --workspace --all-features --locked -- --ignored 2>&1 | node crates/launcher/scripts/test-ids.ts libtest-ignored scripts/test-baselines/windows.list'
 	row name='rustdoc (Windows target)' tags=rust category=both target=windows tools=rust requires='vite build' \
 		count=none cmd="RUSTDOCFLAGS='-D warnings' cargo doc --workspace --no-deps --all-features --locked"
+	# Coverage is measured only by its own CI job, on the Windows runner:
+	# cargo-xwin has no llvm-cov subcommand. TOTAL counts regions, so it is 0
+	# exactly when no file was measured.
+	row name='coverage report (Windows tests)' tags=coverage category=non-blocking target=windows \
+		tools=rust,cargo-llvm-cov requires='vite build' count='^TOTAL |^[^ ]+\.rs +[0-9]+ ' zero='^TOTAL +([0-9]+)' \
+		cmd='cargo llvm-cov --workspace --all-features --locked'
 	row name='clippy (Linux host)' tags=rust-host category=both target=linux tools=rust count=none \
 		cmd='cargo clippy --workspace --all-targets --locked -- -D warnings'
 	row name='tests (Linux host)' tags=rust-host category=both target=linux tools=rust,node requires='vite build' \
@@ -1592,6 +1598,8 @@ declare_table() {
 	row name='secret scan' tags=secrets category=both target=any tools=gitleaks,git \
 		count='commits scanned|leaks found|no leaks found|^secret scan: ' zero='([0-9]+) commits scanned' \
 		cmd='source scripts/ci-check.sh && secret_scan_event .'
+	row name='pin freshness report' tags=freshness category=non-blocking target=any tools=node \
+		count='^checked [0-9]+ of [0-9]+ pins' zero='^checked ([0-9]+) of' cmd='node crates/launcher/scripts/freshness.ts'
 	ci_only_item name='npm ci' \
 		reason='CI installs the frontend packages; locally they are installed by hand and npm ci would delete them'
 	ci_only_item name='aggregate job' reason="reads the needed jobs' results; nothing to run locally"

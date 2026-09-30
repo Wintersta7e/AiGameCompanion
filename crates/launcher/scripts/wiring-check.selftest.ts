@@ -255,7 +255,7 @@ const conditionCases: readonly Case[] = [
       row('scan', 'secrets', 'both', 'gitleaks version'),
       row('scan', 'secrets', 'non-blocking', 'gitleaks version'),
     ),
-    expect: ['tag callers', 'non-blocking'],
+    expect: ['non-blocking'],
   },
   {
     name: 'an aggregate block that always passes',
@@ -282,6 +282,196 @@ const conditionCases: readonly Case[] = [
     files: { ...ci(CLEAN_CI), '.github/workflows/other.yml': 'name: &n Other\n' },
     expect: ['shape'],
   },
+];
+
+// The four jobs that never gate a merge: two beta canaries and the freshness
+// report run weekly or by hand; the coverage job runs on every event.
+const WEEKLY = "'23 3 * * 0'";
+const DAILY = "'23 3 * * 1-6'";
+const ifLine = (cron: string): string =>
+  `    if: github.event_name == 'workflow_dispatch' || github.event.schedule == ${cron}\n`;
+const BETA_ENV = '    env:\n      RUSTUP_TOOLCHAIN: beta\n';
+const TOKEN_ENV = `        env:\n          GH_TOKEN: \${{ github.token }}\n`;
+const extraJob = (id: string, tag: string, head: string): string =>
+  swap(
+    job(id, `The ${id} job`, 'ubuntu-24.04', tag),
+    `    name: The ${id} job\n`,
+    `    name: The ${id} job\n${head}`,
+  );
+const CANARY_LINUX = extraJob('canary-linux', 'rust-host', `${ifLine(WEEKLY)}${BETA_ENV}`);
+const CANARY_WINDOWS = extraJob('canary-windows', 'rust', `${ifLine(WEEKLY)}${BETA_ENV}`);
+const FRESHNESS_CALL = '        run: ./scripts/ci-check.sh --job freshness\n';
+const freshnessJob = (head: string): string =>
+  swap(extraJob('freshness', 'freshness', head), FRESHNESS_CALL, `${TOKEN_ENV}${FRESHNESS_CALL}`);
+const FRESHNESS = freshnessJob(ifLine(WEEKLY));
+const COVERAGE = extraJob('coverage', 'coverage', '');
+
+const fullCi = (
+  linux = CANARY_LINUX,
+  windows = CANARY_WINDOWS,
+  freshness = FRESHNESS,
+  coverage = COVERAGE,
+): string =>
+  swap(CLEAN_CI, '  aggregate:\n', `${linux}${windows}${freshness}${coverage}  aggregate:\n`);
+
+const FULL_LIST = swap(
+  CLEAN_LIST,
+  'rows\t7\n',
+  [
+    row('vite build', 'rust,coverage', 'both', 'node node_modules/vite/bin/vite.js build'),
+    row('coverage report', 'coverage', 'non-blocking', 'cargo llvm-cov --workspace --locked'),
+    row('freshness report', 'freshness', 'non-blocking', 'node scripts/freshness.ts'),
+    'rows\t10\n',
+  ].join('\n'),
+);
+const NEEDS =
+  '    needs: [rust, rust-host, frontend, release-audit, supply-chain, workflows, secrets]\n';
+const full = (
+  name: string,
+  text: string,
+  expect: readonly string[],
+  extra: Partial<Case> = {},
+): Case => ({ name, files: ci(text), list: FULL_LIST, expect, ...extra });
+
+const OTHER_WORKFLOW = [
+  'name: Other',
+  '',
+  'on:',
+  '  workflow_dispatch:',
+  '',
+  'permissions: {}',
+  '',
+  'env:',
+  '  CARGO_TERM_COLOR: never',
+  '  NO_COLOR: "1"',
+  '',
+  'jobs:',
+  job('extra', 'Extra', 'ubuntu-24.04', 'extra'),
+].join('\n');
+
+const nonBlockingCases: readonly Case[] = [
+  full('the four non-blocking jobs pass', fullCi(), [], { counts: 'non-blocking jobs 4' }),
+  full(
+    'the aggregate needing canary-linux',
+    swap(fullCi(), NEEDS, swap(NEEDS, 'secrets]', 'secrets, canary-linux]')),
+    ['aggregate'],
+  ),
+  full(
+    'the aggregate needing coverage',
+    swap(fullCi(), NEEDS, swap(NEEDS, 'secrets]', 'secrets, coverage]')),
+    ['aggregate'],
+  ),
+  full('freshness without an if', fullCi(undefined, undefined, freshnessJob('')), ['job if']),
+  full(
+    'a canary whose if names the daily cron line',
+    fullCi(undefined, extraJob('canary-windows', 'rust', `${ifLine(DAILY)}${BETA_ENV}`)),
+    ['job if'],
+  ),
+  full(
+    'a canary whose if names a cron absent from on.schedule',
+    fullCi(extraJob('canary-linux', 'rust-host', `${ifLine("'23 4 * * 0'")}${BETA_ENV}`)),
+    ['job if'],
+  ),
+  full(
+    'the two canaries naming different weekly crons',
+    swap(
+      fullCi(undefined, extraJob('canary-windows', 'rust', `${ifLine("'23 3 * * 6'")}${BETA_ENV}`)),
+      `    - cron: ${DAILY}\n`,
+      "    - cron: '23 3 * * 6'\n",
+    ),
+    ['job if'],
+  ),
+  full(
+    'a canary whose if is another expression',
+    fullCi(
+      extraJob('canary-linux', 'rust-host', `    if: github.event_name == 'schedule'\n${BETA_ENV}`),
+    ),
+    ['job if'],
+  ),
+  full(
+    'coverage with an if',
+    fullCi(undefined, undefined, undefined, extraJob('coverage', 'coverage', ifLine(WEEKLY))),
+    ['job if'],
+  ),
+  full(
+    'the toolchain override in the host Rust job',
+    swap(
+      fullCi(),
+      '    name: Rust (non-Windows build)\n',
+      `    name: Rust (non-Windows build)\n${BETA_ENV}`,
+    ),
+    ['escape'],
+  ),
+  full('the toolchain override in a job of another workflow', fullCi(), ['escape'], {
+    files: {
+      ...ci(fullCi()),
+      '.github/workflows/other.yml': swap(
+        OTHER_WORKFLOW,
+        '    name: Extra\n',
+        `    name: Extra\n${BETA_ENV}`,
+      ),
+    },
+    list: swap(FULL_LIST, 'rows\t10\n', `${row('extra', 'extra', 'both', 'true')}\nrows\t11\n`),
+  }),
+  full(
+    'the toolchain override for every job of ci.yml',
+    swap(fullCi(), '  NO_COLOR: "1"\n', '  NO_COLOR: "1"\n  RUSTUP_TOOLCHAIN: beta\n'),
+    ['escape'],
+  ),
+  // The freshness row joins the rust tag: rust gains a non-blocking row, so it
+  // may have only one caller, and that row is now called by a needed job.
+  full(
+    'a freshness row that also carries the rust tag',
+    fullCi(),
+    ['tag callers', 'non-blocking'],
+    {
+      list: swap(
+        FULL_LIST,
+        row('freshness report', 'freshness', 'non-blocking', 'node scripts/freshness.ts'),
+        row('freshness report', 'freshness,rust', 'non-blocking', 'node scripts/freshness.ts'),
+      ),
+    },
+  ),
+  // The Windows Rust job's one call moves to coverage: coverage has two callers,
+  // one of them needed, and rust keeps only its canary.
+  full(
+    'the coverage tag also called by the Windows Rust job',
+    swap(
+      fullCi(),
+      job('rust', 'Rust (fmt, clippy, test)', 'windows-2025-vs2026', 'rust'),
+      job('rust', 'Rust (fmt, clippy, test)', 'windows-2025-vs2026', 'coverage'),
+    ),
+    ['tag callers', 'non-blocking'],
+  ),
+  full(
+    'the coverage tag in the table with no caller',
+    fullCi(undefined, undefined, undefined, ''),
+    ['tag callers'],
+  ),
+  full(
+    'the job token on the freshness checkout',
+    fullCi(undefined, undefined, swap(FRESHNESS, `${CHECKOUT}\n`, `${CHECKOUT}\n${TOKEN_ENV}`)),
+    ['permissions'],
+  ),
+  full(
+    'the job token on the coverage runner call',
+    fullCi(
+      undefined,
+      undefined,
+      undefined,
+      swap(
+        COVERAGE,
+        '        run: ./scripts/ci-check.sh --job coverage\n',
+        `${TOKEN_ENV}        run: ./scripts/ci-check.sh --job coverage\n`,
+      ),
+    ),
+    ['permissions'],
+  ),
+  full(
+    'a freshness runner call without the job token',
+    fullCi(undefined, undefined, extraJob('freshness', 'freshness', ifLine(WEEKLY))),
+    ['permissions'],
+  ),
 ];
 
 const nameCases: readonly Case[] = EIGHT_NAMES.map((name) => ({
@@ -561,7 +751,14 @@ const bannedCases: readonly Case[] = [
   ),
 ];
 
-const cases = [...conditionCases, ...nameCases, ...lockedCases, ...permissionCases, ...bannedCases];
+const cases = [
+  ...conditionCases,
+  ...nonBlockingCases,
+  ...nameCases,
+  ...lockedCases,
+  ...permissionCases,
+  ...bannedCases,
+];
 const results = [...(await Promise.all(cases.map(runCase))), ...constantCases()];
 const failures = results.filter((line) => line !== null);
 for (const failure of failures)
