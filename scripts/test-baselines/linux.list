@@ -69,6 +69,8 @@ commands::settings::tests::no_error_sends_users_to_config_toml run
 commands::settings::tests::save_keeps_the_stored_provider run
 models::tests::gemini_model_defaults_and_round_trips run
 models::tests::new_install_has_no_saved_provider run
+npm_lock_policy::committed_lock_meets_the_policy run
+npm_lock_policy::planted_locks_are_judged_by_each_rule run
 overlay::tests::classify_cases run
 overlay::tests::library_match_cases run
 overlay::tests::link_requires_the_displayed_window run

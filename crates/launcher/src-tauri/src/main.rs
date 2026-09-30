@@ -4,6 +4,8 @@ mod ai;
 mod commands;
 mod discovery;
 mod models;
+#[cfg(test)]
+mod npm_lock_policy;
 mod overlay;
 mod overlay_capture;
 mod process_watch;
