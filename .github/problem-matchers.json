@@ -110,6 +110,17 @@
           "line": 4
         }
       ]
+    },
+    {
+      "owner": "pin-guard",
+      "pattern": [
+        {
+          "regexp": "^pin guard: ([^:\\s]+):([0-9]+): (.+)$",
+          "file": 1,
+          "line": 2,
+          "message": 3
+        }
+      ]
     }
   ]
 }

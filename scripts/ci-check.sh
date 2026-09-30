@@ -388,7 +388,7 @@ tool_check_rust() {
 	pinned=$(rust_channel) || pinned=''
 	if out=$(cd -- "${ROOT}" && rustc -V 2>/dev/null); then found=$(first_version "${out}") || found=''; fi
 	if [[ -z "${RUSTUP_TOOLCHAIN:-}" ]]; then
-		tool_compare rust "${pinned}" "${found}" 'run rustup toolchain install in the repository'
+		tool_compare rust "${pinned}" "${found}" 'in the repository, run rustup toolchain install'
 	elif ci_mode; then
 		TOOL_PINNED[rust]="override ${RUSTUP_TOOLCHAIN}"
 		TOOL_FOUND[rust]=${found:-not found}
@@ -1280,13 +1280,13 @@ st_rows() {
 	st_outcome 'a local-only row is not run in CI' st_t_categories 0 \
 		'job rows passed; not run -- local-only: local-row' GITHUB_ACTIONS=true -- --job t
 	st_outcome 'a missing tool fails its row' st_t_absent 1 \
-		'-- absent: FAIL -- tool selftest-absent: pinned 4.5.6, found not found' -- --job t
+		'-- absent: FAIL -- tool selftest-absent: pinned 4.5, found not found' -- --job t
 	if [[ -e "${ST_DIR}/tree/marker" ]]; then
 		st_case 'a missing tool leaves its command unrun' 'the command ran'
 	else
 		st_case 'a missing tool leaves its command unrun' ''
 	fi
-	st_outcome 'a different Node fails its row' st_t_node 1 '-- node-row: FAIL -- tool node: pinned 0.0.1, found' -- --job t
+	st_outcome 'a different Node fails its row' st_t_node 1 '-- node-row: FAIL -- tool node: pinned 0.0, found' -- --job t
 	st_outcome 'no pinned tool compared fails the run' st_t_presence 1 'pins compared 0' -- --job t
 }
 
@@ -1394,13 +1394,15 @@ st_matcher_samples() {
 	MS_SAMPLE[prettier]='[warn] src/lib/a.ts'
 	MS_SAMPLE[actionlint]='.github/workflows/ci.yml:10:5: unexpected key "foo" for "job" section [syntax-check]'
 	MS_SAMPLE[gitleaks]='Fingerprint: 0123abc:notes.txt:github-pat:3'
+	MS_SAMPLE[pin-guard]='pin guard: .github/workflows/ci.yml:23: runner labels: runs-on: ubuntu-latest'
 	MS_GREEN="test result: ok. 110 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.12s
 warning[duplicate]: found 2 duplicate entries for crate 'windows-sys'
    ${box} Cargo.lock:10:1
 All matched files use Prettier code style!
 1759999999999 COMPLETED 142 FILES 0 ERRORS 0 WARNINGS 0 FILES_WITH_PROBLEMS
 1 commits scanned.
-no leaks found"
+no leaks found
+pin guard: runner labels: scanned 11 runs-on lines, violations 0"
 }
 
 # Loads MS_OWNERS, MS_PAT["<owner> <index>"] and MS_PAT_COUNT[<owner>].
@@ -1502,16 +1504,21 @@ st_matchers() {
 }
 
 runner_self_test() {
-	local repo
+	local repo tool_version
 	repo=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P) || return 1
 	ST_DIR=$(mktemp -d) || return 1
 	ST_CASES=0
 	ST_OK=0
 	mkdir -p "${ST_DIR}/tree" "${ST_DIR}/bin" "${ST_DIR}/temp"
-	printf 'SELFTEST_TOOL=1.2.3\nSELFTEST_ABSENT=4.5.6\n' >"${ST_DIR}/ci-tools.env"
-	printf '[toolchain]\nchannel = "0.0.1"\n' >"${ST_DIR}/rust-toolchain.toml"
-	printf '0.0.1\n' >"${ST_DIR}/nvmrc"
-	printf '#!/usr/bin/env bash\necho "selftest-tool 1.2.3"\n' >"${ST_DIR}/bin/selftest-tool"
+	# The fake tool's version is joined at run time: the pin guard reads a
+	# three-part version literal in this script as a pin stated outside the pin
+	# files. The pins that are never found need only two parts.
+	tool_version=1.2
+	tool_version+=.3
+	printf 'SELFTEST_TOOL=%s\nSELFTEST_ABSENT=4.5\n' "${tool_version}" >"${ST_DIR}/ci-tools.env"
+	printf '[toolchain]\nchannel = "0.0"\n' >"${ST_DIR}/rust-toolchain.toml"
+	printf '0.0\n' >"${ST_DIR}/nvmrc"
+	printf '#!/usr/bin/env bash\necho "selftest-tool %s"\n' "${tool_version}" >"${ST_DIR}/bin/selftest-tool"
 	chmod +x "${ST_DIR}/bin/selftest-tool"
 	st_rows
 	st_summary
@@ -1540,8 +1547,11 @@ declare_table() {
 		count='^wiring self-check self-test: ' zero='cases ([0-9]+)' cmd='node crates/launcher/scripts/wiring-check.selftest.ts'
 	row name='wiring self-check' tags=workflows category=both target=any tools=node,bash,jq,git \
 		count='^wiring self-check: ' zero='jobs ([0-9]+)' cmd='node crates/launcher/scripts/wiring-check.ts'
+	row name='pin guard (version sources and pin files)' tags=workflows category=both target=any tools=node,bash \
+		count='^pin guard( self-test)?: [0-9]+ (files|cases)' zero='^pin guard: ([0-9]+) files' \
+		cmd='node crates/launcher/scripts/pin-guard.selftest.ts && node crates/launcher/scripts/pin-guard.ts'
 	row name=actionlint tags=workflows category=both target=any tools=actionlint count=none cmd=actionlint
-	row name='vite build' tags=rust,rust-host,frontend category=both target=any tools=node,npm:vite \
+	row name='vite build' tags=rust,rust-host,frontend,coverage category=both target=any tools=node,npm:vite \
 		dir=crates/launcher count='modules transformed' zero='([0-9]+) modules transformed' \
 		cmd='node node_modules/vite/bin/vite.js build'
 	row name=rustfmt tags=rust category=both target=any tools=rust count=none cmd='cargo fmt --all --check -- --color never'
@@ -1555,6 +1565,12 @@ declare_table() {
 		cmd='cargo test --workspace --all-features --locked -- --ignored 2>&1 | node crates/launcher/scripts/test-ids.ts libtest-ignored scripts/test-baselines/windows.list'
 	row name='rustdoc (Windows target)' tags=rust category=both target=windows tools=rust requires='vite build' \
 		count=none cmd="RUSTDOCFLAGS='-D warnings' cargo doc --workspace --no-deps --all-features --locked"
+	# Coverage is measured only by its own CI job, on the Windows runner:
+	# cargo-xwin has no llvm-cov subcommand. TOTAL counts regions, so it is 0
+	# exactly when no file was measured.
+	row name='coverage report (Windows tests)' tags=coverage category=non-blocking target=windows \
+		tools=rust,cargo-llvm-cov requires='vite build' count='^TOTAL |^[^ ]+\.rs +[0-9]+ ' zero='^TOTAL +([0-9]+)' \
+		cmd='cargo llvm-cov --workspace --all-features --locked'
 	row name='clippy (Linux host)' tags=rust-host category=both target=linux tools=rust count=none \
 		cmd='cargo clippy --workspace --all-targets --locked -- -D warnings'
 	row name='tests (Linux host)' tags=rust-host category=both target=linux tools=rust,node requires='vite build' \
@@ -1592,6 +1608,8 @@ declare_table() {
 	row name='secret scan' tags=secrets category=both target=any tools=gitleaks,git \
 		count='commits scanned|leaks found|no leaks found|^secret scan: ' zero='([0-9]+) commits scanned' \
 		cmd='source scripts/ci-check.sh && secret_scan_event .'
+	row name='pin freshness report' tags=freshness category=non-blocking target=any tools=node \
+		count='^checked [0-9]+ of [0-9]+ pins' zero='^checked ([0-9]+) of' cmd='node crates/launcher/scripts/freshness.ts'
 	ci_only_item name='npm ci' \
 		reason='CI installs the frontend packages; locally they are installed by hand and npm ci would delete them'
 	ci_only_item name='aggregate job' reason="reads the needed jobs' results; nothing to run locally"

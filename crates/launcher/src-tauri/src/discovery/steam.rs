@@ -155,8 +155,7 @@ fn find_main_exe(install_dir: &Path) -> (String, Option<String>) {
     if let Some((path, _)) = candidates.first() {
         let exe_name = path
             .file_name()
-            .map(|n| n.to_string_lossy().into_owned())
-            .unwrap_or_default();
+            .map_or_default(|n| n.to_string_lossy().into_owned());
         let exe_path = Some(path.to_string_lossy().into_owned());
         (exe_name, exe_path)
     } else {
@@ -199,8 +198,7 @@ fn collect_exes(dir: &Path, out: &mut Vec<(PathBuf, u64)>, depth: u32) {
             if ext.eq_ignore_ascii_case("exe") {
                 let file_name_lower = path
                     .file_stem()
-                    .map(|s| s.to_string_lossy().to_lowercase())
-                    .unwrap_or_default();
+                    .map_or_default(|s| s.to_string_lossy().to_lowercase());
 
                 let is_skip = SKIP_PATTERNS
                     .iter()

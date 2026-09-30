@@ -403,7 +403,8 @@ const callersOf = (input: WiringInput): Map<string, string[]> => {
 
 // Every called tag is in the table; a blocking tag has exactly one
 // blocking caller (a second only from the non-blocking list); a non-blocking tag
-// (one with a non-blocking row) has exactly one caller, from that list.
+// (one with a non-blocking row) has exactly one caller. That its caller is on
+// the non-blocking list is checkNonBlockingRows' condition.
 const checkTags = (
   rows: readonly ListRow[],
   callers: ReadonlyMap<string, readonly string[]>,
@@ -423,9 +424,7 @@ const checkTags = (
       (row) => row.category === 'non-blocking' && row.tags.includes(tag),
     );
     const blockingCallers = who.filter((job) => !NON_BLOCKING_JOBS.includes(job));
-    const wrong = nonBlocking
-      ? who.length !== 1 || blockingCallers.length !== 0
-      : blockingCallers.length !== 1;
+    const wrong = nonBlocking ? who.length !== 1 : blockingCallers.length !== 1;
     if (wrong) {
       const kind = nonBlocking ? 'non-blocking' : 'blocking';
       failures.push({
@@ -473,25 +472,54 @@ const crons = (ci: Workflow | undefined): string[] =>
     (item) => asText(asMapping(item).get('cron')) ?? '',
   );
 
-// The schedule line whose day-of-week field is a single day.
-const weeklyCron = (ci: Workflow | undefined): string | null =>
-  crons(ci).find((cron) => /^[0-7]$/u.test(cron.split(' ')[4] ?? '')) ?? null;
+const WEEKLY_JOBS = ['canary-linux', 'canary-windows', 'freshness'];
+const WEEKLY_IF =
+  /^github\.event_name == 'workflow_dispatch' \|\| github\.event\.schedule == '([^']*)'$/u;
 
-// Only the canaries and the freshness job carry a job-level if:,
-// and theirs names the weekly cron line.
+// Only the canaries and the freshness job carry a job-level if:, and each
+// does: the dispatch-or-schedule form naming one line of on.schedule whose
+// day-of-week field is a single day, the same line for all of them.
 const checkJobIfs = (input: WiringInput): Failure[] => {
-  const allowed = ['canary-linux', 'canary-windows', 'freshness'];
-  const expected = `github.event_name == 'workflow_dispatch' || github.event.schedule == '${weeklyCron(ciWorkflow(input)) ?? ''}'`;
-  return allJobs(input).flatMap(({ workflow, job }) => {
+  const schedule = crons(ciWorkflow(input));
+  const named = new Set<string>();
+  const failures = allJobs(input).flatMap(({ workflow, job }): Failure[] => {
     const condition = asText(job.map.get('if'));
-    if (condition === null || job.id === AGGREGATE_JOB) return [];
     const where = `${baseName(workflow.file)} job ${job.id}`;
-    if (!allowed.includes(job.id))
-      return [{ condition: 'job if', message: `${where} has a job-level if:` }];
-    return bare(condition) === expected
+    if (!WEEKLY_JOBS.includes(job.id)) {
+      return condition === null || job.id === AGGREGATE_JOB
+        ? []
+        : [{ condition: 'job if', message: `${where} has a job-level if:` }];
+    }
+    if (condition === null)
+      return [{ condition: 'job if', message: `${where} has no job-level if:` }];
+    const cron = WEEKLY_IF.exec(bare(condition))?.[1];
+    if (cron === undefined)
+      return [{ condition: 'job if', message: `${where}: its if: is not the weekly-run form` }];
+    named.add(cron);
+    if (!schedule.includes(cron)) {
+      return [
+        {
+          condition: 'job if',
+          message: `${where}: its if: names the cron '${cron}', which is not in on.schedule`,
+        },
+      ];
+    }
+    return /^[0-7]$/u.test(cron.split(' ')[4] ?? '')
       ? []
-      : [{ condition: 'job if', message: `${where}: its if: is not the weekly-run form` }];
+      : [
+          {
+            condition: 'job if',
+            message: `${where}: its if: names the cron '${cron}', which runs on more than one day`,
+          },
+        ];
   });
+  if (named.size > 1) {
+    failures.push({
+      condition: 'job if',
+      message: `the weekly jobs' if: lines name ${named.size} different crons`,
+    });
+  }
+  return failures;
 };
 
 // Timeout, bash, the matcher step and a name on every step.
@@ -532,29 +560,39 @@ const mentions = (value: YamlValue | undefined, needle: string): boolean => {
   return false;
 };
 
-// No continue-on-error anywhere; no toolchain override in a needed job.
+// No continue-on-error anywhere; the toolchain override only inside a job on
+// the non-blocking list.
 const checkNoEscapes = (input: WiringInput): Failure[] => {
-  const ci = ciWorkflow(input);
-  const needed = asList(ci?.jobs.find((job) => job.id === AGGREGATE_JOB)?.map.get('needs')).map(
-    (value) => asText(value),
-  );
-  return allJobs(input).flatMap(({ workflow, job }) => {
-    const where = `${baseName(workflow.file)} job ${job.id}`;
-    const failures: Failure[] = [];
-    const escapes = [job.map, ...job.steps].filter((map) => map.has('continue-on-error')).length;
-    if (escapes > 0)
-      failures.push({
-        condition: 'escape',
-        message: `${where} has continue-on-error ${escapes} times`,
-      });
-    if (workflow === ci && needed.includes(job.id) && mentions(job.map, 'RUSTUP_TOOLCHAIN')) {
-      failures.push({
-        condition: 'escape',
-        message: `${where} is needed by the aggregate job and sets RUSTUP_TOOLCHAIN`,
-      });
-    }
-    return failures;
-  });
+  const workflowLevel = input.workflows
+    .filter((workflow) =>
+      [...workflow.root.entries()].some(
+        ([key, value]) => key !== 'jobs' && mentions(value, 'RUSTUP_TOOLCHAIN'),
+      ),
+    )
+    .map((workflow) => ({
+      condition: 'escape',
+      message: `${baseName(workflow.file)} sets RUSTUP_TOOLCHAIN outside its jobs`,
+    }));
+  return [
+    ...workflowLevel,
+    ...allJobs(input).flatMap(({ workflow, job }) => {
+      const where = `${baseName(workflow.file)} job ${job.id}`;
+      const failures: Failure[] = [];
+      const escapes = [job.map, ...job.steps].filter((map) => map.has('continue-on-error')).length;
+      if (escapes > 0)
+        failures.push({
+          condition: 'escape',
+          message: `${where} has continue-on-error ${escapes} times`,
+        });
+      if (!NON_BLOCKING_JOBS.includes(job.id) && mentions(job.map, 'RUSTUP_TOOLCHAIN')) {
+        failures.push({
+          condition: 'escape',
+          message: `${where} is not on the non-blocking list and sets RUSTUP_TOOLCHAIN`,
+        });
+      }
+      return failures;
+    }),
+  ];
 };
 
 const sameSet = (a: readonly string[], b: readonly string[]): boolean =>
@@ -836,8 +874,12 @@ const checkLocked = (
 // Permissions: {} at the top, contents: read for a job with a checkout and {}
 // for one without, no write scope, persist-credentials: false on every
 // checkout, no secrets. expression, and the job token only in the env of the
-// runner call of the workflow-lint or freshness job.
+// runner call of the workflow-lint or freshness job. The freshness job's call
+// always has it: its report reads GitHub's release API, which limits
+// unauthenticated requests per address.
 const TOKEN_JOBS = ['workflows', 'freshness'];
+const TOKEN_REQUIRED_JOBS = ['freshness'];
+const JOB_TOKEN = `\${{ github.token }}`;
 
 const permissionText = (value: YamlValue | undefined): string => {
   if (value === undefined) return 'none';
@@ -896,6 +938,16 @@ const checkTokens = (input: WiringInput): { failures: Failure[]; count: number }
       }
     }
     for (const job of workflow.jobs) {
+      const calls = job.steps.filter((step) => callTag(step) !== null);
+      const missing = calls.filter(
+        (step) => asText(asMapping(step.get('env')).get('GH_TOKEN')) !== JOB_TOKEN,
+      );
+      if (TOKEN_REQUIRED_JOBS.includes(job.id) && (calls.length === 0 || missing.length > 0)) {
+        failures.push({
+          condition: 'permissions',
+          message: `${where} job ${job.id}: its runner call has no GH_TOKEN: ${JOB_TOKEN}`,
+        });
+      }
       for (const step of job.steps.filter(
         (candidate) => mentions(candidate, 'GH_TOKEN') || mentions(candidate, 'github.token'),
       )) {

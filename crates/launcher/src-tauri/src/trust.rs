@@ -357,6 +357,11 @@ mod tests {
     const ALL_REFUSED: &[&str] = &["plugin:opener|open_url", "plugin:opener|open_path"];
 
     #[test]
+    #[expect(
+        clippy::allow_attributes,
+        reason = "version-dependent: clippy::exit fires here on the pinned toolchain but not on newer ones; \
+                  the toolchain bump that makes it uniform deletes this and the allow below"
+    )]
     #[allow(
         clippy::exit,
         reason = "tauri's generated context exits the process if building it panics"
