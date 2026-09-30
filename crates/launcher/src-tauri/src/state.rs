@@ -224,12 +224,7 @@ fn back_up(state_path: &Path, bytes: &[u8]) -> std::io::Result<PathBuf> {
 
 #[cfg(test)]
 mod tests {
-    #![allow(
-        clippy::unwrap_used,
-        clippy::print_stdout,
-        let_underscore_drop,
-        reason = "a panic is how a test reports a failed assumption, a skipped test says why, and test cleanup is best-effort"
-    )]
+    #![allow(let_underscore_drop, reason = "test cleanup is best-effort")]
 
     use super::*;
     use crate::models::{Game, GameSource};
@@ -663,7 +658,7 @@ mod tests {
             "atomic save must not leave a .tmp behind"
         );
         let contents = std::fs::read_to_string(&path).unwrap();
-        assert!(serde_json::from_str::<serde_json::Value>(&contents).is_ok());
+        serde_json::from_str::<serde_json::Value>(&contents).unwrap();
         cleanup(&path);
     }
 }

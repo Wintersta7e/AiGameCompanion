@@ -147,12 +147,13 @@ fn windowless(cmd: &mut std::process::Command) -> &mut std::process::Command {
 
 /// Apply the Windows no-window flag to a tokio `Command`. No-op on non-Windows
 /// so the launcher crate compiles for the Linux test runner.
-#[allow(unused_variables, clippy::needless_pass_by_ref_mut)]
 #[cfg_attr(
     not(windows),
     expect(
+        unused_variables,
+        clippy::needless_pass_by_ref_mut,
         clippy::missing_const_for_fn,
-        reason = "the Windows build calls creation_flags, which is not const"
+        reason = "off Windows the command is left untouched, and the Windows build calls creation_flags, which is not const"
     )
 )]
 fn no_window(cmd: &mut Command) {
@@ -898,12 +899,6 @@ fn cli_failure_message(label: &str, stderr_tail: &[String]) -> String {
 
 #[cfg(test)]
 mod tests {
-    #![allow(
-        clippy::unwrap_used,
-        clippy::print_stdout,
-        reason = "a panic is how a test reports a failed assumption, and the scans print what they counted"
-    )]
-
     use super::*;
 
     fn msg(role: &str, content: &str) -> ChatMessage {
@@ -1249,7 +1244,7 @@ mod tests {
         let dir = fresh_dir("existing");
         let path = dir.join("taken.png");
         std::fs::write(&path, b"ORIGINAL").unwrap();
-        assert!(TempShot::create(path.clone(), b"NEW").is_err());
+        TempShot::create(path.clone(), b"NEW").unwrap_err();
         assert_eq!(std::fs::read(&path).unwrap(), b"ORIGINAL");
         std::fs::remove_dir_all(&dir).unwrap();
     }

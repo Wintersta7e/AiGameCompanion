@@ -102,11 +102,6 @@ pub(crate) struct LauncherState {
 
 #[cfg(test)]
 mod tests {
-    #![allow(
-        clippy::expect_used,
-        reason = "a panic is how a test reports a failed assumption"
-    )]
-
     use super::LauncherSettings;
 
     #[test]

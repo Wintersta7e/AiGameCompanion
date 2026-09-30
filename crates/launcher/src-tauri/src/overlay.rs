@@ -320,6 +320,11 @@ pub(crate) fn link_game(
 
 #[cfg(windows)]
 mod imp {
+    #![expect(
+        unsafe_code,
+        reason = "this module wraps the Win32 window and process calls"
+    )]
+
     use super::GameInfo;
     use windows::core::PWSTR;
     use windows::Win32::Foundation::{CloseHandle, HWND};
@@ -333,31 +338,35 @@ mod imp {
     };
 
     pub(super) fn foreground_game(self_pid: u32) -> Option<GameInfo> {
-        // SAFETY: all calls take the handle Windows just returned to us and
-        // buffers owned by this frame; GetForegroundWindow may return null,
+        // SAFETY: GetForegroundWindow takes no arguments; it may return null,
         // which is checked before the handle is used.
-        unsafe {
-            let hwnd = GetForegroundWindow();
-            if hwnd.0.is_null() {
-                return None;
-            }
-            let mut pid = 0u32;
-            GetWindowThreadProcessId(hwnd, Some(&raw mut pid));
-            if pid == 0 || pid == self_pid {
-                return None;
-            }
-            let exe = exe_path(pid).unwrap_or_default();
-            let mut buf = [0u16; 512];
-            let n = GetWindowTextW(hwnd, &mut buf);
-            let title = String::from_utf16_lossy(&buf[..usize::try_from(n).unwrap_or(0)]);
-            Some(GameInfo {
-                hwnd: hwnd.0 as i64,
-                pid,
-                exe,
-                title,
-                ..Default::default()
-            })
+        let hwnd = unsafe { GetForegroundWindow() };
+        if hwnd.0.is_null() {
+            return None;
         }
+        let mut pid = 0u32;
+        // SAFETY: `hwnd` is the non-null handle Windows just returned, and
+        // `pid` is a local that outlives the call.
+        unsafe { GetWindowThreadProcessId(hwnd, Some(&raw mut pid)) };
+        if pid == 0 || pid == self_pid {
+            return None;
+        }
+        let exe = exe_path(pid).unwrap_or_default();
+        let mut buf = [0u16; 512];
+        // SAFETY: `hwnd` is the handle checked above, and `buf` is owned by
+        // this frame for the whole call.
+        let n = unsafe { GetWindowTextW(hwnd, &mut buf) };
+        let title = String::from_utf16_lossy(
+            buf.get(..usize::try_from(n).unwrap_or(0))
+                .unwrap_or_default(),
+        );
+        Some(GameInfo {
+            hwnd: hwnd.0 as i64,
+            pid,
+            exe,
+            title,
+            ..Default::default()
+        })
     }
 
     fn exe_path(pid: u32) -> Option<String> {
@@ -378,7 +387,7 @@ mod imp {
         // SAFETY: `handle` came from OpenProcess above and is not used again.
         crate::util::log_if_err("CloseHandle(process)", unsafe { CloseHandle(handle) });
         res.ok()?;
-        Some(String::from_utf16_lossy(&buf[..len as usize]))
+        buf.get(..len as usize).map(String::from_utf16_lossy)
     }
 
     fn to_hwnd(hwnd: i64) -> HWND {
@@ -392,43 +401,42 @@ mod imp {
     /// one screenshotted and uploaded, or the one handed focus. The pid was
     /// already captured alongside it and went unused; this is what it is for.
     pub(super) fn is_live_window(hwnd: i64, pid: u32) -> bool {
+        let handle = to_hwnd(hwnd);
         // SAFETY: `handle` is a plain window handle; IsWindow tolerates a stale
         // or recycled value, which is exactly what this check is for.
-        unsafe {
-            let handle = to_hwnd(hwnd);
-            if !IsWindow(Some(handle)).as_bool() {
-                return false;
-            }
-            let mut current = 0u32;
-            GetWindowThreadProcessId(handle, Some(&raw mut current));
-            current != 0 && current == pid
+        let alive = unsafe { IsWindow(Some(handle)) }.as_bool();
+        if !alive {
+            return false;
         }
+        let mut current = 0u32;
+        // SAFETY: a stale handle only makes the call fail and leave `current`
+        // at 0, and `current` is a local that outlives the call.
+        unsafe { GetWindowThreadProcessId(handle, Some(&raw mut current)) };
+        current != 0 && current == pid
     }
 
     pub(super) fn focus_window(hwnd: i64) {
-        // SAFETY: the window-manager calls below take a handle by value and
-        // report failure through their return value; a stale handle is not UB.
-        unsafe {
-            let handle = to_hwnd(hwnd);
-            // A minimized target is not restored by SetForegroundWindow alone.
-            if IsIconic(handle).as_bool() {
-                let _ = ShowWindow(handle, SW_RESTORE);
-            }
-            if !SetForegroundWindow(handle).as_bool() {
-                tracing::warn!("SetForegroundWindow failed for hwnd {hwnd}");
-            }
+        let handle = to_hwnd(hwnd);
+        // SAFETY: IsIconic takes the handle by value and reports a stale one
+        // through its return value; a stale handle is not UB.
+        let minimized = unsafe { IsIconic(handle) }.as_bool();
+        // A minimized target is not restored by SetForegroundWindow alone.
+        if minimized {
+            // SAFETY: ShowWindow takes the handle by value and reports failure
+            // through its return value; a stale handle is not UB.
+            let _ = unsafe { ShowWindow(handle, SW_RESTORE) };
+        }
+        // SAFETY: SetForegroundWindow takes the handle by value and reports
+        // failure through its return value, logged below.
+        let focused = unsafe { SetForegroundWindow(handle) }.as_bool();
+        if !focused {
+            tracing::warn!("SetForegroundWindow failed for hwnd {hwnd}");
         }
     }
 }
 
 #[cfg(test)]
 mod tests {
-    #![allow(
-        clippy::unwrap_used,
-        clippy::print_stdout,
-        reason = "a panic is how a test reports a failed assumption, and the tests print what they compared"
-    )]
-
     use super::*;
 
     /// The overlay's hand-written `GameInfo` type must carry every field Rust
@@ -466,7 +474,9 @@ mod tests {
                     serde_json::Value::String(_) => "string",
                     serde_json::Value::Number(_) => "number",
                     serde_json::Value::Bool(_) => "boolean",
-                    _ => "unsupported",
+                    serde_json::Value::Null
+                    | serde_json::Value::Array(_)
+                    | serde_json::Value::Object(_) => "unsupported",
                 };
                 (key.clone(), ty)
             })

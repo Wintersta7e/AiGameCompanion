@@ -232,7 +232,6 @@ fn build_request(
 /// Stream a Gemini response, passing each complete Gemini text chunk to `on_chunk`.
 ///
 /// `screenshot` is a base64-encoded PNG attached to the most recent user turn.
-#[allow(clippy::too_many_lines)] // linear request-build + SSE-parse pipeline
 pub(super) async fn stream<F>(
     messages: &[ChatMessage],
     system_prompt: &str,
@@ -382,7 +381,9 @@ where
 {
     let mut received_text = false;
     while let Some(newline_position) = buffer.iter().position(|&byte| byte == b'\n') {
-        let line_bytes = buffer[..newline_position].to_vec();
+        let line_bytes = buffer
+            .get(..newline_position)
+            .map_or_default(<[u8]>::to_vec);
         buffer.drain(..=newline_position);
         let Ok(line) = String::from_utf8(line_bytes) else {
             tracing::warn!("SSE: non-UTF-8 line dropped");
@@ -453,12 +454,6 @@ fn stream_error_message(json: &str) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
-    #![allow(
-        clippy::expect_used,
-        clippy::print_stdout,
-        reason = "a panic is how a test reports a failed assumption, and the scans print what they counted"
-    )]
-
     use super::{
         build_request, http_error_message, process_sse_lines, resolve_model, stream_error_message,
         validate_model, ChatMessage,
@@ -559,7 +554,7 @@ mod tests {
         println!("{error}");
         assert!(error.contains("Gemini model name"));
         assert!(!error.contains("config.toml"));
-        assert!(validate_model("gemini-3.6-flash").is_ok());
+        validate_model("gemini-3.6-flash").unwrap();
     }
 
     fn turn(role: &str, content: &str) -> ChatMessage {
@@ -625,7 +620,7 @@ mod tests {
 
     #[test]
     fn rejects_unsafe_model_names() {
-        assert!(validate_model("gemini-2.5-flash").is_ok());
+        validate_model("gemini-2.5-flash").unwrap();
         assert!(validate_model("../model").is_err());
     }
 

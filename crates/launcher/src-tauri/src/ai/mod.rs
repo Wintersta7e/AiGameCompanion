@@ -503,11 +503,6 @@ pub(crate) async fn translate_capture(
 
 #[cfg(test)]
 mod tests {
-    #![allow(
-        clippy::print_stdout,
-        reason = "the tests print the prompt and what the scans counted"
-    )]
-
     use super::*;
 
     fn target(linked: bool) -> GameInfo {

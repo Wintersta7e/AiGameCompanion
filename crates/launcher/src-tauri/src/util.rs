@@ -70,10 +70,6 @@ fn sources_root() -> PathBuf {
 /// never count. One entry per `.rs` file, zero counts included, path relative
 /// to `src/`, sorted. A `#[cfg(test)]` item that is not a module is counted.
 #[cfg(test)]
-#[allow(
-    clippy::panic,
-    reason = "a file the scan cannot read, or a scan that read nothing, would let the check pass on nothing"
-)]
 pub(crate) fn count_in_sources_by_file(needle: &str) -> Vec<(PathBuf, usize)> {
     let root = sources_root();
     let mut dirs = vec![PathBuf::new()];
@@ -122,10 +118,6 @@ pub(crate) struct FrontendScan {
 /// identifier character counts only where the character before it is not one
 /// (`eval(` does not match `retrieval(`).
 #[cfg(test)]
-#[allow(
-    clippy::panic,
-    reason = "a skipped file could hide what the scan looks for, and a scan that read nothing would pass on nothing"
-)]
 pub(crate) fn count_in_frontend(needles: &[&str]) -> FrontendScan {
     let mut root = PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/.."));
     // Same reason as `sources_root`: tests run from the package root.
@@ -370,8 +362,6 @@ fn starts_with(chars: &[char], at: usize, word: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
-    #![allow(clippy::print_stdout, reason = "the scans print what they counted")]
-
     use super::{
         count_in_frontend, count_in_sources, count_in_sources_by_file, needle_lines,
         strip_test_modules,

@@ -6,7 +6,10 @@ use crate::models::LauncherSettings;
 use crate::state::AppState;
 
 #[tauri::command]
-#[allow(clippy::needless_pass_by_value)]
+#[expect(
+    clippy::needless_pass_by_value,
+    reason = "a Tauri command receives its arguments by value"
+)]
 pub(crate) fn get_settings(state: State<'_, AppState>) -> LauncherSettings {
     let launcher = state.launcher.lock();
     launcher.settings.clone()
@@ -19,7 +22,10 @@ pub(crate) struct HotkeyStatus(pub parking_lot::Mutex<Vec<String>>);
 
 /// The hotkeys that could not be registered; empty means all are ready.
 #[tauri::command]
-#[allow(clippy::needless_pass_by_value)]
+#[expect(
+    clippy::needless_pass_by_value,
+    reason = "a Tauri command receives its arguments by value"
+)]
 pub(crate) fn hotkey_status(status: State<'_, HotkeyStatus>) -> Vec<String> {
     status.0.lock().clone()
 }
@@ -27,13 +33,19 @@ pub(crate) fn hotkey_status(status: State<'_, HotkeyStatus>) -> Vec<String> {
 /// Why the library file is read-only this run, or `None` when it is writable.
 /// The main window asks before deciding whether to scan.
 #[tauri::command]
-#[allow(clippy::needless_pass_by_value)]
+#[expect(
+    clippy::needless_pass_by_value,
+    reason = "a Tauri command receives its arguments by value"
+)]
 pub(crate) fn state_health(state: State<'_, AppState>) -> Option<String> {
     state.load_error().map(str::to_owned)
 }
 
 #[tauri::command]
-#[allow(clippy::needless_pass_by_value)]
+#[expect(
+    clippy::needless_pass_by_value,
+    reason = "a Tauri command receives its arguments by value"
+)]
 pub(crate) fn update_settings(
     settings: LauncherSettings,
     state: State<'_, AppState>,
@@ -117,7 +129,10 @@ pub(crate) fn checked_link(raw: &str) -> Result<tauri::Url, &'static str> {
 /// Open an https web address in the default browser once `checked_link`
 /// accepts it. Neither the log nor the returned error ever contains the link.
 #[tauri::command]
-#[allow(clippy::needless_pass_by_value)]
+#[expect(
+    clippy::needless_pass_by_value,
+    reason = "a Tauri command receives its arguments by value"
+)]
 pub(crate) fn open_url(app: AppHandle, url: String) -> Result<(), String> {
     let checked = checked_link(&url).map_err(|reason| {
         tracing::warn!("Link not opened: {reason}");
@@ -134,7 +149,10 @@ pub(crate) fn open_url(app: AppHandle, url: String) -> Result<(), String> {
 
 /// Open the launcher's data folder (state + logs live here).
 #[tauri::command]
-#[allow(clippy::needless_pass_by_value)]
+#[expect(
+    clippy::needless_pass_by_value,
+    reason = "a Tauri command receives its arguments by value"
+)]
 pub(crate) fn open_config_folder(app: AppHandle) -> Result<(), String> {
     let dir = app
         .path()
@@ -147,11 +165,6 @@ pub(crate) fn open_config_folder(app: AppHandle) -> Result<(), String> {
 
 #[cfg(test)]
 mod tests {
-    #![allow(
-        clippy::print_stdout,
-        reason = "the scans and tables print what they checked"
-    )]
-
     use super::{checked_link, merge_settings};
     use crate::models::LauncherSettings;
 

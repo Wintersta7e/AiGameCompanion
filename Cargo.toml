@@ -8,10 +8,13 @@ strip = true
 codegen-units = 1
 
 # Strict lint gate. Every member opts in with `[lints] workspace = true`.
-# CI runs `cargo clippy --workspace --all-targets -- -D warnings`, so each
-# "warn" below is a hard error on a PR.
+# Each "warn" below is a hard error in the gate: the clippy rows in
+# scripts/ci-check.sh pass `-D warnings`, and for the rustdoc table the
+# docs row sets RUSTDOCFLAGS=-D warnings.
 [workspace.lints.rust]
 unsafe_op_in_unsafe_fn = "deny"
+# unsafe only inside the Windows FFI modules (mod imp), each of which expects this lint.
+unsafe_code = "deny"
 non_ascii_idents = "deny"
 rust_2018_idioms = { level = "warn", priority = -1 }
 missing_debug_implementations = "warn"
@@ -26,6 +29,9 @@ let_underscore_drop = "warn"
 single_use_lifetimes = "warn"
 variant_size_differences = "warn"
 meta_variable_misuse = "warn"
+redundant_lifetimes = "warn"
+unit_bindings = "warn"
+ambiguous_negative_literals = "warn"
 unused_crate_dependencies = "warn"
 
 [workspace.lints.clippy]
@@ -50,6 +56,33 @@ string_slice = "warn"
 verbose_file_reads = "warn"
 rest_pat_in_fully_bound_structs = "warn"
 empty_enum_variants_with_brackets = "warn"
+unused_result_ok = "warn"
+panic_in_result_fn = "warn"
+missing_assert_message = "warn"
+tests_outside_test_module = "warn"
+cfg_not_test = "warn"
+iter_over_hash_type = "warn"
+infinite_loop = "warn"
+lossy_float_literal = "warn"
+float_cmp_const = "warn"
+mixed_read_write_in_expression = "warn"
+suspicious_xor_used_as_pow = "warn"
+precedence_bits = "warn"
+empty_drop = "warn"
+fn_to_numeric_cast_any = "warn"
+as_underscore = "warn"
+as_pointer_underscore = "warn"
+host_endian_bytes = "warn"
+pointer_format = "warn"
+unnecessary_safety_comment = "warn"
+unnecessary_safety_doc = "warn"
+cognitive_complexity = "warn"
+allow_attributes_without_reason = "warn"
+allow_attributes = "warn"
+multiple_unsafe_ops_per_block = "warn"
+indexing_slicing = "warn"
+assertions_on_result_states = "warn"
+wildcard_enum_match_arm = "warn"
 # The tauri/windows dependency trees ship several versions of the same crate
 # (syn, windows-sys, bitflags, ...). Nothing first-party can collapse them.
 multiple_crate_versions = "allow"
@@ -57,3 +90,6 @@ multiple_crate_versions = "allow"
 # one wants `pub` inside a private module, that one wants `pub(crate)`. Keeping
 # both makes `--fix` flip every item back and forth forever.
 redundant_pub_crate = "allow"
+
+[workspace.lints.rustdoc]
+all = { level = "warn", priority = -1 }

@@ -9,7 +9,10 @@ use crate::models::{Game, GameSource};
 use crate::state::AppState;
 
 #[tauri::command]
-#[allow(clippy::needless_pass_by_value)]
+#[expect(
+    clippy::needless_pass_by_value,
+    reason = "a Tauri command receives its arguments by value"
+)]
 pub(crate) fn get_games(state: State<'_, AppState>) -> Vec<Game> {
     let launcher = state.launcher.lock();
     launcher.games.clone()
@@ -213,7 +216,10 @@ fn do_launch(app: &tauri::AppHandle, game_id: &str) -> Result<(), String> {
 }
 
 #[tauri::command]
-#[allow(clippy::needless_pass_by_value)]
+#[expect(
+    clippy::needless_pass_by_value,
+    reason = "a Tauri command receives its arguments by value"
+)]
 pub(crate) fn open_game_logs(app: tauri::AppHandle) -> Result<(), String> {
     let log_dir = app
         .path()
@@ -231,11 +237,6 @@ pub(crate) fn open_game_logs(app: tauri::AppHandle) -> Result<(), String> {
 
 #[cfg(test)]
 mod tests {
-    #![allow(
-        clippy::unwrap_used,
-        reason = "a panic is how a test reports a failed assumption"
-    )]
-
     use super::{merge_scan, ScanOutcome};
     use crate::models::{Game, GameSource};
 
