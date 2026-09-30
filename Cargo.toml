@@ -26,6 +26,7 @@ let_underscore_drop = "warn"
 single_use_lifetimes = "warn"
 variant_size_differences = "warn"
 meta_variable_misuse = "warn"
+unused_crate_dependencies = "warn"
 
 [workspace.lints.clippy]
 all = { level = "warn", priority = -1 }

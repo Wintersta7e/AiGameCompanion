@@ -1,9 +1,8 @@
 {
-  // Type-check context for the package-root config files (vite/svelte/eslint),
-  // which are Node scripts and therefore not part of tsconfig.json's app program.
-  // `include` stays empty on purpose: typescript-eslint attaches these files to
-  // this project via `projectService.defaultProject`, and a file may not appear
-  // in both.
+  // Type-check context for Node code: the package-root config files (attached
+  // by typescript-eslint through projectService.defaultProject) and the gate
+  // helpers under scripts/ (listed in include, linted through their own eslint
+  // block).
   "extends": "./tsconfig.json",
   "compilerOptions": {
     "types": ["node"],
@@ -12,6 +11,6 @@
     "allowImportingTsExtensions": true,
     "noEmit": true
   },
-  "files": [],
+  "include": ["scripts/*.ts"],
   "references": [{ "path": "./tsconfig.json" }]
 }

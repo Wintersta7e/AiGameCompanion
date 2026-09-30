@@ -5,186 +5,328 @@ on:
     branches: [main]
   pull_request:
   workflow_dispatch:
+  schedule:
+    - cron: '23 3 * * 1-6'
+    - cron: '23 3 * * 0'
 
-permissions:
-  contents: read
+permissions: {}
+
+env:
+  CARGO_TERM_COLOR: never
+  NO_COLOR: "1"
 
 concurrency:
-  group: ci-${{ github.ref }}
-  cancel-in-progress: true
+  group: ${{ github.event_name == 'pull_request' && format('{0}-pr-{1}', github.workflow, github.ref) || format('{0}-run-{1}', github.workflow, github.run_id) }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 # Actions are pinned to commit SHAs, not tags: a tag can be moved to point at
 # new code. Dependabot keeps them current (see .github/dependabot.yml).
 jobs:
   rust:
     name: Rust (fmt, clippy, test)
-    # Native MSVC target so the Windows-only launcher builds the real shipped
-    # artifact without cross-compilation.
-    runs-on: windows-latest
+    # Runs natively on Windows so the cfg(windows) code is compiled, linted and
+    # tested with the MSVC toolchain.
+    runs-on: windows-2025-vs2026
+    timeout-minutes: 35
+    permissions:
+      contents: read
     defaults:
       run:
         shell: bash
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
+      - name: Check out the repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          components: rustfmt, clippy
-      - uses: Swatinem/rust-cache@49a0bdc70d2e1b713ca9e2869b211fcce03d3c1c # v2
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+          persist-credentials: false
+          fetch-depth: 2
+      - name: Register problem matchers
+        run: echo "::add-matcher::.github/problem-matchers.json"
+      - name: Install the Rust toolchain
+        run: rustup toolchain install --no-self-update
+      - name: Cache the Rust build
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
-          node-version: 22
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      - name: Set up Node
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version-file: .nvmrc
           cache: npm
           cache-dependency-path: crates/launcher/package-lock.json
-      # `custom-protocol` embeds the frontend at compile time, so the bundle has
-      # to exist before anything is checked with --all-features.
-      - name: Build the frontend
-        run: npm ci && npm run build
+      - name: Install the frontend packages
+        run: npm ci
         working-directory: crates/launcher
-      - name: Format check
-        run: cargo fmt --all --check
-      # --all-targets covers tests and benches, --locked fails if Cargo.lock is
-      # stale rather than silently updating it.
-      - name: Clippy
-        run: cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
-      - name: Tests
-        run: cargo test --workspace --all-features --locked
-      - name: Docs
-        env:
-          RUSTDOCFLAGS: -D warnings
-        run: cargo doc --workspace --no-deps --all-features --locked
+      - name: Run the rust rows of ci-check.sh
+        run: ./scripts/ci-check.sh --job rust
 
   rust-host:
     name: Rust (non-Windows build)
     # The launcher is cfg-gated: everything behind cfg(not(windows)) is invisible
     # to the Windows job, and stub functions drifted out of lint compliance there
     # unnoticed. This is also the target `cargo test` runs on locally.
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
+    timeout-minutes: 50
+    permissions:
+      contents: read
+    defaults:
+      run:
+        shell: bash
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
+      - name: Check out the repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          components: clippy
-      - uses: Swatinem/rust-cache@49a0bdc70d2e1b713ca9e2869b211fcce03d3c1c # v2
+          persist-credentials: false
+          fetch-depth: 2
+      - name: Register problem matchers
+        run: echo "::add-matcher::.github/problem-matchers.json"
+      - name: Install the Rust toolchain
+        run: rustup toolchain install --no-self-update
+      - name: Cache the Rust build
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       # Tauri links against the GTK/WebKit stack on Linux.
       - name: Install system libraries
         run: |
           sudo apt-get update
           sudo apt-get install -y libglib2.0-dev libgtk-3-dev libsoup-3.0-dev \
             libwebkit2gtk-4.1-dev libjavascriptcoregtk-4.1-dev librsvg2-dev
-      - name: Clippy
-        run: cargo clippy --workspace --all-targets --locked -- -D warnings
+      - name: Set up Node
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+          cache-dependency-path: crates/launcher/package-lock.json
+      - name: Install the frontend packages
+        run: npm ci
+        working-directory: crates/launcher
+      - name: Run the rust-host rows of ci-check.sh
+        run: ./scripts/ci-check.sh --job rust-host
 
   frontend:
     name: Frontend (lint, types, build)
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
     defaults:
       run:
-        working-directory: crates/launcher
+        shell: bash
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+      - name: Check out the repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          node-version: 22
+          persist-credentials: false
+          fetch-depth: 2
+      - name: Register problem matchers
+        run: echo "::add-matcher::.github/problem-matchers.json"
+      - name: Set up Node
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version-file: .nvmrc
           cache: npm
           cache-dependency-path: crates/launcher/package-lock.json
-      - run: npm ci
-      - name: Lint (eslint)
-        run: npx eslint . --max-warnings 0
-      - name: Format check (prettier)
-        run: npm run format:check
-      - name: Type check (svelte-check)
-        run: npm run check
-      - name: Build (vite)
-        run: npm run build
-      - name: Audit (npm)
-        run: npm audit --audit-level=high
+      - name: Install the frontend packages
+        run: npm ci
+        working-directory: crates/launcher
+      - name: Run the frontend rows of ci-check.sh
+        run: ./scripts/ci-check.sh --job frontend
 
   release-audit:
     name: Release build + binary audit
-    # Builds the artifact users actually download, through the same script the
-    # maintainer runs, and fails if the binary carries build-host paths or
-    # anything key-shaped. A dependency compiling C put 83 such paths into a
-    # release binary once; source-level scanners cannot see that.
-    runs-on: ubuntu-latest
+    # Builds the release the way scripts/build.sh does and audits this run's
+    # build of the tree -- the exe, the plaintext of the frontend bundle it
+    # embeds, and the config template -- for the path and key shapes listed in
+    # scripts/binary-audit.sh, in ASCII and UTF-16LE, and for the PE hardening
+    # flags the exe has today. Any SHA256 it prints is this run's build. The
+    # release checklist runs the same script on the zip that is published. A C
+    # dependency once put 83 home-directory paths into a release binary;
+    # source-level scanners cannot see that.
+    runs-on: ubuntu-24.04
+    timeout-minutes: 55
+    permissions:
+      contents: read
+    defaults:
+      run:
+        shell: bash
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
+      - name: Check out the repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          targets: x86_64-pc-windows-msvc
-      - uses: Swatinem/rust-cache@49a0bdc70d2e1b713ca9e2869b211fcce03d3c1c # v2
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+          persist-credentials: false
+      - name: Register problem matchers
+        run: echo "::add-matcher::.github/problem-matchers.json"
+      - name: Read the tool pins
+        id: pins
+        run: |
+          grep -E '^[A-Z][A-Z0-9_]*=' scripts/ci-tools.env >> "$GITHUB_OUTPUT"
+          echo "image=${ImageOS}" >> "$GITHUB_OUTPUT"
+      - name: Install the Rust toolchain
+        run: rustup toolchain install --no-self-update
+      - name: Cache the Rust build
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
-          node-version: 22
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      - name: Restore the Windows SDK cache
+        id: sdk
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.cache/cargo-xwin/xwin
+          key: xwin-sdk-${{ steps.pins.outputs.image }}-${{ steps.pins.outputs.CARGO_XWIN }}-${{ steps.pins.outputs.XWIN_SDK_VERSION }}-${{ steps.pins.outputs.XWIN_CRT_VERSION }}
+      - name: Set up Node
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version-file: .nvmrc
           cache: npm
           cache-dependency-path: crates/launcher/package-lock.json
-      - uses: taiki-e/install-action@26e9283f268b880168bdbd2c545dfcd60ec2c6ab # v2
+      - name: Install cargo-xwin
+        uses: taiki-e/install-action@26e9283f268b880168bdbd2c545dfcd60ec2c6ab # v2.87.13
         with:
-          tool: cargo-xwin
+          tool: cargo-xwin@${{ steps.pins.outputs.CARGO_XWIN }}
+          fallback: none
       - name: Install LLVM
         run: sudo apt-get update && sudo apt-get install -y clang llvm lld
-      - name: Install frontend deps
+      - name: Install the frontend packages
         run: npm ci
         working-directory: crates/launcher
-      - name: Release build
-        run: ./scripts/build.sh
-      - name: Audit the binary
-        run: |
-          set -euo pipefail
-          fail=0
-          for pattern in "/home/" "/mnt/c/" "C:\\\\Users" "/Users/"; do
-            n=$(strings -a release/launcher.exe | grep -cF "$pattern" || true)
-            echo "$pattern -> $n"
-            [ "$n" -eq 0 ] || fail=1
-          done
-          keys=$(strings -a release/launcher.exe |
-            grep -coE "AIza[0-9A-Za-z_-]{15,}|sk-[A-Za-z0-9]{20,}" || true)
-          echo "key-shaped strings -> ${keys:-0}"
-          [ "${keys:-0}" -eq 0 ] || fail=1
-          if [ "$fail" -ne 0 ]; then
-            echo "::error::the release binary leaks build-host paths or secrets"
-            exit 1
-          fi
+      - name: Run the release-audit rows of ci-check.sh
+        run: ./scripts/ci-check.sh --job release-audit
+      - name: Save the Windows SDK cache
+        if: github.ref == 'refs/heads/main' && steps.sdk.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.cache/cargo-xwin/xwin
+          key: xwin-sdk-${{ steps.pins.outputs.image }}-${{ steps.pins.outputs.CARGO_XWIN }}-${{ steps.pins.outputs.XWIN_SDK_VERSION }}-${{ steps.pins.outputs.XWIN_CRT_VERSION }}
 
   supply-chain:
     name: Supply chain (cargo-deny)
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    defaults:
+      run:
+        shell: bash
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-      - uses: taiki-e/install-action@26e9283f268b880168bdbd2c545dfcd60ec2c6ab # v2
+      - name: Check out the repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          tool: cargo-deny,cargo-machete
-      - name: cargo-deny
-        run: cargo deny check
-      - name: Unused dependencies
-        run: cargo machete
+          persist-credentials: false
+      - name: Register problem matchers
+        run: echo "::add-matcher::.github/problem-matchers.json"
+      - name: Read the tool pins
+        id: pins
+        run: grep -E '^[A-Z][A-Z0-9_]*=' scripts/ci-tools.env >> "$GITHUB_OUTPUT"
+      - name: Install the Rust toolchain
+        run: rustup toolchain install --no-self-update
+      - name: Install cargo-deny
+        uses: taiki-e/install-action@26e9283f268b880168bdbd2c545dfcd60ec2c6ab # v2.87.13
+        with:
+          tool: cargo-deny@${{ steps.pins.outputs.CARGO_DENY }}
+          fallback: none
+      - name: Run the supply-chain rows of ci-check.sh
+        run: ./scripts/ci-check.sh --job supply-chain
 
   workflows:
     name: Workflows (actionlint)
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    defaults:
+      run:
+        shell: bash
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - name: Check out the repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Register problem matchers
+        run: echo "::add-matcher::.github/problem-matchers.json"
+      - name: Read the tool pins
+        id: pins
+        run: grep -E '^[A-Z][A-Z0-9_]*=' scripts/ci-tools.env >> "$GITHUB_OUTPUT"
+      - name: Set up Node
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version-file: .nvmrc
       # actionlint is a Go binary, so install-action's cargo fallback cannot
       # resolve it. Pinned version + checksum instead of an unverified download.
       - name: Install actionlint
         env:
-          VERSION: 1.7.12
-          SHA256: 8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8
+          VERSION: ${{ steps.pins.outputs.ACTIONLINT }}
+          SHA256: ${{ steps.pins.outputs.ACTIONLINT_SHA256 }}
         run: |
           set -euo pipefail
-          archive="actionlint_${VERSION}_linux_amd64.tar.gz"
+          mkdir -p "$RUNNER_TEMP/bin"
+          archive="$RUNNER_TEMP/actionlint_${VERSION}_linux_amd64.tar.gz"
           curl -fsSL -o "$archive" \
-            "https://github.com/rhysd/actionlint/releases/download/v${VERSION}/${archive}"
+            "https://github.com/rhysd/actionlint/releases/download/v${VERSION}/actionlint_${VERSION}_linux_amd64.tar.gz"
           echo "${SHA256}  ${archive}" | sha256sum -c -
-          tar xzf "$archive" actionlint
-      - run: ./actionlint -color
+          tar xzf "$archive" -C "$RUNNER_TEMP/bin" actionlint
+          echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
+      - name: Run the workflows rows of ci-check.sh
+        run: ./scripts/ci-check.sh --job workflows
 
   secrets:
     name: Secrets (gitleaks)
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    defaults:
+      run:
+        shell: bash
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - name: Check out the repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          persist-credentials: false
           fetch-depth: 0
-      - uses: gitleaks/gitleaks-action@e0c47f4f8be36e29cdc102c57e68cb5cbf0e8d1e # v3
+      - name: Register problem matchers
+        run: echo "::add-matcher::.github/problem-matchers.json"
+      - name: Read the tool pins
+        id: pins
+        run: grep -E '^[A-Z][A-Z0-9_]*=' scripts/ci-tools.env >> "$GITHUB_OUTPUT"
+      - name: Install gitleaks
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ steps.pins.outputs.GITLEAKS }}
+          SHA256: ${{ steps.pins.outputs.GITLEAKS_SHA256 }}
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/bin"
+          archive="$RUNNER_TEMP/gitleaks_${VERSION}_linux_x64.tar.gz"
+          curl -fsSL -o "$archive" \
+            "https://github.com/gitleaks/gitleaks/releases/download/v${VERSION}/gitleaks_${VERSION}_linux_x64.tar.gz"
+          echo "${SHA256}  ${archive}" | sha256sum -c -
+          tar xzf "$archive" -C "$RUNNER_TEMP/bin" gitleaks
+          echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
+      - name: Run the secrets rows of ci-check.sh
+        run: ./scripts/ci-check.sh --job secrets
+
+  aggregate:
+    name: Result of the needed CI jobs
+    if: always()
+    needs: [rust, rust-host, frontend, release-audit, supply-chain, workflows, secrets]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions: {}
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Check the needed jobs' results
+        env:
+          NEEDS_JSON: ${{ toJSON(needs) }}
+        run: |
+          count=$(jq 'length' <<<"${NEEDS_JSON}")
+          jq -r 'to_entries[] | "\(.key) \(.value.result)"' <<<"${NEEDS_JSON}"
+          echo "needed jobs: ${count}"
+          {
+            printf '### %s\n\n| job | result |\n|---|---|\n' "Needed CI jobs"
+            jq -r 'to_entries[] | "| \(.key) | \(.value.result) |"' <<<"${NEEDS_JSON}"
+            printf '\nneeded jobs: %s\n' "${count}"
+          } >> "${GITHUB_STEP_SUMMARY}"
+          failed=$(jq -r '[to_entries[] | select(.value.result != "success") | "\(.key) (\(.value.result))"] | join(", ")' <<<"${NEEDS_JSON}")
+          if [ "${count}" -lt 1 ]; then echo "no needed CI job reported a result"; exit 1; fi
+          if [ -n "${failed}" ]; then echo "needed CI jobs that did not succeed: ${failed}"; exit 1; fi
