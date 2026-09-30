@@ -38,6 +38,11 @@ pub(crate) fn spawn_game_watch(_app: AppHandle, _game_id: String, _exe_name: Str
 
 #[cfg(windows)]
 mod imp {
+    #![expect(
+        unsafe_code,
+        reason = "this module wraps the Win32 process, wait and registry calls"
+    )]
+
     use std::time::{Duration, Instant};
 
     use tauri::{AppHandle, Emitter, Manager};
@@ -201,21 +206,23 @@ mod imp {
     /// Block until the process `pid` exits. Uses a wait handle when available,
     /// otherwise falls back to polling the process list.
     fn wait_for_exit(pid: u32, exe_name: &str) {
-        // SAFETY: the handle comes from OpenProcess and is closed on every path
-        // out of the block; a pid that no longer exists fails the open instead.
-        unsafe {
-            if let Ok(handle) = OpenProcess(PROCESS_SYNCHRONIZE, false, pid) {
-                // WAIT_FAILED would mean the wait never observed an exit; taking
-                // it as "game closed" ends the session instantly and books ~0
-                // minutes while the game is still running. Fall through to the
-                // polling path instead.
-                let wait = WaitForSingleObject(handle, INFINITE);
-                crate::util::log_if_err("CloseHandle(process)", CloseHandle(handle));
-                if wait == WAIT_OBJECT_0 {
-                    return;
-                }
-                tracing::warn!("WaitForSingleObject on pid {pid} returned {wait:?}; polling");
+        // SAFETY: OpenProcess takes plain values; a pid that no longer exists
+        // fails the open instead of returning a handle.
+        let opened = unsafe { OpenProcess(PROCESS_SYNCHRONIZE, false, pid) };
+        if let Ok(handle) = opened {
+            // WAIT_FAILED would mean the wait never observed an exit; taking
+            // it as "game closed" ends the session instantly and books ~0
+            // minutes while the game is still running. Fall through to the
+            // polling path instead.
+            // SAFETY: `handle` came from OpenProcess above and stays open
+            // until the CloseHandle below.
+            let wait = unsafe { WaitForSingleObject(handle, INFINITE) };
+            // SAFETY: `handle` came from OpenProcess above and is not used again.
+            crate::util::log_if_err("CloseHandle(process)", unsafe { CloseHandle(handle) });
+            if wait == WAIT_OBJECT_0 {
+                return;
             }
+            tracing::warn!("WaitForSingleObject on pid {pid} returned {wait:?}; polling");
         }
         // Fallback (process could not be opened): poll until a process with this
         // PID *and* matching image name is gone, so a reused PID for a different
@@ -231,30 +238,36 @@ mod imp {
 
     /// Walk the process snapshot, returning the first `Some` produced by `f`.
     fn for_each_process<T>(mut f: impl FnMut(u32, &str) -> Option<T>) -> Option<T> {
-        // SAFETY: the snapshot handle is closed before returning, and `entry`
-        // is a live, `dwSize`-initialised struct for every walk call.
-        unsafe {
-            let snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0).ok()?;
-            let mut entry = PROCESSENTRY32W {
-                dwSize: u32::try_from(size_of::<PROCESSENTRY32W>()).unwrap_or(0),
-                ..Default::default()
-            };
-            let mut result = None;
-            if Process32FirstW(snapshot, &raw mut entry).is_ok() {
-                loop {
-                    let name = wide_to_string(&entry.szExeFile);
-                    if let Some(value) = f(entry.th32ProcessID, &name) {
-                        result = Some(value);
-                        break;
-                    }
-                    if Process32NextW(snapshot, &raw mut entry).is_err() {
-                        break;
-                    }
+        // SAFETY: CreateToolhelp32Snapshot takes plain values and returns a
+        // handle this function owns and closes before returning.
+        let snapshot = unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0) }.ok()?;
+        let mut entry = PROCESSENTRY32W {
+            dwSize: u32::try_from(size_of::<PROCESSENTRY32W>()).unwrap_or(0),
+            ..Default::default()
+        };
+        let mut result = None;
+        // SAFETY: `snapshot` is the open handle above, and `entry` is a live,
+        // `dwSize`-initialised local that outlives the call.
+        let first = unsafe { Process32FirstW(snapshot, &raw mut entry) };
+        if first.is_ok() {
+            loop {
+                let name = wide_to_string(&entry.szExeFile);
+                if let Some(value) = f(entry.th32ProcessID, &name) {
+                    result = Some(value);
+                    break;
+                }
+                // SAFETY: `snapshot` is still open, and `entry` is the same live,
+                // `dwSize`-initialised local.
+                let next = unsafe { Process32NextW(snapshot, &raw mut entry) };
+                if next.is_err() {
+                    break;
                 }
             }
-            crate::util::log_if_err("CloseHandle(snapshot)", CloseHandle(snapshot));
-            result
         }
+        // SAFETY: `snapshot` came from CreateToolhelp32Snapshot above and is not
+        // used again.
+        crate::util::log_if_err("CloseHandle(snapshot)", unsafe { CloseHandle(snapshot) });
+        result
     }
 
     fn wide_to_string(wide: &[u16]) -> String {

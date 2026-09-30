@@ -88,6 +88,11 @@ fn fitted_size(w: u32, h: u32, max_w: u32, max_h: u32) -> (u32, u32) {
 
 #[cfg(windows)]
 mod imp {
+    #![expect(
+        unsafe_code,
+        reason = "this module wraps the Direct3D 11 and window-capture calls"
+    )]
+
     use std::time::{Duration, Instant};
 
     use windows::core::{factory, Interface};

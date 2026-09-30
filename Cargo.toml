@@ -12,6 +12,8 @@ codegen-units = 1
 # "warn" below is a hard error on a PR.
 [workspace.lints.rust]
 unsafe_op_in_unsafe_fn = "deny"
+# unsafe only inside the Windows FFI modules (mod imp), each of which expects this lint.
+unsafe_code = "deny"
 non_ascii_idents = "deny"
 rust_2018_idioms = { level = "warn", priority = -1 }
 missing_debug_implementations = "warn"
@@ -76,6 +78,7 @@ unnecessary_safety_doc = "warn"
 cognitive_complexity = "warn"
 allow_attributes_without_reason = "warn"
 allow_attributes = "warn"
+multiple_unsafe_ops_per_block = "warn"
 # The tauri/windows dependency trees ship several versions of the same crate
 # (syn, windows-sys, bitflags, ...). Nothing first-party can collapse them.
 multiple_crate_versions = "allow"
