@@ -1244,7 +1244,7 @@ mod tests {
         let dir = fresh_dir("existing");
         let path = dir.join("taken.png");
         std::fs::write(&path, b"ORIGINAL").unwrap();
-        assert!(TempShot::create(path.clone(), b"NEW").is_err());
+        TempShot::create(path.clone(), b"NEW").unwrap_err();
         assert_eq!(std::fs::read(&path).unwrap(), b"ORIGINAL");
         std::fs::remove_dir_all(&dir).unwrap();
     }

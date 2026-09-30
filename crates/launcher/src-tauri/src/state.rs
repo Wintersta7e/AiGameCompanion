@@ -658,7 +658,7 @@ mod tests {
             "atomic save must not leave a .tmp behind"
         );
         let contents = std::fs::read_to_string(&path).unwrap();
-        assert!(serde_json::from_str::<serde_json::Value>(&contents).is_ok());
+        serde_json::from_str::<serde_json::Value>(&contents).unwrap();
         cleanup(&path);
     }
 }

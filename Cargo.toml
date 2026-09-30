@@ -79,6 +79,9 @@ cognitive_complexity = "warn"
 allow_attributes_without_reason = "warn"
 allow_attributes = "warn"
 multiple_unsafe_ops_per_block = "warn"
+indexing_slicing = "warn"
+assertions_on_result_states = "warn"
+wildcard_enum_match_arm = "warn"
 # The tauri/windows dependency trees ship several versions of the same crate
 # (syn, windows-sys, bitflags, ...). Nothing first-party can collapse them.
 multiple_crate_versions = "allow"

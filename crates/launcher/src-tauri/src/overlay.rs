@@ -356,7 +356,10 @@ mod imp {
         // SAFETY: `hwnd` is the handle checked above, and `buf` is owned by
         // this frame for the whole call.
         let n = unsafe { GetWindowTextW(hwnd, &mut buf) };
-        let title = String::from_utf16_lossy(&buf[..usize::try_from(n).unwrap_or(0)]);
+        let title = String::from_utf16_lossy(
+            buf.get(..usize::try_from(n).unwrap_or(0))
+                .unwrap_or_default(),
+        );
         Some(GameInfo {
             hwnd: hwnd.0 as i64,
             pid,
@@ -384,7 +387,7 @@ mod imp {
         // SAFETY: `handle` came from OpenProcess above and is not used again.
         crate::util::log_if_err("CloseHandle(process)", unsafe { CloseHandle(handle) });
         res.ok()?;
-        Some(String::from_utf16_lossy(&buf[..len as usize]))
+        buf.get(..len as usize).map(String::from_utf16_lossy)
     }
 
     fn to_hwnd(hwnd: i64) -> HWND {
@@ -471,7 +474,9 @@ mod tests {
                     serde_json::Value::String(_) => "string",
                     serde_json::Value::Number(_) => "number",
                     serde_json::Value::Bool(_) => "boolean",
-                    _ => "unsupported",
+                    serde_json::Value::Null
+                    | serde_json::Value::Array(_)
+                    | serde_json::Value::Object(_) => "unsupported",
                 };
                 (key.clone(), ty)
             })

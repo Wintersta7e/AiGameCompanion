@@ -381,7 +381,9 @@ where
 {
     let mut received_text = false;
     while let Some(newline_position) = buffer.iter().position(|&byte| byte == b'\n') {
-        let line_bytes = buffer[..newline_position].to_vec();
+        let line_bytes = buffer
+            .get(..newline_position)
+            .map_or_default(<[u8]>::to_vec);
         buffer.drain(..=newline_position);
         let Ok(line) = String::from_utf8(line_bytes) else {
             tracing::warn!("SSE: non-UTF-8 line dropped");
@@ -552,7 +554,7 @@ mod tests {
         println!("{error}");
         assert!(error.contains("Gemini model name"));
         assert!(!error.contains("config.toml"));
-        assert!(validate_model("gemini-3.6-flash").is_ok());
+        validate_model("gemini-3.6-flash").unwrap();
     }
 
     fn turn(role: &str, content: &str) -> ChatMessage {
@@ -618,7 +620,7 @@ mod tests {
 
     #[test]
     fn rejects_unsafe_model_names() {
-        assert!(validate_model("gemini-2.5-flash").is_ok());
+        validate_model("gemini-2.5-flash").unwrap();
         assert!(validate_model("../model").is_err());
     }
 

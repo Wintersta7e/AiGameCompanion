@@ -50,7 +50,9 @@ fn fit_within(rgba: &[u8], w: u32, h: u32, max_w: u32, max_h: u32) -> (Vec<u8>, 
             let (x0, x1) = (ox * src_w / dst_w, (ox + 1) * src_w / dst_w);
             let mut sum = [0_usize; 4];
             for y in y0..y1 {
-                let row = &rgba[(y * src_w + x0) * 4..(y * src_w + x1) * 4];
+                let Some(row) = rgba.get((y * src_w + x0) * 4..(y * src_w + x1) * 4) else {
+                    return (rgba.to_vec(), w, h);
+                };
                 for px in row.as_chunks::<4>().0 {
                     for (acc, &channel) in sum.iter_mut().zip(px) {
                         *acc += usize::from(channel);
@@ -338,7 +340,10 @@ mod imp {
             let offset = row
                 .checked_mul(row_pitch)
                 .ok_or_else(|| "capture row offset overflowed".to_owned())?;
-            for bgra in source[offset..offset + row_bytes].as_chunks::<4>().0 {
+            let row = source
+                .get(offset..offset + row_bytes)
+                .ok_or_else(|| "capture row is outside the mapped buffer".to_owned())?;
+            for bgra in row.as_chunks::<4>().0 {
                 rgba.extend_from_slice(&[bgra[2], bgra[1], bgra[0], bgra[3]]);
             }
         }
