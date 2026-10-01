@@ -153,6 +153,7 @@ const RUNNER_TOOLS: readonly string[] = [
   'rust',
   'cargo-deny',
   'gitleaks',
+  'actionlint',
   'jq',
 ];
 
@@ -470,6 +471,11 @@ const pinFileCases: readonly Case[] = [
       { key: 'CARGO_EXTRA', repo: 'example-org/extra-tool', manifest: 'cargo-extra' },
     ],
     runnerTools: [...RUNNER_TOOLS, 'cargo-extra'],
+    expect: [SHAPES],
+  },
+  {
+    name: 'a tool-file key no runner row declares',
+    runnerTools: RUNNER_TOOLS.filter((tool) => tool !== 'gitleaks'),
     expect: [SHAPES],
   },
   { name: 'an unreadable runner table', runnerTools: null, expect: [SHAPES] },
