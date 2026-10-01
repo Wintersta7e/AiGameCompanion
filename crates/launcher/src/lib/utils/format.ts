@@ -28,6 +28,11 @@ export function formatLastPlayed(dateStr: string | null): string {
   }
 }
 
+/** A game's initial: the first Unicode letter or number of its name, uppercased; "" when it has none. */
+export function formatInitial(name: string): string {
+  return /[\p{L}\p{N}]/u.exec(name)?.[0].toUpperCase() ?? '';
+}
+
 /** The hotkey status line, from the labels `hotkey_status` reports as failed. */
 export function formatHotkeyStatus(failed: string[]): string {
   return failed.length === 0

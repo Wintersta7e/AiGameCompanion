@@ -14,6 +14,9 @@ All notable changes to this project are documented here. The format is based on
 ### Fixed
 
 - **Claude errors show the Claude CLI's own message** instead of a generic one.
+- **A game without cover art shows the first letter or number of its name.** A
+  name that starts with an emoji showed a broken character instead, and a name
+  in a non-Latin script showed its second letter.
 
 ### Infrastructure
 

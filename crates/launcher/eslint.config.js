@@ -98,6 +98,7 @@ export default defineConfig([
       'default-case-last': 'error',
       'no-extend-native': 'error',
       'no-alert': 'error',
+      'require-unicode-regexp': 'error',
       // Size and nesting caps.
       complexity: ['error', 20],
       'max-depth': ['error', 4],
