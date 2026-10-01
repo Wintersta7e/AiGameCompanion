@@ -1117,7 +1117,7 @@
     line-height: 1.5;
     color: var(--color-t-hi);
     white-space: pre-wrap;
-    word-break: break-word;
+    overflow-wrap: anywhere;
   }
   /* The intro text wraps in the template; pre-wrap would render those breaks. */
   .bubble.intro {
@@ -1382,6 +1382,6 @@
     line-height: 1.55;
     color: var(--color-t-hi);
     white-space: pre-wrap;
-    word-break: break-word;
+    overflow-wrap: anywhere;
   }
 </style>
