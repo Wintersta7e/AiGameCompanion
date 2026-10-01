@@ -740,8 +740,7 @@ pub(crate) fn helper() { NEEDLE(); }
         let mut problems = Vec::new();
         let keys: Vec<&str> = knip
             .as_object()
-            .map(|object| object.keys().map(String::as_str).collect())
-            .unwrap_or_default();
+            .map_or_default(|object| object.keys().map(String::as_str).collect());
         if keys != ["entry"] {
             problems.push(format!("knip.json: its keys are {keys:?}, not [\"entry\"]"));
         }
