@@ -88,7 +88,10 @@ pub(crate) fn hide_overlay(app: AppHandle) {
     hide(&app);
 }
 
-fn hide(app: &AppHandle) {
+/// Hide the overlay and hand focus back to the stored target. Every hide of
+/// the overlay window -- the hotkey, its close control, Alt+F4 -- goes through
+/// here.
+pub(crate) fn hide(app: &AppHandle) {
     let Some(overlay) = app.get_webview_window("overlay") else {
         return;
     };
@@ -1152,6 +1155,31 @@ mod tests {
             ..stored
         };
         assert!(!may_link(Some(&unidentified), 42, 7), "an unreadable exe");
+    }
+
+    /// Every hide of the overlay window goes through `hide`, which hands focus
+    /// back to the game; the only other hide is the main window's tray hide.
+    #[test]
+    fn every_overlay_hide_goes_through_overlay_hide() {
+        let needle = concat!(".hide", "())");
+        let counts = crate::util::count_in_sources_by_file(needle);
+        let hits: Vec<(std::path::PathBuf, usize)> = counts
+            .iter()
+            .filter(|(_, count)| *count > 0)
+            .cloned()
+            .collect();
+        let total: usize = counts.iter().map(|(_, count)| count).sum();
+        println!(
+            "{} files scanned; {needle}: {total} in {hits:?}",
+            counts.len()
+        );
+        assert!(!counts.is_empty(), "the source scan found no files");
+        assert_eq!(total, 2, "hides outside overlay::hide: {hits:?}");
+        assert_eq!(
+            hits,
+            [("main.rs".into(), 1), ("overlay.rs".into(), 1)],
+            "one hide in overlay::hide, one for the main window"
+        );
     }
 
     #[test]

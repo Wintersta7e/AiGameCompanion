@@ -221,11 +221,12 @@ fn main() {
         })
         .on_window_event(|window, event| {
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
-                // The overlay window only hides; the main window drives the
-                // launcher's tray / exit behaviour.
+                // The overlay window only hides, handing focus back to the
+                // game; the main window drives the launcher's tray / exit
+                // behaviour.
                 if window.label() == "overlay" {
                     api.prevent_close();
-                    util::log_if_err("hide overlay window", window.hide());
+                    overlay::hide(window.app_handle());
                     return;
                 }
                 let state = window.state::<AppState>();

@@ -78,6 +78,7 @@ models::tests::new_install_has_no_saved_provider run
 npm_lock_policy::committed_lock_meets_the_policy run
 npm_lock_policy::planted_locks_are_judged_by_each_rule run
 overlay::tests::classify_cases run
+overlay::tests::every_overlay_hide_goes_through_overlay_hide run
 overlay::tests::frame_host_resolves_to_the_hosted_app run
 overlay::tests::game_info_sends_no_identity run
 overlay::tests::identity_text_cases run
