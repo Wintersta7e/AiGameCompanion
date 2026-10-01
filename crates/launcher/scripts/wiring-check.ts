@@ -51,7 +51,7 @@ export interface WiringInput {
   // Exit statuses of the aggregate job's run block for AGGREGATE_PAYLOADS, in
   // order; null when ci.yml has no aggregate run block to execute.
   readonly aggregateStatuses: readonly number[] | null;
-  readonly requiredNames?: readonly string[];
+  readonly requiredNames?: readonly RequiredJob[];
   // scripts/build.sh, whose cargo calls the --locked check reads too.
   readonly buildScript: string;
   // Every tracked file's path and text, for the banned-text checks.
@@ -80,15 +80,16 @@ export const NON_BLOCKING_JOBS: readonly string[] = [
   'coverage',
 ];
 export const AGGREGATE_JOB = 'aggregate';
-export const REQUIRED_JOB_NAMES: readonly string[] = [
-  'Rust (fmt, clippy, test)',
-  'Rust (non-Windows build)',
-  'Frontend (lint, types, build)',
-  'Release build + binary audit',
-  'Supply chain (cargo-deny)',
-  'Workflows (actionlint)',
-  'Secrets (gitleaks)',
-  'Result of the needed CI jobs',
+export interface RequiredJob {
+  readonly file: string;
+  readonly job: string;
+  readonly name: string;
+}
+// The job names the branch rules require. Renaming one without the same edit
+// to the branch rules leaves that check waiting on every pull request.
+export const REQUIRED_JOB_NAMES: readonly RequiredJob[] = [
+  { file: 'ci.yml', job: AGGREGATE_JOB, name: 'Result of the needed CI jobs' },
+  { file: 'pr-text.yml', job: 'pr-text', name: 'PR title, body and branch name' },
 ];
 export const AGGREGATE_PAYLOADS: readonly string[] = [
   '{"rust":{"result":"success","outputs":{}},"secrets":{"result":"success","outputs":{}}}',
@@ -728,19 +729,36 @@ const checkPayloads = (statuses: readonly number[] | null): Failure[] => {
       ];
 };
 
-// The required contexts: each name once as a job name in ci.yml.
-const checkNames = (ci: Workflow | undefined, names: readonly string[]): Failure[] =>
-  names.flatMap((name) => {
-    const count = (ci?.jobs ?? []).filter((job) => asText(job.map.get('name')) === name).length;
-    return count === 1
+// Each required job name is the name: of its listed job and of no other job
+// in any workflow. An empty list fails.
+const checkNames = (
+  input: WiringInput,
+  required: readonly RequiredJob[],
+): { failures: Failure[]; met: number } => {
+  if (required.length === 0)
+    return {
+      failures: [{ condition: 'names', message: 'the list of required job names is empty' }],
+      met: 0,
+    };
+  const failures = required.flatMap(({ file, job, name }): Failure[] => {
+    const owner = `${file} job ${job}`;
+    const wanted = `the required job name "${name}" should be the name of ${owner} alone`;
+    if (!input.workflows.some((workflow) => baseName(workflow.file) === file))
+      return [{ condition: 'names', message: `${wanted}; there is no ${file}` }];
+    const named = allJobs(input)
+      .filter(({ job: candidate }) => asText(candidate.map.get('name')) === name)
+      .map(({ workflow, job: candidate }) => `${baseName(workflow.file)} job ${candidate.id}`);
+    return named.length === 1 && named[0] === owner
       ? []
       : [
           {
             condition: 'names',
-            message: `the required job name "${name}" occurs ${count} times in ci.yml`,
+            message: `${wanted}; it is the name of ${named.length} jobs (${named.join(', ') || 'none'})`,
           },
         ];
   });
+  return { failures, met: required.length - failures.length };
+};
 
 const countLine = (
   input: WiringInput,
@@ -770,9 +788,12 @@ export function checkWiring(input: WiringInput): WiringResult {
   const callers = callersOf(input);
   const locked = checkLocked(rows, input.buildScript);
   const permissions = checkPermissions(input);
+  const required = input.requiredNames ?? REQUIRED_JOB_NAMES;
+  const names = checkNames(input, required);
   const counts = countLine(input, rows, callers, [
     `cargo invocations ${locked.count}`,
     `token steps ${permissions.count}`,
+    `required job names ${names.met} of ${required.length}`,
   ]);
   const jobs = allJobs(input);
   const checkouts = jobs.flatMap(({ job }) => job.steps).filter(isCheckout).length;
@@ -807,7 +828,7 @@ export function checkWiring(input: WiringInput): WiringResult {
     ...permissions.failures,
     ...checkBannedText(input, rows),
     ...unrecognised,
-    ...checkNames(ci, input.requiredNames ?? REQUIRED_JOB_NAMES),
+    ...names.failures,
   ];
   if (rows.length === 0)
     failures.push({ condition: 'empty', message: 'the step table listed no row' });
