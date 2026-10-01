@@ -33,19 +33,17 @@ export default defineConfig([
     },
     linterOptions: {
       reportUnusedDisableDirectives: 'error',
+      reportUnusedInlineConfigs: 'error',
     },
     rules: {
       // The UI is driven by CSS custom properties and per-item computed colors
       // (accent, provider dot, status). Tailwind classes cannot express a value
       // that is only known at runtime, so inline style stays.
       'svelte/no-inline-styles': 'off',
-      // Its autofix rewrites `style="a: b"` into `style:a="b"`, which svelte2tsx
-      // (and therefore `svelte-check`, a required CI check) parses as an
-      // expression: one converted gradient produced 20 bogus type errors.
+      // A style-only preference: it would rewrite every inline style into
+      // style: directives and catches no defect.
       'svelte/prefer-style-directive': 'off',
-      // Reads the selectors inside `@keyframes` (`0%`, `50%`, `to`) as element
-      // type selectors, so every animation block reports. Nothing to configure
-      // around it.
+      // Prefers id and element selectors; this project styles by class.
       'svelte/consistent-selector-style': 'off',
       // A number in a template literal is unambiguous; the risk this rule
       // guards against is `${object}` and `${null}`, which stay errors.
@@ -64,6 +62,57 @@ export default defineConfig([
       'no-var': 'error',
       'object-shorthand': 'error',
       'prefer-const': 'error',
+      // typescript-eslint rules its presets leave off. Where a core rule has
+      // a TypeScript-aware twin, the core rule is off and the twin is on.
+      '@typescript-eslint/switch-exhaustiveness-check': [
+        'error',
+        { considerDefaultExhaustiveForUnions: false, requireDefaultForNonUnion: true },
+      ],
+      '@typescript-eslint/require-array-sort-compare': 'error',
+      '@typescript-eslint/strict-void-return': 'error',
+      '@typescript-eslint/method-signature-style': 'error',
+      '@typescript-eslint/no-import-type-side-effects': 'error',
+      '@typescript-eslint/explicit-module-boundary-types': 'error',
+      'no-shadow': 'off',
+      '@typescript-eslint/no-shadow': 'error',
+      'default-param-last': 'off',
+      '@typescript-eslint/default-param-last': 'error',
+      'no-loop-func': 'off',
+      '@typescript-eslint/no-loop-func': 'error',
+      '@typescript-eslint/strict-boolean-expressions': [
+        'error',
+        { allowNumber: false, allowNullableBoolean: true, allowNullableString: true },
+      ],
+      // Core rules that catch a defect.
+      'array-callback-return': 'error',
+      'no-await-in-loop': 'error',
+      'no-promise-executor-return': 'error',
+      'no-self-compare': 'error',
+      'no-template-curly-in-string': 'error',
+      'no-unmodified-loop-condition': 'error',
+      'no-unreachable-loop': 'error',
+      'guard-for-in': 'error',
+      'no-return-assign': 'error',
+      'no-sequences': 'error',
+      radix: 'error',
+      'default-case-last': 'error',
+      'no-extend-native': 'error',
+      'no-alert': 'error',
+      // Size and nesting caps.
+      complexity: ['error', 20],
+      'max-depth': ['error', 4],
+      'max-nested-callbacks': ['error', 10],
+      'max-lines-per-function': ['error', { max: 100, skipBlankLines: true, skipComments: true }],
+      // Code that does nothing.
+      'no-useless-call': 'error',
+      'no-useless-computed-key': 'error',
+      'no-useless-concat': 'error',
+      'no-useless-rename': 'error',
+      'no-useless-return': 'error',
+      'no-lone-blocks': 'error',
+      'no-extra-bind': 'error',
+      'no-unneeded-ternary': 'error',
+      'no-undef-init': 'error',
     },
   },
   {
@@ -79,22 +128,22 @@ export default defineConfig([
       // svelte/prefer-const understands runes ($props/$derived stay `let`).
       'prefer-const': 'off',
       // Reads `let { open = $bindable(false) } = $props()` as a redundant
-      // default and its autofix deletes the $bindable() call, silently turning
-      // a two-way bound prop into a read-only one.
+      // default; its autofix deletes the $bindable() call and turns a two-way
+      // bound prop read-only (svelte-check then errors where a parent binds).
       '@typescript-eslint/no-useless-default-assignment': 'off',
     },
   },
   {
-    // Config files run in Node, not in the browser.
-    files: ['*.config.js', '*.config.ts'],
+    // Package-root files run in Node, not in the browser.
+    files: ['*.js', '*.ts'],
     languageOptions: {
       globals: { ...globals.node },
     },
   },
   {
-    // The gate helpers run in Node and are listed in tsconfig.node.json's
-    // include, so they get that program instead of the default project.
-    files: ['scripts/*.ts'],
+    // Gate helpers and unit tests run in Node; typescript-eslint caps its
+    // default project at 8 files, so they use the Node program directly.
+    files: ['scripts/*.ts', 'src/**/*.test.ts'],
     languageOptions: {
       globals: { ...globals.node },
       parserOptions: { projectService: false, project: './tsconfig.node.json' },

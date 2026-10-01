@@ -306,10 +306,10 @@ const copiedHelpers = (c: Context): void => {
     );
     return path.join(tree, 'crates', 'launcher', 'scripts', 'hygiene-scan.ts');
   };
-  const planted = withFiles(DEFAULT_TREE, [
+  const sampleTree = withFiles(DEFAULT_TREE, [
     ['notes/sample-root.txt', { text: 'Seen in /sample-root/x.\n', exec: false }],
   ]);
-  const dir = makeTree(c, 'copied-target', planted);
+  const dir = makeTree(c, 'copied-target', sampleTree);
   const none = runScan(dir, ['scan'], {}, stubbed('copied-none', ''));
   expectRefusal(c, 'a shape list without text path shapes', none, 'path shapes read: 0');
   const extra = runScan(

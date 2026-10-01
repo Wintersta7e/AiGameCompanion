@@ -1,8 +1,7 @@
 {
-  // Type-check context for Node code: the package-root config files (attached
-  // by typescript-eslint through projectService.defaultProject) and the gate
-  // helpers under scripts/ (listed in include, linted through their own eslint
-  // block).
+  // The Node program: code that runs in Node, not in the WebView --
+  // the package-root config files, the gate helpers under scripts/ and the unit tests.
+  // tsconfig.json (the app program) excludes the tests, so the two programs never share an include.
   "extends": "./tsconfig.json",
   "compilerOptions": {
     "types": ["node"],
@@ -11,6 +10,6 @@
     "allowImportingTsExtensions": true,
     "noEmit": true
   },
-  "include": ["scripts/*.ts"],
-  "references": [{ "path": "./tsconfig.json" }]
+  "include": ["*.js", "*.ts", "scripts/*.ts", "src/**/*.test.ts"],
+  "exclude": []
 }

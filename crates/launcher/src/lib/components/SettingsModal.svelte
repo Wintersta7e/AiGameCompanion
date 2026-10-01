@@ -216,7 +216,7 @@
 <svelte:window onkeydown={onKeydown} />
 
 {#if open}
-  <!-- svelte-ignore a11y_interactive_supports_focus -->
+  <!-- svelte-ignore a11y_interactive_supports_focus (the backdrop closes on click and Escape is handled on the window, so the container takes no tabindex) -->
   <div
     style="background: rgba(6, 6, 8, 0.62); backdrop-filter: blur(6px);"
     class="absolute inset-0 z-[60] flex items-center justify-center"

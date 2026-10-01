@@ -467,4 +467,155 @@ pub(crate) fn helper() { NEEDLE(); }
         println!("hits: {:?}", scan.hits[0]);
         assert_eq!(scan.hits[0], [(PathBuf::from("index.html"), 9)]);
     }
+
+    /// For one source line: `None` when it holds no eslint-disable or
+    /// svelte-ignore directive, else whether the directive gives a reason --
+    /// ` -- <reason>` for eslint, a `(<reason>)` note after the codes for
+    /// svelte-ignore (eslint-plugin-svelte reads a ` -- ` there as more codes).
+    fn directive_reason(line: &str) -> Option<bool> {
+        for (open, close) in [("//", "\n"), ("/*", "*/"), ("<!--", "-->")] {
+            let mut rest = line;
+            while let Some((_, after)) = rest.split_once(open) {
+                rest = after;
+                let comment = after.split_once(close).map_or(after, |(inside, _)| inside);
+                let comment = comment.trim_start();
+                let (body, svelte) = if let Some(body) = comment.strip_prefix("svelte-ignore") {
+                    (body, true)
+                } else if let Some(body) = [
+                    "eslint-disable-next-line",
+                    "eslint-disable-line",
+                    "eslint-disable",
+                ]
+                .iter()
+                .find_map(|keyword| comment.strip_prefix(keyword))
+                {
+                    (body, false)
+                } else {
+                    continue;
+                };
+                if !(body.is_empty() || body.starts_with(char::is_whitespace)) {
+                    continue;
+                }
+                let reason = if svelte {
+                    body.split_once('(')
+                        .and_then(|(_, note)| note.split_once(')'))
+                        .map(|(note, _)| note)
+                } else {
+                    body.split_once(" -- ").map(|(_, reason)| reason)
+                };
+                return Some(reason.is_some_and(|reason| !reason.trim().is_empty()));
+            }
+        }
+        None
+    }
+
+    /// The `.js`, `.ts` and `.mjs` files directly in `root.join(dir)`, as paths
+    /// relative to `root`. A directory that cannot be listed is an error, never
+    /// an empty list.
+    fn script_files(root: &Path, dir: &Path) -> Result<Vec<PathBuf>, String> {
+        let listing =
+            |err: std::io::Error| format!("cannot list {}: {err}", root.join(dir).display());
+        let mut files = Vec::new();
+        for entry in std::fs::read_dir(root.join(dir)).map_err(listing)? {
+            let file = dir.join(entry.map_err(listing)?.file_name());
+            let script = file
+                .extension()
+                .is_some_and(|ext| ext == "js" || ext == "ts" || ext == "mjs");
+            if script && root.join(&file).is_file() {
+                files.push(file);
+            }
+        }
+        Ok(files)
+    }
+
+    /// Lines with their expected `directive_reason`, written out literally.
+    const PLANTED_DIRECTIVES: [(&str, Option<bool>); 14] = [
+        ("const s = 'eslint-disable';", None),
+        ("// see https://example.invalid/x -- not a directive", None),
+        ("// eslint-disabled rules are listed below", None),
+        (
+            "// eslint-disable-next-line svelte/prefer-svelte-reactivity",
+            Some(false),
+        ),
+        ("// eslint-disable-line no-console --", Some(false)),
+        ("/* eslint-disable no-alert -- */", Some(false)),
+        ("/* eslint-disable */", Some(false)),
+        ("<!-- svelte-ignore a11y_autofocus -->", Some(false)),
+        (
+            "<!-- svelte-ignore a11y_autofocus -- focus moves here on open -->",
+            Some(false),
+        ),
+        ("<!-- svelte-ignore a11y_autofocus () -->", Some(false)),
+        (
+            "// eslint-disable-next-line no-console -- the one line a script prints",
+            Some(true),
+        ),
+        (
+            "/* eslint-disable no-alert -- a native confirm is the design */",
+            Some(true),
+        ),
+        (
+            "<!-- svelte-ignore a11y_autofocus (focus moves here when the dialog opens) -->",
+            Some(true),
+        ),
+        (
+            "let a = 1; // eslint-disable-line prefer-const -- set once, read by the template",
+            Some(true),
+        ),
+    ];
+
+    #[test]
+    fn frontend_suppressions_give_a_reason() {
+        let mut failures = Vec::new();
+        for (line, expected) in PLANTED_DIRECTIVES {
+            let verdict = directive_reason(line);
+            println!("planted: {line} -> {verdict:?}");
+            if verdict != expected {
+                failures.push(format!(
+                    "planted: {line} -> {verdict:?}, expected {expected:?}"
+                ));
+            }
+        }
+        let scan = count_in_frontend(&[]);
+        let root = scan.root;
+        let mut files = scan.files;
+        for dir in [Path::new(""), Path::new("scripts")] {
+            match script_files(&root, dir) {
+                Ok(found) => files.extend(found),
+                Err(err) => failures.push(err),
+            }
+        }
+        files.sort();
+        println!("{} files scanned", files.len());
+        let mut directives = 0;
+        for file in &files {
+            let text = match std::fs::read_to_string(root.join(file)) {
+                Ok(text) => text,
+                Err(err) => {
+                    failures.push(format!("cannot read {}: {err}", file.display()));
+                    continue;
+                }
+            };
+            for (at, line) in text.lines().enumerate() {
+                let Some(reason) = directive_reason(line) else {
+                    continue;
+                };
+                directives += 1;
+                let place = format!("{}:{}", file.display(), at + 1);
+                println!(
+                    "{place}: {}",
+                    if reason { "reason given" } else { "NO REASON" }
+                );
+                if !reason {
+                    failures.push(format!(
+                        "{place}: `{}` gives no reason (eslint: add \" -- <reason>\"; svelte-ignore: add \"(<reason>)\" after the codes)",
+                        line.trim()
+                    ));
+                }
+            }
+        }
+        println!("{directives} directives");
+        assert!(!files.is_empty(), "the scan read no file");
+        assert!(failures.is_empty(), "{failures:#?}");
+    }
 }

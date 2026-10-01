@@ -145,7 +145,7 @@
     conversationId += 1;
     messages = [];
     prompt = '';
-    if (inflight) {
+    if (inflight !== 0) {
       try {
         await invoke('cancel_sage', { requestId: inflight });
       } catch {

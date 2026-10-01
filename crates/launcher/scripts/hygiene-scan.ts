@@ -222,12 +222,12 @@ function scan(write: (line: string) => void): number {
   }
   const hits = all
     .filter((hit) => !exemptFrom(hit))
-    .sort(
-      (a, b) =>
-        a.file.localeCompare(b.file) ||
-        a.line - b.line ||
-        SCAN_RULES.indexOf(a.rule) - SCAN_RULES.indexOf(b.rule),
-    );
+    .sort((a, b) => {
+      const byFile = a.file.localeCompare(b.file);
+      if (byFile !== 0) return byFile;
+      const byLine = a.line - b.line;
+      return byLine !== 0 ? byLine : SCAN_RULES.indexOf(a.rule) - SCAN_RULES.indexOf(b.rule);
+    });
   for (const hit of hits) {
     const detail = hit.detail === '' ? '' : ` -- ${hit.detail}`;
     write(`${hit.file}:${String(hit.line)}: error: ${hit.rule}${detail}`);

@@ -8,8 +8,7 @@ import type { Game } from './games.svelte';
 import { dominantAccent, hashHue } from '../utils/accent';
 
 let accent = $state<string>('#e0a23c');
-// Plain non-reactive memo (never read in a template/$derived), so SvelteMap isn't needed.
-// eslint-disable-next-line svelte/prefer-svelte-reactivity
+// eslint-disable-next-line svelte/prefer-svelte-reactivity -- a plain memo, never read in a template or $derived
 const cache = new Map<string, string>();
 // Latest game we were asked to theme for; guards async cover-art extraction
 // against a stale result landing after the user has switched games.
