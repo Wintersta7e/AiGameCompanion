@@ -1,3 +1,12 @@
+// Module-wide because serde's generated code for `LauncherState` names the
+// map type too, outside any item an attribute here could cover.
+#![expect(
+    clippy::zero_sized_map_values,
+    reason = "GamePrefs has no field until the first per-game setting joins it"
+)]
+
+use std::collections::BTreeMap;
+
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
@@ -89,6 +98,37 @@ where
         .collect())
 }
 
+/// Per-game values the user sets, keyed by a game key. Never sent to the page:
+/// each value reaches it only through its own command.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub(crate) struct GamePrefs {}
+
+/// Load `game_prefs` one entry at a time, like `games`: an unreadable entry is
+/// dropped, and a value that is not an object loads as empty. The warning never
+/// names the key, which may hold a local path.
+fn game_prefs_lenient<'de, D>(deserializer: D) -> Result<BTreeMap<String, GamePrefs>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let serde_json::Value::Object(raw) = serde_json::Value::deserialize(deserializer)? else {
+        tracing::warn!("Dropping unreadable per-game preferences: not an object");
+        return Ok(BTreeMap::new());
+    };
+    Ok(raw
+        .into_iter()
+        .filter_map(
+            |(key, value)| match serde_json::from_value::<GamePrefs>(value) {
+                Ok(prefs) => Some((key, prefs)),
+                Err(e) => {
+                    tracing::warn!("Dropping an unreadable per-game preferences entry: {e}");
+                    None
+                }
+            },
+        )
+        .collect())
+}
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 // `#[serde(default)]` here as well as on the inner structs: without it, adding
 // any new top-level field makes every existing state file fail to parse, which
@@ -98,6 +138,10 @@ pub(crate) struct LauncherState {
     #[serde(deserialize_with = "games_lenient")]
     pub games: Vec<Game>,
     pub settings: LauncherSettings,
+    /// Kept beside the library rather than on `Game`: a scan rebuilds Steam
+    /// games and would erase a value stored on one.
+    #[serde(deserialize_with = "game_prefs_lenient")]
+    pub game_prefs: BTreeMap<String, GamePrefs>,
 }
 
 #[cfg(test)]
@@ -176,6 +220,38 @@ mod tests {
             scan.hits[2].len(),
             scan.hits[3].len(),
             "every get_settings call is typed with LauncherSettings"
+        );
+    }
+
+    /// A scan rebuilds every Steam `Game` and carries over only its play
+    /// record, so a value the user sets on a game would be erased there.
+    #[test]
+    fn game_holds_no_per_game_value() {
+        let value = serde_json::to_value(super::Game::default()).unwrap();
+        let mut keys: Vec<&str> = value
+            .as_object()
+            .unwrap()
+            .keys()
+            .map(String::as_str)
+            .collect();
+        keys.sort_unstable();
+        println!("Game keys: {keys:?}");
+        let mut expected = [
+            "id",
+            "name",
+            "source",
+            "source_id",
+            "exe_name",
+            "exe_path",
+            "install_dir",
+            "cover_art_path",
+            "last_played",
+            "play_time_minutes",
+        ];
+        expected.sort_unstable();
+        assert_eq!(
+            keys, expected,
+            "a per-game value the user sets belongs in LauncherState.game_prefs, not on Game: a scan rebuilds Steam games"
         );
     }
 

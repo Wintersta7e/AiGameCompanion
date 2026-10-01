@@ -66,6 +66,7 @@ commands::settings::tests::merge_settings_owners run
 commands::settings::tests::no_config_button_command run
 commands::settings::tests::no_error_sends_users_to_config_toml run
 commands::settings::tests::save_keeps_the_stored_provider run
+models::tests::game_holds_no_per_game_value run
 models::tests::gemini_model_defaults_and_round_trips run
 models::tests::launcher_settings_type_mirrors_rust run
 models::tests::new_install_has_no_saved_provider run
@@ -85,6 +86,8 @@ state::tests::corrupt_state_falls_back_to_default_and_backs_up run
 state::tests::corrupt_state_without_backup_is_read_only run
 state::tests::dropped_entries_are_preserved run
 state::tests::edit_settings_refuses_before_changing_memory run
+state::tests::game_prefs_field_stays_in_the_store run
+state::tests::game_prefs_load_save_and_backup run
 state::tests::load_drops_only_the_unreadable_game_entry run
 state::tests::load_fills_defaults_for_fields_missing_in_old_json run
 state::tests::load_returns_default_when_file_absent run
