@@ -1,7 +1,7 @@
 <script lang="ts">
   import type { Game } from '../stores/games.svelte';
   import { setSelectedGameId } from '../stores/games.svelte';
-  import { formatPlayTime } from '../utils/format';
+  import { formatInitial, formatPlayTime } from '../utils/format';
   import { hashHue } from '../utils/accent';
 
   interface Props {
@@ -27,12 +27,7 @@
   let imgError = $derived(coverSrc !== null && failedCover === coverSrc);
 
   let playTimeFormatted = $derived(formatPlayTime(game.play_time_minutes));
-  let initial = $derived(
-    game.name
-      .replace(/[^A-Za-z0-9]/, '')
-      .charAt(0)
-      .toUpperCase(),
-  );
+  let initial = $derived(formatInitial(game.name));
   let dotColor = $derived(sourceColors[game.source] ?? 'var(--accent)');
   // Each row's initial-fallback thumb gets its own hue (the global --accent is
   // reserved for the selected row's rail/border/dot), so the placeholder thumbs

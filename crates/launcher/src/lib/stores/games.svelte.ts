@@ -14,11 +14,8 @@ export interface Game {
   play_time_minutes: number;
 }
 
-export type FilterSource = 'all' | 'steam' | 'epic' | 'gog';
-
 let games = $state<Game[]>([]);
 let selectedGameId = $state<string | null>(null);
-let filterSource = $state<FilterSource>('all');
 let searchQuery = $state<string>('');
 let isLoading = $state<boolean>(true);
 let error = $state<string | null>(null);
@@ -29,10 +26,6 @@ export function getGames(): Game[] {
 
 export function getSelectedGameId(): string | null {
   return selectedGameId;
-}
-
-export function getFilterSource(): FilterSource {
-  return filterSource;
 }
 
 export function getSearchQuery(): string {
@@ -49,10 +42,6 @@ export function getError(): string | null {
 
 export function setSelectedGameId(id: string | null): void {
   selectedGameId = id;
-}
-
-export function setFilterSource(source: FilterSource): void {
-  filterSource = source;
 }
 
 export function setSearchQuery(query: string): void {
@@ -96,11 +85,9 @@ export async function scanGames(): Promise<void> {
 }
 
 export function getFilteredGames(): Game[] {
-  return games.filter((g) => {
-    const matchesSource = filterSource === 'all' || g.source === filterSource;
-    const matchesSearch = !searchQuery || g.name.toLowerCase().includes(searchQuery.toLowerCase());
-    return matchesSource && matchesSearch;
-  });
+  return games.filter(
+    (g) => !searchQuery || g.name.toLowerCase().includes(searchQuery.toLowerCase()),
+  );
 }
 
 export function getSelectedGame(): Game | undefined {

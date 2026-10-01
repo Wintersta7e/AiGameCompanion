@@ -15,7 +15,7 @@
     getProviderMeta,
     refreshAvailability,
   } from '../stores/companion.svelte';
-  import { formatPlayTime, formatLastPlayed } from '../utils/format';
+  import { formatInitial, formatPlayTime, formatLastPlayed } from '../utils/format';
 
   let { onOpenSettings }: { onOpenSettings?: () => void } = $props();
 
@@ -49,12 +49,7 @@
   let srcDot = $derived(game ? (sourceColors[game.source] ?? 'var(--accent)') : 'var(--accent)');
 
   let coverSrc = $derived(game?.cover_art_path && !coverError ? game.cover_art_path : null);
-  let initial = $derived(
-    (game?.name ?? '?')
-      .replace(/[^A-Za-z0-9]/, '')
-      .charAt(0)
-      .toUpperCase(),
-  );
+  let initial = $derived(formatInitial(game?.name ?? ''));
   let shortName = $derived((game?.name ?? '').split(' ').slice(0, 2).join(' '));
   let playTime = $derived(formatPlayTime(game?.play_time_minutes ?? 0, true));
   let lastPlayed = $derived(formatLastPlayed(game?.last_played ?? null));

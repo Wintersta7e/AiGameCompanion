@@ -183,6 +183,44 @@
           "file": 2
         }
       ]
+    },
+    {
+      "owner": "knip",
+      "fromPath": "crates/launcher/package.json",
+      "severity": "error",
+      "pattern": [
+        {
+          "regexp": "^(\\S+)\\s+(?:\\S+\\s+)?([^\\s:]+):(\\d+):(\\d+)\\s*$",
+          "message": 1,
+          "file": 2,
+          "line": 3,
+          "column": 4
+        }
+      ]
+    },
+    {
+      "owner": "node-test",
+      "pattern": [
+        {
+          "regexp": "^\\s*not ok \\d+ - (.+)$",
+          "message": 1
+        },
+        {
+          "regexp": "^\\s*---$"
+        },
+        {
+          "regexp": "^\\s*duration_ms: \\S+$"
+        },
+        {
+          "regexp": "^\\s*type: 'test'$"
+        },
+        {
+          "regexp": "^\\s*location: '(.+):(\\d+):(\\d+)'$",
+          "file": 1,
+          "line": 2,
+          "column": 3
+        }
+      ]
     }
   ]
 }

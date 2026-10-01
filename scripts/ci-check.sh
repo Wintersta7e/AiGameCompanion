@@ -323,28 +323,29 @@ first_version() {
 }
 
 # One node helper reads both JSON files: the lock's version of the package
-# and the entry point the package's own bin field names. Prints "version<TAB>entry".
+# and the entry point the package's own bin field names -- the entry keyed
+# <bin> when a tool is written npm:<pkg>#<bin>. Prints "version<TAB>entry".
 npm_package_info() {
 	node -e '
 const fs = require("node:fs");
 const path = require("node:path");
-const [lockFile, dir, name] = process.argv.slice(1);
+const [lockFile, dir, name, key] = process.argv.slice(1);
 const read = (file) => JSON.parse(fs.readFileSync(file, "utf8"));
 const entry = (read(lockFile).packages || {})["node_modules/" + name] || {};
 let bin = "";
 try {
   const b = read(path.join(dir, "node_modules", name, "package.json")).bin;
   const values = b && typeof b === "object" ? Object.values(b) : [];
-  const last = name.split("/").pop();
-  if (typeof b === "string") bin = b;
+  const last = key || name.split("/").pop();
+  if (typeof b === "string" && !key) bin = b;
   else if (values.length > 0 && typeof b[last] === "string") bin = b[last];
-  else if (values.length === 1) bin = values[0];
+  else if (values.length === 1 && !key) bin = values[0];
   if (bin) bin = path.posix.join("node_modules", name, bin);
 } catch {
   bin = "";
 }
 process.stdout.write((entry.version || "") + "\t" + bin + "\n");
-' "${NPM_LOCK}" "${ROOT}/${NPM_DIR}" "$1"
+' "${NPM_LOCK}" "${ROOT}/${NPM_DIR}" "$1" "${2:-}"
 }
 
 install_hint() {
@@ -403,7 +404,7 @@ tool_check_rust() {
 }
 
 tool_check() {
-	local tool=$1 found='' out='' info='' entry='' key hint pinned
+	local tool=$1 found='' out='' info='' entry='' key hint pinned package bin=''
 	[[ -z "${TOOL_OK[${tool}]+set}" ]] || return 0
 	case "${tool}" in
 	rust) tool_check_rust ;;
@@ -413,7 +414,12 @@ tool_check() {
 		tool_compare node "${pinned}" "${found}" 'run nvm install, then nvm alias default'
 		;;
 	npm:*)
-		info=$(npm_package_info "${tool#npm:}" 2>/dev/null) || info=''
+		package=${tool#npm:}
+		if [[ "${package}" == *#* ]]; then
+			bin=${package#*#}
+			package=${package%%#*}
+		fi
+		info=$(npm_package_info "${package}" "${bin}" 2>/dev/null) || info=''
 		entry=${info#*$'\t'}
 		if [[ -n "${entry}" ]] && out=$(cd -- "${ROOT}/${NPM_DIR}" && node "${entry}" --version 2>/dev/null); then
 			found=$(first_version "${out}") || found=''
@@ -1109,6 +1115,29 @@ hygiene_self_tests() {
 	return "${status}"
 }
 
+# Filters knip --debug: prints knip's report and the number of project files
+# knip resolved (the paths of its first "Finding project paths" block), never
+# the debug dump itself.
+knip_project_files() {
+	awk '
+		{ gsub(/\033\[[0-9;]*m/, "") }
+		/^\[[.*]\] / { if (st == 1) st = 3; if ($0 == "[.] Finding project paths" && st == 0) st = 1; next }
+		st == 1 && /^  paths: \[\]/ { st = 3; next }
+		st == 1 && /^  paths: \[/ { st = 2; next }
+		st == 2 && /^  \]/ { st = 3; next }
+		st == 2 && /^    [^ ]/ { n++; next }
+		/^[[:space:]{}\[\]]/ { next }
+		{ print }
+		END { printf "knip: %d project files resolved\n", n }
+	'
+}
+
+# Filters tsc --listFiles: prints the diagnostics and one count of the listed
+# files outside node_modules, never the file list itself.
+tsc_listed_files() {
+	awk '/node_modules/ { next } /^([A-Za-z]:)?\// { n++; next } { print } END { printf "tsc: %d files type-checked\n", n }'
+}
+
 # ---------------------------------------------------------------------------
 # The secret scan's self-test: throwaway repositories outside the checkout,
 # git run without the host's config, tokens whose body is generated here at
@@ -1483,11 +1512,18 @@ st_matcher_samples() {
 	# The planted misspelling is written with an escape so typos passes this file.
 	MS_SAMPLE[typos]=$'src/main.rs:12:9: error: `te\x68` should be `the`'
 	MS_SAMPLE[shellcheck]='scripts/sample.sh:3:1: warning: Use cd ... || exit in case cd fails. [SC2164]'
+	MS_SAMPLE[knip]='getAccent        function  src/lib/stores/accent.svelte.ts:18:17'
+	MS_SAMPLE[node-test]=$'not ok 2 - formatPlayTime: under an hour shows minutes\n  ---\n  duration_ms: 0.865411\n  type: \'test\'\n  location: \'/work/app/crates/launcher/src/lib/utils/format.test.ts:12:6\''
+	# Further lines a one-pattern owner must match: knip prints a dependency
+	# issue without the type column.
+	MS_ALSO=()
+	MS_ALSO[knip]='@tauri-apps/plugin-shell  package.json:38:6'
 	# Lines of other tools an owner must not complete.
 	MS_MISS=()
 	MS_MISS[prettier]='[warn] ../../README.md'
 	MS_MISS[prettier-root]='[warn] src/lib/a.ts'
 	MS_MISS[actionlint]='scripts/sample.sh:3:1: warning: Use cd ... || exit in case cd fails. [SC2164]'
+	MS_MISS[knip]=$'knip: 18 project files resolved\nConfiguration hints (2)\nscripts/test-ids.ts!  knip.json  Remove redundant entry pattern'
 	MS_MISS[hygiene-scan]=$'0123456789ab: subject length: 73 characters, limit 72\npr-body:3: test plan heading\nscripts/sample.sh:3:1: warning: Use cd ... || exit in case cd fails. [SC2164]'
 	MS_GREEN="test result: ok. 110 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.12s
 warning[duplicate]: found 2 duplicate entries for crate 'windows-sys'
@@ -1497,7 +1533,12 @@ All matched files use Prettier code style!
 1 commits scanned.
 no leaks found
  INFO audit: zizmor: ${rainbow} completed ./.github/dependabot.yml
-pin guard: runner labels: scanned 11 runs-on lines, violations 0"
+pin guard: runner labels: scanned 11 runs-on lines, violations 0
+ok 1 - formatPlayTime: no play time reads 0h
+  ---
+  duration_ms: 0.865411
+  type: 'test'
+  ..."
 }
 
 # Loads MS_OWNERS, MS_PAT["<owner> <index>"] and MS_PAT_COUNT[<owner>].
@@ -1571,6 +1612,21 @@ matcher_green_problems() {
 	done
 }
 
+# Prints a problem for each MS_ALSO line of an owner that its one pattern
+# misses.
+matcher_also_problems() {
+	local owner=$1 line
+	local -a lines=()
+	if [[ "${MS_PAT_COUNT[${owner}]:-0}" -ne 1 ]]; then
+		printf 'owner %s has %s patterns, not the one its further sample lines need\n' "${owner}" "${MS_PAT_COUNT[${owner}]:-0}"
+		return 0
+	fi
+	mapfile -t lines <<<"${MS_ALSO[${owner}]}"
+	for line in "${lines[@]}"; do
+		pcre_matches "${MS_PAT["${owner} 0"]}" "${line}" || printf 'owner %s pattern 1 misses the sample line %s\n' "${owner}" "${line}"
+	done
+}
+
 # Prints a problem for each run of an owner's patterns that completes on its
 # MS_MISS lines.
 matcher_miss_problems() {
@@ -1590,7 +1646,7 @@ matcher_miss_problems() {
 
 st_matchers() {
 	local file=$1 owner why
-	declare -gA MS_SAMPLE=() MS_MISS=() MS_PAT=() MS_PAT_COUNT=()
+	declare -gA MS_SAMPLE=() MS_ALSO=() MS_MISS=() MS_PAT=() MS_PAT_COUNT=()
 	st_matcher_samples
 	matcher_load "${file}"
 	why=$(matcher_file_problems "${file}")
@@ -1598,6 +1654,10 @@ st_matchers() {
 	for owner in "${!MS_SAMPLE[@]}"; do
 		why=$(matcher_owner_problems "${owner}")
 		st_case "matcher owner ${owner} matches its sample" "${why}"
+	done
+	for owner in "${!MS_ALSO[@]}"; do
+		why=$(matcher_also_problems "${owner}")
+		st_case "matcher owner ${owner} matches its further sample lines" "${why}"
 	done
 	why=''
 	for owner in "${MS_OWNERS[@]}"; do
@@ -1791,8 +1851,9 @@ declare_table() {
 	row name='tests (Linux host)' tags=rust-host category=both target=linux tools=rust,node requires='vite build' \
 		count='^test result:|^test identity: ' zero='ids ([0-9]+)' \
 		cmd='source scripts/ci-check.sh && require_non_root_user && cargo test --workspace --all-features --locked 2>&1 | node crates/launcher/scripts/test-ids.ts libtest scripts/test-baselines/linux.list'
-	row name=eslint tags=frontend category=both target=any tools=node,npm:eslint dir=crates/launcher count=none \
-		cmd='node node_modules/eslint/bin/eslint.js . --max-warnings 0'
+	row name=eslint tags=frontend category=both target=any tools=node,npm:eslint dir=crates/launcher \
+		count='^eslint: [0-9]+ (\.[a-z]+ )?files linted' zero='^eslint: ([0-9]+) files linted in total$' \
+		cmd='node node_modules/eslint/bin/eslint.js . --max-warnings 0 --format ./scripts/eslint-count-formatter.ts'
 	row name=prettier tags=frontend category=both target=any tools=node,npm:prettier dir=crates/launcher \
 		count='^All matched files use|Code style issues' cmd='node node_modules/prettier/bin/prettier.cjs --check .'
 	row name='root text files formatting (prettier)' tags=frontend category=both target=any tools=node,npm:prettier \
@@ -1801,8 +1862,22 @@ declare_table() {
 	row name=svelte-check tags=frontend category=both target=any tools=node,npm:svelte-check dir=crates/launcher \
 		count='COMPLETED [0-9]+ FILES' zero='COMPLETED ([0-9]+) FILES' \
 		cmd='node node_modules/svelte-check/bin/svelte-check --tsconfig ./tsconfig.json --fail-on-warnings --output machine'
+	row name='tsc (Node program: config files + gate helpers + unit tests)' tags=frontend category=both target=any \
+		tools=node,npm:typescript#tsc dir=crates/launcher count='^tsc: [0-9]+ files type-checked$' \
+		zero='^tsc: ([0-9]+) files type-checked$' \
+		cmd='source ../../scripts/ci-check.sh && node node_modules/typescript/bin/tsc --noEmit --pretty false --listFiles -p tsconfig.node.json | tsc_listed_files'
+	row name='knip (unused exports + types + files)' tags=frontend category=both target=any tools=node,npm:knip \
+		dir=crates/launcher count='^knip: [0-9]+ project files resolved$' zero='^knip: ([0-9]+) project files resolved$' \
+		cmd='source ../../scripts/ci-check.sh && node node_modules/knip/bin/knip.js --production --include exports,types,files --debug --no-progress | knip_project_files'
+	row name='knip (unused + unlisted + unresolved npm dependencies)' tags=frontend category=both target=any \
+		tools=node,npm:knip dir=crates/launcher count='^knip: [0-9]+ project files resolved$' \
+		zero='^knip: ([0-9]+) project files resolved$' \
+		cmd='source ../../scripts/ci-check.sh && node node_modules/knip/bin/knip.js --include dependencies,unlisted,unresolved --debug --no-progress | knip_project_files'
 	row name='test identity self-test' tags=frontend category=both target=any tools=node,git \
 		count='^test identity self-test: ' zero='cases ([0-9]+)' cmd='node crates/launcher/scripts/test-ids.selftest.ts'
+	row name='frontend unit tests + test identity' tags=frontend category=both target=any tools=node,npm dir=. \
+		count='^# tests [0-9]+$|^test identity: ' zero='ids ([0-9]+)' \
+		cmd='node --version && npm --prefix crates/launcher test | node crates/launcher/scripts/test-ids.ts tap scripts/test-baselines/frontend.list'
 	# shellcheck disable=SC2016 # the row's own bash expands these, not this file
 	row name='npm audit' tags=frontend category=both target=any tools=node,npm dir=crates/launcher \
 		count='^found [0-9]+ (vulnerability|vulnerabilities)|^[0-9]+ (info|low|moderate|high|critical) severity (vulnerability|vulnerabilities)|^[0-9]+ vulnerabilities \(|^npm audit: dependencies audited: ' \

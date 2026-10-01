@@ -1,0 +1,16 @@
+{
+  "entry": [
+    "scripts/commit-check.selftest.ts!",
+    "scripts/commit-check.ts!",
+    "scripts/eslint-count-formatter.ts!",
+    "scripts/freshness.ts!",
+    "scripts/hygiene-scan.selftest.ts!",
+    "scripts/hygiene-scan.ts!",
+    "scripts/pin-guard.selftest.ts!",
+    "scripts/pin-guard.ts!",
+    "scripts/test-ids.selftest.ts!",
+    "scripts/test-ids.ts!",
+    "scripts/wiring-check.selftest.ts!",
+    "scripts/wiring-check.ts!"
+  ]
+}

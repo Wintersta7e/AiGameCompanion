@@ -1,0 +1,13 @@
+formatHotkeyStatus: names every hotkey that failed run
+formatHotkeyStatus: ready when nothing failed run
+formatInitial: a leading emoji and space are skipped run
+formatInitial: a name of symbols only has no initial run
+formatInitial: a name without ASCII letters keeps its first letter run
+formatInitial: an ASCII name is uppercased run
+formatInitial: an astral first letter stays one code point run
+formatInitial: punctuation and digits run
+formatLastPlayed: counts back in the largest whole unit run
+formatLastPlayed: never played and unreadable dates run
+formatPlayTime: hours, with minutes only when verbose run
+formatPlayTime: no play time reads 0h run
+formatPlayTime: under an hour shows minutes run

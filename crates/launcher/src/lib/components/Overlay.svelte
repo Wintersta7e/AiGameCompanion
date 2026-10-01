@@ -88,7 +88,7 @@
   const canAttach = $derived(Boolean(game?.linked));
   const canSend = $derived(Boolean(game?.linked) && availability[provider]);
   // The exe's file name, for the link control ("Link foo.exe ...").
-  const exeFile = $derived(game?.exe.split(/[\\/]/).pop() ?? '');
+  const exeFile = $derived(game?.exe.split(/[\\/]/u).pop() ?? '');
   const captureHint = $derived.by(() => {
     // Name the window Enter will capture: a hotkey pressed while the overlay
     // is open acts on this stored target, not on whatever is in front now.
@@ -145,7 +145,7 @@
     conversationId += 1;
     messages = [];
     prompt = '';
-    if (inflight) {
+    if (inflight !== 0) {
       try {
         await invoke('cancel_sage', { requestId: inflight });
       } catch {

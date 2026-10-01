@@ -106,6 +106,8 @@ trust::tests::navigation_allows_only_app_origins run
 trust::tests::overlay_window_cannot_maximize run
 trust::tests::search_suggestion_component_contract run
 util::tests::frontend_scan_walks_the_app run
+util::tests::frontend_suppressions_give_a_reason run
 util::tests::needle_boundaries run
+util::tests::node_files_are_listed_once run
 util::tests::per_file_scan_skips_test_modules run
 util::tests::test_modules_are_stripped run

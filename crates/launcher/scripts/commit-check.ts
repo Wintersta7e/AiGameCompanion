@@ -645,9 +645,10 @@ function checkCommits(write: (line: string) => void): number {
   const order = new Map(commits.map((commit, i) => [short(commit.sha), i]));
   const position = (hit: Hit): number =>
     order.get(hit.location.split(' ')[0] ?? '') ?? commits.length;
-  const hits = [...own, ...matched.hits, ...branchHits(range.branch)].sort(
-    (a, b) => position(a) - position(b) || RULES.indexOf(a.rule) - RULES.indexOf(b.rule),
-  );
+  const hits = [...own, ...matched.hits, ...branchHits(range.branch)].sort((a, b) => {
+    const byPosition = position(a) - position(b);
+    return byPosition !== 0 ? byPosition : RULES.indexOf(a.rule) - RULES.indexOf(b.rule);
+  });
   for (const hit of hits) write(hitLine(hit));
   write(totalsLine(RULES, hits));
   for (const line of matched.identity.lines) write(line);
@@ -723,11 +724,10 @@ function checkPrText(write: (line: string) => void): number {
       seen.add(key);
       return fresh;
     })
-    .sort(
-      (a, b) =>
-        (order.get(a.location) ?? 0) - (order.get(b.location) ?? 0) ||
-        PR_RULES.indexOf(a.rule) - PR_RULES.indexOf(b.rule),
-    );
+    .sort((a, b) => {
+      const byLocation = (order.get(a.location) ?? 0) - (order.get(b.location) ?? 0);
+      return byLocation !== 0 ? byLocation : PR_RULES.indexOf(a.rule) - PR_RULES.indexOf(b.rule);
+    });
   const counted = (hit: Hit): boolean => !(exempt && hit.location.startsWith('pr-body:'));
   const notCounted = hits.filter((hit) => !counted(hit)).length;
   const exemption = exempt ? `yes, ${plural(notCounted, 'hit', 'hits')} not counted` : 'no';
