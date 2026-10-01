@@ -268,7 +268,14 @@ jobs:
           echo "${SHA256}  ${archive}" | sha256sum -c -
           tar xzf "$archive" -C "$RUNNER_TEMP/bin" actionlint
           echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
+      - name: Install zizmor
+        uses: taiki-e/install-action@26e9283f268b880168bdbd2c545dfcd60ec2c6ab # v2.87.13
+        with:
+          tool: zizmor@${{ steps.pins.outputs.ZIZMOR }}
+          fallback: none
       - name: Run the workflows rows of ci-check.sh
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: ./scripts/ci-check.sh --job workflows
 
   secrets:

@@ -1028,6 +1028,67 @@ secret_scan_event() {
 	fi
 }
 
+# The zizmor row's command: zizmor's audits of the tracked workflow and
+# Dependabot files, online ones included. The token reaches zizmor's process
+# only and is never printed. Every failed condition is printed.
+zizmor_audit() {
+	# The kinds of file zizmor collects from the repository root at the pinned
+	# version: workflows, action definitions, Dependabot and pre-commit configs.
+	local -a inputs=(
+		':(glob)**/.github/workflows/*.yml' ':(glob)**/.github/workflows/*.yaml'
+		':(glob)**/action.yml' ':(glob)**/action.yaml'
+		':(glob)**/.github/dependabot.yml' ':(glob)**/.github/dependabot.yaml'
+		':(glob)**/.pre-commit-config.yaml' ':(glob)**/.pre-commit-config.yml'
+		':(glob)**/.pre-commit-hooks.yaml' ':(glob)**/.pre-commit-hooks.yml'
+	)
+	local bad=0 name token='' token_source='' log rc tracked completed noisy
+	for name in ZIZMOR_OFFLINE ZIZMOR_NO_ONLINE_AUDITS; do
+		if [[ -n "${!name+set}" ]]; then
+			printf 'workflow audit: %s is set, so the online audits would not run\n' "${name}"
+			bad=1
+		fi
+	done
+	if [[ -n "${GH_TOKEN:-}" ]]; then
+		token=${GH_TOKEN}
+		token_source='GH_TOKEN from the environment'
+	elif token=$(gh auth token 2>/dev/null) && [[ -n "${token}" ]]; then
+		token_source='gh auth token'
+	else
+		token=''
+		printf 'workflow audit: no GitHub token; export GH_TOKEN or log in with gh\n'
+		bad=1
+	fi
+	if ((bad)); then return 1; fi
+	printf 'workflow audit: token source: %s\n' "${token_source}"
+	if ! tracked=$(git ls-files -- "${inputs[@]}" | wc -l); then
+		printf 'workflow audit: git could not list the tracked files\n'
+		return 1
+	fi
+	log=$(mktemp) || return 1
+	GH_TOKEN="${token}" zizmor --persona regular --no-config --strict-collection . 2>&1 | tee -- "${log}"
+	rc=${PIPESTATUS[0]}
+	completed=$(strip_ansi <"${log}" | grep -c -E '^[[:space:]]*INFO .*[[:space:]]completed[[:space:]]')
+	noisy=$(strip_ansi <"${log}" | grep -c -E '^[[:space:]]*(WARN|ERROR)[[:space:]]')
+	rm -f -- "${log}"
+	printf 'workflow audit: zizmor audited %s of %s tracked inputs\n' "${completed}" "${tracked}"
+	if ((rc != 0)); then
+		printf 'workflow audit: zizmor exited %s; see its output above\n' "${rc}"
+		bad=1
+	fi
+	if ((noisy > 0)); then
+		printf 'workflow audit: %s zizmor log lines at WARN or ERROR level\n' "${noisy}"
+		bad=1
+	fi
+	if ((tracked == 0)); then
+		printf 'workflow audit: no tracked workflow or Dependabot file to audit\n'
+		bad=1
+	elif ((completed != tracked)); then
+		printf 'workflow audit: the audited count (%s) differs from the tracked count (%s)\n' "${completed}" "${tracked}"
+		bad=1
+	fi
+	return "${bad}"
+}
+
 # The commit-message row's local precondition: prints the reason and exits 1
 # when HEAD has no commit beyond origin/main. An origin/main that does not
 # resolve lets the row run, and the checker fails on it.
@@ -1404,7 +1465,7 @@ st_usages() {
 # the literal lines of a green run must complete no owner.
 
 st_matcher_samples() {
-	local box=$'\342\224\214\342\224\200'
+	local box=$'\342\224\214\342\224\200' rainbow=$'\360\237\214\210'
 	MS_SAMPLE=()
 	MS_SAMPLE[rustc]=$'error[E0425]: cannot find value `total` in this scope\n  --> src/main.rs:12:9'
 	MS_SAMPLE[rustfmt]='Diff in \\?\D:\a\app\app\src\main.rs:12:'
@@ -1414,6 +1475,7 @@ st_matcher_samples() {
 	MS_SAMPLE[prettier]='[warn] src/lib/a.ts'
 	MS_SAMPLE[prettier-root]='[warn] ../../README.md'
 	MS_SAMPLE[actionlint]='.github/workflows/ci.yml:10:5: unexpected key "foo" for "job" section [syntax-check]'
+	MS_SAMPLE[zizmor-help]=$'help[artipacked]: credential persistence through GitHub Actions artifacts\n  --> ./.github/workflows/ci.yml:28:9'
 	MS_SAMPLE[gitleaks]='Fingerprint: 0123abc:notes.txt:github-pat:3'
 	MS_SAMPLE[pin-guard]='pin guard: .github/workflows/ci.yml:23: runner labels: runs-on: ubuntu-latest'
 	MS_SAMPLE[hygiene-scan]='scripts/sample.sh:3: error: local path -- path-home'
@@ -1433,6 +1495,7 @@ All matched files use Prettier code style!
 1759999999999 COMPLETED 142 FILES 0 ERRORS 0 WARNINGS 0 FILES_WITH_PROBLEMS
 1 commits scanned.
 no leaks found
+ INFO audit: zizmor: ${rainbow} completed ./.github/dependabot.yml
 pin guard: runner labels: scanned 11 runs-on lines, violations 0"
 }
 
@@ -1603,6 +1666,9 @@ declare_table() {
 		count='^pin guard( self-test)?: [0-9]+ (files|cases)' zero='^pin guard: ([0-9]+) files' \
 		cmd='node crates/launcher/scripts/pin-guard.selftest.ts && node crates/launcher/scripts/pin-guard.ts'
 	row name=actionlint tags=workflows category=both target=any tools=actionlint count=none cmd=actionlint
+	row name='zizmor (workflow and Dependabot files)' tags=workflows category=both target=any tools=zizmor,git \
+		count='completed |findings|No findings' zero='^workflow audit: zizmor audited ([0-9]+) of ' \
+		cmd='source scripts/ci-check.sh && zizmor_audit'
 	row name='vite build' tags=rust,rust-host,frontend,coverage category=both target=any tools=node,npm:vite \
 		dir=crates/launcher count='modules transformed' zero='([0-9]+) modules transformed' \
 		cmd='node node_modules/vite/bin/vite.js build'
