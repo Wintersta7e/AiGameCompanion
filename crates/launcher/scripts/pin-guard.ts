@@ -355,6 +355,15 @@ const checkToolFile = (text: string, sources: readonly ToolSource[], add: Add): 
 
 const toolKey = (tool: string): string => tool.toUpperCase().replaceAll('-', '_');
 
+// Tool-file keys whose tool no step-table row names.
+const keysWithoutRunnerRow = (
+  sources: readonly ToolSource[],
+  runnerTools: readonly string[],
+): string[] =>
+  sources
+    .map((source) => source.key)
+    .filter((key) => !runnerTools.some((tool) => toolKey(tool) === key));
+
 const checkRunnerTools = (input: PinInput, add: Add): void => {
   if (input.runnerTools === null) {
     add('pin file shapes', 'scripts/ci-check.sh', null, 'runner table unreadable');
@@ -374,6 +383,16 @@ const checkRunnerTools = (input: PinInput, add: Add): void => {
         null,
         `the runner tool ${tool} names ${key}, which the tool file lacks`,
       );
+  }
+  const lines = (input.files.get(TOOL_FILE) ?? '').split('\n');
+  for (const key of keysWithoutRunnerRow(input.toolSources, input.runnerTools)) {
+    const index = lines.findIndex((line) => line.startsWith(`${key}=`));
+    add(
+      'pin file shapes',
+      TOOL_FILE,
+      index === -1 ? null : index + 1,
+      `the key ${key} pins a tool that no runner row declares`,
+    );
   }
 };
 
@@ -587,15 +606,6 @@ export function checkPins(input: PinInput): PinResult {
   return { violations, scans };
 }
 
-// Tool-file keys whose tool no step-table row names yet (information only).
-export const keysWithoutRunnerRow = (
-  sources: readonly ToolSource[],
-  runnerTools: readonly string[],
-): string[] =>
-  sources
-    .map((source) => source.key)
-    .filter((key) => !runnerTools.some((tool) => toolKey(tool) === key));
-
 const errorCode = (error: unknown): string =>
   error instanceof Error && 'code' in error && typeof error.code === 'string'
     ? error.code
@@ -663,8 +673,6 @@ const main = (): number => {
         : `${scan.rule}: scanned ${String(scan.scanned)} ${scan.unit}, violations ${String(count)}`,
     );
   }
-  const undeclared = keysWithoutRunnerRow(TOOL_SOURCES, runnerTools ?? []);
-  out(`tool-file keys no runner row declares yet: ${undeclared.join(', ') || 'none'}`);
   const scanned = (rule: Rule): number =>
     result.scans.find((scan) => scan.rule === rule)?.scanned ?? 0;
   out(

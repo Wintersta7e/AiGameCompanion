@@ -100,6 +100,23 @@
       ]
     },
     {
+      "owner": "zizmor-help",
+      "severity": "notice",
+      "pattern": [
+        {
+          "regexp": "^help\\[(\\S+)\\]: (.+)$",
+          "code": 1,
+          "message": 2
+        },
+        {
+          "regexp": "^\\s*--> (.+):(\\d+):(\\d+)$",
+          "file": 1,
+          "line": 2,
+          "column": 3
+        }
+      ]
+    },
+    {
       "owner": "gitleaks",
       "pattern": [
         {

@@ -21,6 +21,8 @@ All notable changes to this project are documented here. The format is based on
   repository's commit rules, and scans tracked text files for local paths,
   private email addresses and planning ids.** The checks read shapes, not
   meaning, and run after a branch is pushed.
+- **Security problems can be reported privately.** `SECURITY.md` explains how,
+  and that only the latest release is supported.
 
 ## 2.0.2 - 2026-09-26
 
