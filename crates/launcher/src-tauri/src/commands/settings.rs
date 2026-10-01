@@ -86,14 +86,27 @@ pub(crate) fn update_settings(
     saved
 }
 
-/// What Save stores: the modal's values with the model trimmed, except the
-/// provider. Only `set_active_provider` writes that, so a provider picked in the
-/// overlay while Settings is open is not reverted by Save.
+/// What Save stores: the fields the Settings modal owns, from `incoming`, with
+/// the model trimmed. Every other field is written only by its own command, so
+/// Save keeps the stored value -- a provider picked in the overlay while
+/// Settings is open is not reverted. The destructure names every field: a new
+/// one does not compile until its writer is chosen here.
 fn merge_settings(stored: &LauncherSettings, incoming: LauncherSettings) -> LauncherSettings {
-    let mut merged = incoming;
-    merged.active_provider.clone_from(&stored.active_provider);
-    merged.gemini_model = merged.gemini_model.trim().to_owned();
-    merged
+    let LauncherSettings {
+        scan_on_startup,
+        minimize_to_tray,
+        launch_on_startup,
+        // Written only by `set_active_provider`.
+        active_provider: _,
+        gemini_model,
+    } = incoming;
+    LauncherSettings {
+        scan_on_startup,
+        minimize_to_tray,
+        launch_on_startup,
+        gemini_model: gemini_model.trim().to_owned(),
+        ..stored.clone()
+    }
 }
 
 /// The longest link that is opened, in bytes.
@@ -289,5 +302,80 @@ mod tests {
         assert!(!merged.scan_on_startup);
         assert!(!merged.minimize_to_tray);
         assert!(merged.launch_on_startup);
+    }
+
+    /// Save takes the modal's fields from what it sends and keeps every other
+    /// field as stored, and its destructure names every field, so a new one
+    /// does not compile until its writer is chosen.
+    #[test]
+    fn merge_settings_owners() {
+        let stored = LauncherSettings {
+            scan_on_startup: true,
+            minimize_to_tray: true,
+            launch_on_startup: false,
+            active_provider: "claude".to_owned(),
+            gemini_model: "gemini-y".to_owned(),
+        };
+        let incoming = LauncherSettings {
+            scan_on_startup: false,
+            minimize_to_tray: false,
+            launch_on_startup: true,
+            active_provider: "gemini".to_owned(),
+            gemini_model: " gemini-x ".to_owned(),
+        };
+        // (field, whether the modal writes it); every other writer is a setter.
+        let owners = [
+            ("scan_on_startup", true),
+            ("minimize_to_tray", true),
+            ("launch_on_startup", true),
+            ("gemini_model", true),
+            ("active_provider", false),
+        ];
+        let stored_value = serde_json::to_value(&stored).unwrap();
+        let mut incoming_value = serde_json::to_value(&incoming).unwrap();
+        let merged = serde_json::to_value(merge_settings(&stored, incoming)).unwrap();
+        incoming_value["gemini_model"] = "gemini-x".into();
+        let mut wrong = Vec::new();
+        for (field, modal) in owners {
+            let expected = if modal {
+                &incoming_value[field]
+            } else {
+                &stored_value[field]
+            };
+            println!("{field}: merged {}, expected {expected}", merged[field]);
+            if stored_value[field] == incoming_value[field] {
+                wrong.push(format!("{field}: the fixture does not tell the two apart"));
+            } else if merged[field] != *expected {
+                wrong.push(format!(
+                    "{field}: merged {}, expected {expected}",
+                    merged[field]
+                ));
+            }
+        }
+        let defaults = serde_json::to_value(LauncherSettings::default()).unwrap();
+        let mut keys: Vec<&str> = defaults
+            .as_object()
+            .unwrap()
+            .keys()
+            .map(String::as_str)
+            .collect();
+        let mut table: Vec<&str> = owners.iter().map(|(field, _)| *field).collect();
+        keys.sort_unstable();
+        table.sort_unstable();
+        println!("checked {} of {} fields", table.len(), keys.len());
+        assert_eq!(table, keys, "the owner table must list every setting");
+        assert!(wrong.is_empty(), "{wrong:#?}");
+
+        let source = include_str!("settings.rs");
+        let destructure = source
+            .split_once(concat!("let Launcher", "Settings {"))
+            .and_then(|(_, rest)| rest.split_once("} = incoming;"))
+            .map(|(fields, _)| fields);
+        println!("merge_settings destructures: {destructure:?}");
+        let destructure = destructure.expect("merge_settings destructures incoming by name");
+        assert!(
+            !destructure.contains(".."),
+            "the destructure must name every field, without `..`"
+        );
     }
 }

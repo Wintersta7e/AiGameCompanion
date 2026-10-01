@@ -11,6 +11,7 @@
   import Overlay from './lib/components/Overlay.svelte';
   import { scanGames, getGames, loadGames } from './lib/stores/games.svelte';
   import { followProviderChanges, loadProvider } from './lib/stores/companion.svelte';
+  import type { LauncherSettings } from './lib/settings';
 
   // The overlay companion loads the same SPA in a second window; branch on label.
   const isOverlay = getCurrentWindow().label === 'overlay';
@@ -35,7 +36,7 @@
       return;
     }
     try {
-      const settings = await invoke<{ scan_on_startup: boolean }>('get_settings');
+      const settings = await invoke<LauncherSettings>('get_settings');
       if (settings.scan_on_startup) void scanGames();
       else void loadGames();
     } catch {

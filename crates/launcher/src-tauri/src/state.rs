@@ -5,7 +5,7 @@ use std::time::Duration;
 
 use parking_lot::Mutex;
 
-use crate::models::LauncherState;
+use crate::models::{LauncherSettings, LauncherState};
 
 /// Reads of the state file, in total, before it counts as unreadable: about a
 /// second, for a scanner that holds the file open without read sharing.
@@ -85,6 +85,20 @@ impl AppState {
         }
         std::fs::rename(&tmp_path, &self.state_path).map_err(|e| e.to_string())
     }
+
+    /// The one write path for a settings setter. Refuses in read-only mode
+    /// before changing memory, so a refused value is never in effect; else
+    /// applies `edit` in one lock hold, releases it and saves.
+    pub(crate) fn edit_settings(
+        &self,
+        edit: impl FnOnce(&mut LauncherSettings),
+    ) -> Result<(), String> {
+        if let Some(reason) = self.load_error() {
+            return Err(reason.to_owned());
+        }
+        edit(&mut self.launcher.lock().settings);
+        self.save()
+    }
 }
 
 /// Read the state file and decide whether this run may write it. Returns the
@@ -107,19 +121,16 @@ fn read_state(state_path: &Path) -> (LauncherState, Option<String>) {
 
     match serde_json::from_str::<LauncherState>(&contents) {
         Ok(state) => {
-            // One malformed game entry is dropped rather than failing the whole
-            // file, so a parse can succeed and still lose data.
-            let dropped = raw_game_count(&contents).saturating_sub(state.games.len());
+            // One malformed game or per-game entry is dropped rather than
+            // failing the whole file, so a parse can succeed and still lose data.
+            let dropped = dropped_entries(&contents, &state);
             if dropped == 0 {
                 return (state, None);
             }
-            tracing::warn!(
-                "{dropped} unreadable game entries in {}",
-                state_path.display()
-            );
+            tracing::warn!("{dropped} unreadable entries in {}", state_path.display());
             let reason = back_up(state_path, contents.as_bytes()).err().map(|e| {
                 format!(
-                    "{dropped} game entries in {} could not be read, and it could not be backed up: {e}",
+                    "{dropped} entries in {} could not be read, and it could not be backed up: {e}",
                     state_path.display()
                 )
             });
@@ -173,13 +184,24 @@ const fn should_promote_tmp(state_error: Option<ErrorKind>, tmp_exists: bool) ->
     tmp_exists && matches!(state_error, Some(ErrorKind::NotFound))
 }
 
-/// Entries in the file's `games` array as written, before unreadable ones were
-/// dropped.
-fn raw_game_count(contents: &str) -> usize {
-    serde_json::from_str::<serde_json::Value>(contents)
-        .ok()
-        .and_then(|value| value.get("games")?.as_array().map(Vec::len))
-        .unwrap_or(0)
+/// Entries the load dropped as unreadable: the file's `games` beyond the loaded
+/// games, plus its `game_prefs` entries beyond the loaded ones, where a
+/// `game_prefs` that is not an object counts as one.
+fn dropped_entries(contents: &str, state: &LauncherState) -> usize {
+    let Ok(raw) = serde_json::from_str::<serde_json::Value>(contents) else {
+        return 0;
+    };
+    let games = raw
+        .get("games")
+        .and_then(serde_json::Value::as_array)
+        .map_or(0, Vec::len)
+        .saturating_sub(state.games.len());
+    let prefs = raw.get("game_prefs").map_or(0, |value| {
+        value.as_object().map_or(1, |entries| {
+            entries.len().saturating_sub(state.game_prefs.len())
+        })
+    });
+    games + prefs
 }
 
 /// Write `bytes` -- what the load already read, never a second read of a file
@@ -227,7 +249,7 @@ mod tests {
     #![allow(let_underscore_drop, reason = "test cleanup is best-effort")]
 
     use super::*;
-    use crate::models::{Game, GameSource};
+    use crate::models::{Game, GamePrefs, GameSource};
     use std::path::Path;
 
     /// Unique temp path per test (process id + label) so parallel tests
@@ -575,6 +597,119 @@ mod tests {
     }
 
     #[test]
+    fn game_prefs_load_save_and_backup() {
+        // No record in the file: empty, and the rest loads intact.
+        let path = temp_state_path("prefs_absent");
+        std::fs::write(&path, ONE_GAME).unwrap();
+        let app = AppState::load(path.clone());
+        println!(
+            "no record: {} dropped",
+            dropped_entries(ONE_GAME, &app.launcher.lock())
+        );
+        let st = app.launcher.lock();
+        assert!(st.game_prefs.is_empty());
+        assert_eq!(st.games.len(), 1);
+        assert_eq!(st.games[0].play_time_minutes, 900);
+        assert!(st.settings.scan_on_startup);
+        drop(st);
+        assert_eq!(app.load_error(), None);
+        assert!(!path.with_extension("json.bak").exists());
+        cleanup(&path);
+
+        // One readable entry survives a save and a reload unchanged.
+        let one = r#"{"game_prefs":{"library:x":{}}}"#;
+        let path = temp_state_path("prefs_one");
+        std::fs::write(&path, one).unwrap();
+        let app = AppState::load(path.clone());
+        let loaded = app.launcher.lock().game_prefs.clone();
+        println!(
+            "one entry: {} dropped, loaded {loaded:?}",
+            dropped_entries(one, &app.launcher.lock())
+        );
+        assert_eq!(loaded.keys().collect::<Vec<_>>(), ["library:x"]);
+        assert_eq!(loaded.get("library:x"), Some(&GamePrefs::default()));
+        app.save().unwrap();
+        assert_eq!(
+            AppState::load(path.clone()).launcher.lock().game_prefs,
+            loaded
+        );
+        cleanup(&path);
+
+        // An unreadable entry is dropped, after the file is backed up.
+        let mixed = r#"{"games":[{"id":"g1","name":"Foo"}],"game_prefs":{"library:x":5,"library:y":{}},"settings":{}}"#;
+        let path = temp_state_path("prefs_mixed");
+        std::fs::write(&path, mixed).unwrap();
+        let app = AppState::load(path.clone());
+        let kept: Vec<String> = app.launcher.lock().game_prefs.keys().cloned().collect();
+        println!(
+            "one unreadable entry: {} dropped, kept {kept:?}",
+            dropped_entries(mixed, &app.launcher.lock())
+        );
+        assert_eq!(kept, ["library:y"]);
+        assert_eq!(app.launcher.lock().games.len(), 1);
+        assert_eq!(
+            std::fs::read_to_string(path.with_extension("json.bak")).unwrap(),
+            mixed
+        );
+        assert_eq!(app.load_error(), None);
+        cleanup(&path);
+
+        // With no backup possible, the run is read-only and the file kept.
+        let path = temp_state_path("prefs_mixed_no_backup");
+        std::fs::write(&path, mixed).unwrap();
+        occupy_every_backup_name(&path);
+        let app = AppState::load(path.clone());
+        println!("no backup possible: {:?}", app.load_error());
+        assert!(
+            app.load_error().is_some(),
+            "an unpreserved file is read-only"
+        );
+        app.save().unwrap_err();
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), mixed);
+        cleanup(&path);
+
+        // A record that is not an object loads empty, after a backup.
+        let scalar = r#"{"game_prefs":5}"#;
+        let path = temp_state_path("prefs_scalar");
+        std::fs::write(&path, scalar).unwrap();
+        let app = AppState::load(path.clone());
+        println!(
+            "not an object: {} dropped",
+            dropped_entries(scalar, &app.launcher.lock())
+        );
+        assert!(app.launcher.lock().game_prefs.is_empty());
+        assert_eq!(
+            std::fs::read_to_string(path.with_extension("json.bak")).unwrap(),
+            scalar
+        );
+        assert_eq!(app.load_error(), None);
+        cleanup(&path);
+    }
+
+    /// Outside the store's own files, code reads per-game values through the
+    /// store's accessors, never the field.
+    #[test]
+    fn game_prefs_field_stays_in_the_store() {
+        let uses = crate::util::count_in_sources_by_file(concat!(".game", "_prefs"));
+        let calls = crate::util::count_in_sources_by_file(concat!(".game", "_prefs("));
+        println!("{} files scanned", uses.len());
+        assert!(!uses.is_empty(), "the source scan found no files");
+        assert_eq!(uses.len(), calls.len(), "both scans read the same files");
+        let mut outside = Vec::new();
+        for ((file, all), (_, accessor_calls)) in uses.iter().zip(&calls) {
+            let access = all - accessor_calls;
+            println!("{}: {access}", file.display());
+            if access > 0 && file != Path::new("state.rs") && file != Path::new("models.rs") {
+                outside.push((file.clone(), access));
+            }
+        }
+        assert!(
+            outside.is_empty(),
+            "game_prefs field access outside state.rs and models.rs: {outside:?}"
+        );
+    }
+
+    #[test]
     fn backup_never_replaces_an_existing_one() {
         let path = temp_state_path("backup_kept");
         std::fs::write(path.with_extension("json.bak"), "older backup").unwrap();
@@ -640,6 +775,79 @@ mod tests {
         assert_eq!(app.load_error(), None);
         assert_eq!(app.launcher.lock().games.len(), 1);
         cleanup(&path);
+    }
+
+    #[test]
+    fn edit_settings_refuses_before_changing_memory() {
+        let path = temp_state_path("edit_settings_read_only");
+        std::fs::create_dir(&path).unwrap();
+        let app = AppState::load(path.clone());
+        let before = serde_json::to_string(&*app.launcher.lock()).unwrap();
+        let refused = app
+            .edit_settings(|settings| settings.gemini_model = "changed".to_owned())
+            .unwrap_err();
+        println!("read-only: refused with {refused:?}");
+        assert_eq!(
+            serde_json::to_string(&*app.launcher.lock()).unwrap(),
+            before,
+            "a refused edit changed memory"
+        );
+        assert!(!path.with_extension("json.tmp").exists());
+        cleanup(&path);
+
+        let path = temp_state_path("edit_settings_writable");
+        let app = AppState::load(path.clone());
+        app.edit_settings(|settings| settings.gemini_model = "changed".to_owned())
+            .unwrap();
+        assert_eq!(app.launcher.lock().settings.gemini_model, "changed");
+        let reloaded = AppState::load(path.clone());
+        println!(
+            "writable: memory and file hold {:?}",
+            reloaded.launcher.lock().settings.gemini_model
+        );
+        assert_eq!(reloaded.launcher.lock().settings.gemini_model, "changed");
+        cleanup(&path);
+    }
+
+    /// Outside this file, only Save's merge assigns the settings, and no code
+    /// borrows them mutably or assigns one of their fields: every other write
+    /// goes through `edit_settings`, which refuses before changing memory.
+    #[test]
+    fn settings_are_written_only_by_their_writers() {
+        let count = |needle: &str| -> Vec<(PathBuf, usize)> {
+            crate::util::count_in_sources_by_file(needle)
+                .into_iter()
+                .filter(|(file, _)| file != Path::new("state.rs"))
+                .collect()
+        };
+        let hits = |counts: &[(PathBuf, usize)]| -> Vec<(PathBuf, usize)> {
+            counts.iter().filter(|(_, n)| *n > 0).cloned().collect()
+        };
+        let assigned = count(concat!("launcher.settings", " = "));
+        println!("{} files scanned (state.rs excluded)", assigned.len());
+        assert!(!assigned.is_empty(), "the source scan found no files");
+        let mut wrong = Vec::new();
+        println!("launcher.settings = : {:?}", hits(&assigned));
+        if hits(&assigned) != [(PathBuf::from("commands/settings.rs"), 1)] {
+            wrong.push(format!(
+                "launcher.settings = is allowed once, in commands/settings.rs: {:?}",
+                hits(&assigned)
+            ));
+        }
+        let mut needles = vec![concat!("&mut launcher", ".settings").to_owned()];
+        let fields = serde_json::to_value(LauncherSettings::default()).unwrap();
+        for field in fields.as_object().unwrap().keys() {
+            needles.push(format!(".settings.{field} = "));
+            needles.push(format!(".settings.{field}.clone_from("));
+        }
+        for needle in &needles {
+            let found = hits(&count(needle));
+            println!("{needle}: {found:?}");
+            if !found.is_empty() {
+                wrong.push(format!("{needle} outside state.rs: {found:?}"));
+            }
+        }
+        assert!(wrong.is_empty(), "{wrong:#?}");
     }
 
     #[test]

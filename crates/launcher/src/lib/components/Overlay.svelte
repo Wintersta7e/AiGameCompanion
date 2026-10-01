@@ -4,6 +4,7 @@
   import { listen } from '@tauri-apps/api/event';
   import { hashHue } from '../utils/accent';
   import { PROVIDERS, modelName, type ModelNames, type Provider } from '../stores/companion.svelte';
+  import type { LauncherSettings } from '../settings';
 
   type GameInfo = {
     hwnd: number;
@@ -340,7 +341,7 @@
   // CLI detection finishing).
   async function loadSavedProvider() {
     try {
-      const settings = await invoke<{ active_provider?: string }>('get_settings');
+      const settings = await invoke<LauncherSettings>('get_settings');
       // The saved provider is kept even when unavailable. An empty value (a
       // new install, nothing picked yet) or an unknown one (a hand-edited
       // state file) is no saved provider, so the first available one is used.
@@ -1116,7 +1117,7 @@
     line-height: 1.5;
     color: var(--color-t-hi);
     white-space: pre-wrap;
-    word-break: break-word;
+    overflow-wrap: anywhere;
   }
   /* The intro text wraps in the template; pre-wrap would render those breaks. */
   .bubble.intro {
@@ -1381,6 +1382,6 @@
     line-height: 1.55;
     color: var(--color-t-hi);
     white-space: pre-wrap;
-    word-break: break-word;
+    overflow-wrap: anywhere;
   }
 </style>

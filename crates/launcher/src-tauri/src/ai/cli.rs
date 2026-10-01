@@ -622,7 +622,7 @@ fn codex_wsl_script(work_dir: &str, image: Option<&str>) -> String {
 /// hooks, skills and MCP servers, `--strict-mcp-config` drops every MCP server
 /// not named here (none is), `--permission-mode dontAsk` denies instead of
 /// asking, and `--no-session-persistence` keeps the conversation off disk.
-fn claude_args(model: &str, system_prompt: &str) -> Vec<String> {
+pub(super) fn claude_args(model: &str, system_prompt: &str) -> Vec<String> {
     [
         "-p",
         "--input-format",

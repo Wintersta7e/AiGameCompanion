@@ -9,6 +9,7 @@
     type ModelNames,
     type Provider,
   } from '../stores/companion.svelte';
+  import type { LauncherSettings } from '../settings';
   import { openLink } from '../utils/links';
 
   interface Availability extends ModelNames {
@@ -19,13 +20,6 @@
     openai_where: string;
     gemini_fallback_model: string;
   }
-  interface Settings {
-    scan_on_startup: boolean;
-    minimize_to_tray: boolean;
-    launch_on_startup: boolean;
-    active_provider?: string;
-    gemini_model?: string;
-  }
 
   let { open = $bindable(false) }: { open: boolean } = $props();
 
@@ -35,10 +29,11 @@
   const MODEL_PRESETS = ['gemini-3.6-flash', 'gemini-3.8-flash', 'gemini-3.5-flash-lite'];
 
   let section = $state<'providers' | 'hotkeys' | 'launcher' | 'about'>('providers');
-  let settings = $state<Settings>({
+  let settings = $state<LauncherSettings>({
     scan_on_startup: true,
     minimize_to_tray: true,
     launch_on_startup: false,
+    active_provider: '',
     gemini_model: '',
   });
   let availability = $state<Availability>({
@@ -76,7 +71,7 @@
     { title: 'Translate screen', sub: 'Open Translate; Enter captures and translates', keys: 'T' },
     { title: 'Quick ask', sub: 'Stage the preset question; Enter sends it', keys: 'A' },
   ];
-  const TOGGLES: { key: keyof Settings; label: string; sub: string }[] = [
+  const TOGGLES: { key: keyof LauncherSettings; label: string; sub: string }[] = [
     {
       key: 'scan_on_startup',
       label: 'Scan games on startup',
@@ -96,11 +91,11 @@
 
   async function load() {
     try {
-      settings = await invoke<Settings>('get_settings');
+      settings = await invoke<LauncherSettings>('get_settings');
     } catch (e) {
       console.error('settings load failed:', e);
     }
-    const saved = (settings.gemini_model ?? '').trim();
+    const saved = settings.gemini_model.trim();
     const custom = saved !== '' && !MODEL_PRESETS.includes(saved);
     modelChoice = custom ? 'custom' : saved;
     customModel = custom ? saved : '';

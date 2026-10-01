@@ -10,8 +10,25 @@ use std::collections::HashSet;
 use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager};
 
-use crate::models::Game;
+use crate::models::{Game, GameSource};
 use crate::state::AppState;
+
+/// What a linked request may tell a provider about the game, besides its name.
+/// Rust-only: never sent to the page.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(crate) enum Identity {
+    /// The exe path could not be read.
+    #[default]
+    Unknown,
+    /// A library game: its id, and its app id when it is a Steam game.
+    Library {
+        game_id: String,
+        steam_app_id: Option<u32>,
+    },
+    /// Any other window: the product name its exe file carries, when that says
+    /// more than the file name.
+    Program { product_name: Option<String> },
+}
 
 /// Snapshot of the foreground game window at the moment the overlay was opened.
 #[derive(Clone, Debug, Default, Serialize)]
@@ -22,12 +39,16 @@ pub(crate) struct GameInfo {
     pub(crate) exe: String,
     /// For local display only: a window title never reaches a provider.
     pub(crate) title: String,
-    /// The name a provider may see: the library game's name, else the exe file
-    /// stem. Empty when the exe path could not be read.
+    /// The displayed name, sanitised: the library game's name, else the exe
+    /// file stem. Empty when the exe path could not be read. One input to the
+    /// identity block a linked request carries.
     pub(crate) name: String,
     /// Whether requests may use this window: a library game, or a window the
     /// user linked this session.
     pub(crate) linked: bool,
+    /// What a linked request may say about the game; never sent to the page.
+    #[serde(skip)]
+    pub(crate) identity: Identity,
 }
 
 /// Remembers the game window that had focus before the overlay was shown, so
@@ -112,7 +133,7 @@ fn show_overlay(app: &AppHandle) {
                 // One lock at a time: the linked pairs are copied out before
                 // the library is read, and the slot is written last.
                 let user_linked = state.user_linked.lock().clone();
-                let (name, linked) = app.try_state::<AppState>().map_or_else(
+                let classification = app.try_state::<AppState>().map_or_else(
                     || classify(&game.exe, game.pid, &[], &user_linked),
                     |app_state| {
                         classify(
@@ -123,8 +144,14 @@ fn show_overlay(app: &AppHandle) {
                         )
                     },
                 );
-                game.name = name;
-                game.linked = linked;
+                game.name = classification.name;
+                game.linked = classification.linked;
+                game.identity = classification.identity;
+                // Read from the exe file, with no lock held.
+                if let Identity::Program { product_name } = &mut game.identity {
+                    *product_name =
+                        program_product_name(exe_product_name(&game.exe).as_deref(), &game.name);
+                }
                 *state.game.lock() = Some(game.clone());
             }
             Some(game)
@@ -140,23 +167,154 @@ fn show_overlay(app: &AppHandle) {
     );
 }
 
-/// Name the detected window and decide whether requests may use it: a library
-/// game is linked and named by the library; any other window is named by its
-/// exe stem and linked only if the user linked this (pid, exe) this session. A
-/// window whose exe path could not be read is never linked.
+/// What `classify` decides about a detected window.
+#[derive(Debug, PartialEq, Eq)]
+struct Classification {
+    name: String,
+    linked: bool,
+    identity: Identity,
+}
+
+/// Name the detected window, decide whether requests may use it and what they
+/// may say about it: a library game is linked, named by the library and
+/// identified by its id and Steam app id; any other window is named by its exe
+/// stem, identified as a program and linked only if the user linked this
+/// (pid, exe) this session. A window whose exe path could not be read is never
+/// linked and has no identity.
 fn classify(
     exe: &str,
     pid: u32,
     games: &[Game],
     user_linked: &HashSet<(u32, String)>,
-) -> (String, bool) {
+) -> Classification {
     if exe.is_empty() {
-        return (String::new(), false);
+        return Classification {
+            name: String::new(),
+            linked: false,
+            identity: Identity::Unknown,
+        };
     }
     if let Some(game) = library_match(exe, games) {
-        return (game.name.clone(), true);
+        return Classification {
+            name: identity_text(&game.name),
+            linked: true,
+            identity: Identity::Library {
+                game_id: game.id.clone(),
+                steam_app_id: steam_app_id(game),
+            },
+        };
     }
-    (exe_stem(exe), user_linked.contains(&(pid, exe.to_owned())))
+    Classification {
+        name: identity_text(&exe_stem(exe)),
+        linked: user_linked.contains(&(pid, exe.to_owned())),
+        identity: Identity::Program { product_name: None },
+    }
+}
+
+/// A Steam game's app id: its `source_id` when that is 1-10 ASCII digits
+/// naming a non-zero `u32`. `None` for any other game.
+fn steam_app_id(game: &Game) -> Option<u32> {
+    let id = game.source_id.as_deref()?;
+    let digits = (1..=10).contains(&id.len()) && id.bytes().all(|byte| byte.is_ascii_digit());
+    if game.source != GameSource::Steam || !digits {
+        return None;
+    }
+    id.parse::<u32>().ok().filter(|&app_id| app_id > 0)
+}
+
+/// The product name a program's file carries, kept only when it says more than
+/// the exe stem: sanitised, non-empty and not the stem in another case.
+fn program_product_name(raw: Option<&str>, stem: &str) -> Option<String> {
+    let name = identity_text(raw?);
+    (!name.is_empty() && name.to_lowercase() != stem.to_lowercase()).then_some(name)
+}
+
+#[cfg(windows)]
+fn exe_product_name(exe: &str) -> Option<String> {
+    imp::exe_product_name(exe)
+}
+
+#[cfg(not(windows))]
+const fn exe_product_name(_exe: &str) -> Option<String> {
+    None
+}
+
+/// The file name of the process whose frame windows show Store apps.
+#[cfg(any(windows, test))]
+const FRAME_HOST_EXE: &str = "applicationframehost.exe";
+/// The window class of a Store app's own window inside its host frame.
+#[cfg(any(windows, test))]
+const HOSTED_APP_CLASS: &str = "Windows.UI.Core.CoreWindow";
+
+/// Whether `exe` is the Store app window host, compared by file name.
+#[cfg(any(windows, test))]
+fn is_frame_host(exe: &str) -> bool {
+    exe.rsplit(['\\', '/'])
+        .next()
+        .is_some_and(|file| file.eq_ignore_ascii_case(FRAME_HOST_EXE))
+}
+
+/// The process of the app a host frame shows: the first child window of the
+/// hosted-app class owned by a process other than the host. `None` when the
+/// frame holds no such window, as when the app is minimised or suspended.
+#[cfg(any(windows, test))]
+fn hosted_pid(host_pid: u32, children: &[(String, u32)]) -> Option<u32> {
+    children
+        .iter()
+        .find(|(class, pid)| class == HOSTED_APP_CLASS && *pid != 0 && *pid != host_pid)
+        .map(|&(_, pid)| pid)
+}
+
+/// Whether a window owned by process `owner` still belongs to `pid`: `pid`
+/// owns it, or it is the host frame showing `pid`'s app. `children` lists the
+/// window's child windows; it runs only when the two processes differ.
+#[cfg(any(windows, test))]
+fn owned_by(owner: u32, pid: u32, children: impl FnOnce() -> Vec<(String, u32)>) -> bool {
+    owner != 0 && (owner == pid || hosted_pid(owner, &children()) == Some(pid))
+}
+
+/// The longest name kept, in `char`s; a longer one is cut to end in an ellipsis.
+const MAX_IDENTITY_CHARS: usize = 128;
+
+/// A third-party name (library name, exe stem, product name) fit to show and
+/// to send: whitespace becomes a space, control and invisible characters are
+/// dropped, runs of spaces collapse, and the result is trimmed and at most
+/// `MAX_IDENTITY_CHARS` long. Idempotent. Quotes and angle brackets stay: the
+/// identity block escapes them.
+pub(crate) fn identity_text(s: &str) -> String {
+    let visible: String = s
+        .chars()
+        .map(|c| if c.is_whitespace() { ' ' } else { c })
+        .filter(|&c| {
+            !c.is_control()
+                && !matches!(
+                    u32::from(c),
+                    0xAD | 0x34F
+                        | 0x61C
+                        | 0x115F..=0x1160
+                        | 0x17B4..=0x17B5
+                        | 0x180B..=0x180F
+                        | 0x200B..=0x200F
+                        | 0x202A..=0x202E
+                        | 0x2060..=0x206F
+                        | 0x3164
+                        | 0xFE00..=0xFE0F
+                        | 0xFEFF
+                        | 0xFFA0
+                        | 0xFFF0..=0xFFFB
+                        | 0x1D173..=0x1D17A
+                        | 0xE0000..=0xE0FFF
+                )
+        })
+        .collect();
+    let words: Vec<&str> = visible.split(' ').filter(|word| !word.is_empty()).collect();
+    let text = words.join(" ");
+    if text.chars().count() <= MAX_IDENTITY_CHARS {
+        return text;
+    }
+    let mut cut: String = text.chars().take(MAX_IDENTITY_CHARS - 1).collect();
+    cut.push('\u{2026}');
+    cut
 }
 
 /// The library game `exe` belongs to: its `exe_path` equals `exe`, or `exe`
@@ -326,15 +484,18 @@ mod imp {
     )]
 
     use super::GameInfo;
-    use windows::core::PWSTR;
-    use windows::Win32::Foundation::{CloseHandle, HWND};
+    use windows::core::{BOOL, PCWSTR, PWSTR};
+    use windows::Win32::Foundation::{CloseHandle, HWND, LPARAM};
+    use windows::Win32::Storage::FileSystem::{
+        GetFileVersionInfoSizeW, GetFileVersionInfoW, VerQueryValueW,
+    };
     use windows::Win32::System::Threading::{
         OpenProcess, QueryFullProcessImageNameW, PROCESS_NAME_WIN32,
         PROCESS_QUERY_LIMITED_INFORMATION,
     };
     use windows::Win32::UI::WindowsAndMessaging::{
-        GetForegroundWindow, GetWindowTextW, GetWindowThreadProcessId, IsIconic, IsWindow,
-        SetForegroundWindow, ShowWindow, SW_RESTORE,
+        EnumChildWindows, GetClassNameW, GetForegroundWindow, GetWindowTextW,
+        GetWindowThreadProcessId, IsIconic, IsWindow, SetForegroundWindow, ShowWindow, SW_RESTORE,
     };
 
     pub(super) fn foreground_game(self_pid: u32) -> Option<GameInfo> {
@@ -351,7 +512,20 @@ mod imp {
         if pid == 0 || pid == self_pid {
             return None;
         }
-        let exe = exe_path(pid).unwrap_or_default();
+        let mut exe = exe_path(pid).unwrap_or_default();
+        // A Store app's window belongs to the host process that draws its
+        // frame, so every Store app would look like that one program. Name the
+        // app the frame shows instead; the frame stays the window captured and
+        // focused. With no app inside (minimised, suspended) it is unknown.
+        if super::is_frame_host(&exe) {
+            match super::hosted_pid(pid, &child_windows(hwnd)) {
+                Some(app) => {
+                    pid = app;
+                    exe = exe_path(app).unwrap_or_default();
+                }
+                None => exe = String::new(),
+            }
+        }
         let mut buf = [0u16; 512];
         // SAFETY: `hwnd` is the handle checked above, and `buf` is owned by
         // this frame for the whole call.
@@ -390,11 +564,88 @@ mod imp {
         buf.get(..len as usize).map(String::from_utf16_lossy)
     }
 
+    /// The `ProductName` in `exe`'s version resource: for the first language
+    /// the file lists, else for US English in Unicode. `None` on any failure.
+    pub(super) fn exe_product_name(exe: &str) -> Option<String> {
+        let path = wide(exe);
+        // SAFETY: `path` is a NUL-terminated UTF-16 string that outlives the
+        // call.
+        let size = unsafe { GetFileVersionInfoSizeW(PCWSTR(path.as_ptr()), None) };
+        if size == 0 {
+            return None;
+        }
+        let mut block = vec![0u8; usize::try_from(size).ok()?];
+        // SAFETY: `block` holds exactly the `size` bytes the call may write,
+        // and `path` is as above.
+        unsafe {
+            GetFileVersionInfoW(PCWSTR(path.as_ptr()), None, size, block.as_mut_ptr().cast())
+        }
+        .ok()?;
+        let listed = version_value(&block, r"\VarFileInfo\Translation").and_then(|(bytes, len)| {
+            let [lang_lo, lang_hi, page_lo, page_hi]: [u8; 4] =
+                bytes.get(..4.min(len))?.try_into().ok()?;
+            Some(format!(
+                "{:04x}{:04x}",
+                u16::from_le_bytes([lang_lo, lang_hi]),
+                u16::from_le_bytes([page_lo, page_hi])
+            ))
+        });
+        listed
+            .into_iter()
+            .chain(std::iter::once("040904b0".to_owned()))
+            .find_map(|code| {
+                let (bytes, len) =
+                    version_value(&block, &format!(r"\StringFileInfo\{code}\ProductName"))?;
+                let units: Vec<u16> = bytes
+                    .as_chunks::<2>()
+                    .0
+                    .iter()
+                    .take(len)
+                    .map(|&pair| u16::from_le_bytes(pair))
+                    .take_while(|&unit| unit != 0)
+                    .collect();
+                Some(String::from_utf16_lossy(&units))
+            })
+    }
+
+    /// The value `VerQueryValueW` finds at `sub_block` in a version block: its
+    /// bytes from where the value starts to the end of `block`, and its length
+    /// as the call reports it (bytes for a binary value, UTF-16 units for a
+    /// string). The value must lie inside `block`; it is read with `.get()`.
+    fn version_value<'a>(block: &'a [u8], sub_block: &str) -> Option<(&'a [u8], usize)> {
+        let name = wide(sub_block);
+        let mut value: *mut core::ffi::c_void = std::ptr::null_mut();
+        let mut len = 0u32;
+        // SAFETY: `block` is a version block GetFileVersionInfoW filled and
+        // outlives the call, `name` is NUL-terminated, and `value`/`len` are
+        // locals the call writes.
+        let found = unsafe {
+            VerQueryValueW(
+                block.as_ptr().cast(),
+                PCWSTR(name.as_ptr()),
+                &raw mut value,
+                &raw mut len,
+            )
+        }
+        .as_bool();
+        if !found || value.is_null() {
+            return None;
+        }
+        let start = value.addr().checked_sub(block.as_ptr().addr())?;
+        Some((block.get(start..)?, usize::try_from(len).ok()?))
+    }
+
+    /// `s` as a NUL-terminated UTF-16 string, as the wide Win32 calls take it.
+    fn wide(s: &str) -> Vec<u16> {
+        s.encode_utf16().chain(std::iter::once(0)).collect()
+    }
+
     fn to_hwnd(hwnd: i64) -> HWND {
         HWND(usize::try_from(hwnd).unwrap_or(0) as *mut core::ffi::c_void)
     }
 
-    /// Whether `hwnd` is still a live window owned by `pid`.
+    /// Whether `hwnd` is still a live window owned by `pid`, or the Store app
+    /// host frame still showing `pid`'s app.
     ///
     /// Windows recycles HWND values, so a handle stored when the overlay opened
     /// can later name a completely different window -- which would then be the
@@ -412,7 +663,45 @@ mod imp {
         // SAFETY: a stale handle only makes the call fail and leave `current`
         // at 0, and `current` is a local that outlives the call.
         unsafe { GetWindowThreadProcessId(handle, Some(&raw mut current)) };
-        current != 0 && current == pid
+        super::owned_by(current, pid, || child_windows(handle))
+    }
+
+    /// (class name, owning pid) of each child window of `parent`.
+    fn child_windows(parent: HWND) -> Vec<(String, u32)> {
+        let mut found: Vec<(String, u32)> = Vec::new();
+        // SAFETY: `push_child` runs only during this call and is handed
+        // `found`, which outlives the call and is not touched by anything
+        // else meanwhile. A stale `parent` only makes the call enumerate
+        // nothing.
+        let _ = unsafe {
+            EnumChildWindows(
+                Some(parent),
+                Some(push_child),
+                LPARAM(&raw mut found as isize),
+            )
+        };
+        found
+    }
+
+    /// `EnumChildWindows` callback: appends the window's class name and owning
+    /// pid to the `Vec` that `lparam` points at, and keeps enumerating.
+    unsafe extern "system" fn push_child(hwnd: HWND, lparam: LPARAM) -> BOOL {
+        // SAFETY: `lparam` is the `&mut Vec` `child_windows` passed, alive and
+        // unaliased for the whole enumeration.
+        let found = unsafe { &mut *(lparam.0 as *mut Vec<(String, u32)>) };
+        let mut class = [0u16; 256];
+        // SAFETY: `hwnd` is a window Windows is enumerating, and `class` is a
+        // local buffer the call writes at most its length into.
+        let len = unsafe { GetClassNameW(hwnd, &mut class) };
+        let mut pid = 0u32;
+        // SAFETY: as above for `hwnd`; `pid` is a local that outlives the call.
+        unsafe { GetWindowThreadProcessId(hwnd, Some(&raw mut pid)) };
+        let name = class
+            .get(..usize::try_from(len).unwrap_or(0))
+            .map(String::from_utf16_lossy)
+            .unwrap_or_default();
+        found.push((name, pid));
+        BOOL::from(true)
     }
 
     pub(super) fn focus_window(hwnd: i64) {
@@ -448,41 +737,14 @@ mod tests {
             env!("CARGO_MANIFEST_DIR"),
             "/../src/lib/components/Overlay.svelte"
         ));
-        let body = source
-            .split_once("type GameInfo = {")
-            .and_then(|(_, rest)| rest.split_once('}'))
-            .map(|(body, _)| body)
-            .unwrap();
-        let typescript: Vec<(String, String, bool)> = body
-            .split(';')
-            .map(str::trim)
-            .filter(|field| !field.is_empty())
-            .map(|field| {
-                let (name, ty) = field.split_once(':').unwrap();
-                let optional = name.trim().ends_with('?');
-                let name = name.trim().trim_end_matches('?').to_owned();
-                (name, ty.trim().to_owned(), optional)
-            })
-            .collect();
-        let rust: Vec<(String, &str)> = serde_json::to_value(GameInfo::default())
-            .unwrap()
-            .as_object()
-            .unwrap()
-            .iter()
-            .map(|(key, value)| {
-                let ty = match value {
-                    serde_json::Value::String(_) => "string",
-                    serde_json::Value::Number(_) => "number",
-                    serde_json::Value::Bool(_) => "boolean",
-                    serde_json::Value::Null
-                    | serde_json::Value::Array(_)
-                    | serde_json::Value::Object(_) => "unsupported",
-                };
-                (key.clone(), ty)
-            })
-            .collect();
+        let typescript = crate::util::ts_fields(source, "type GameInfo = {");
+        let rust = crate::util::json_fields(&serde_json::to_value(GameInfo::default()).unwrap());
         println!("Rust:       {rust:?}");
         println!("TypeScript: {typescript:?}");
+        assert!(
+            !typescript.is_empty(),
+            "no GameInfo type found in Overlay.svelte"
+        );
 
         let missing: Vec<String> = rust
             .iter()
@@ -553,38 +815,325 @@ mod tests {
         assert_eq!(matched("", &[game("Foo", r"C:\Games\Foo", Some(""))]), None);
     }
 
+    /// A Steam library game installed under `C:\Games\Foo`.
+    fn steam_game(id: &str, source_id: &str) -> Game {
+        Game {
+            id: id.to_owned(),
+            source: GameSource::Steam,
+            source_id: Some(source_id.to_owned()),
+            ..game("Real Name", r"C:\Games\Foo", None)
+        }
+    }
+
+    fn program(name: &str, linked: bool) -> Classification {
+        Classification {
+            name: name.to_owned(),
+            linked,
+            identity: Identity::Program { product_name: None },
+        }
+    }
+
     #[test]
     fn classify_cases() {
-        let library = [game("Real Name", r"C:\Games\Foo", None)];
+        let library = [steam_game("steam_123450", "123450")];
         let nothing_linked = HashSet::new();
         assert_eq!(
             classify(r"C:\Games\Foo\bin\foo.exe", 7, &library, &nothing_linked),
-            ("Real Name".to_owned(), true)
+            Classification {
+                name: "Real Name".to_owned(),
+                linked: true,
+                identity: Identity::Library {
+                    game_id: "steam_123450".to_owned(),
+                    steam_app_id: Some(123_450),
+                },
+            }
+        );
+        for (source_id, app_id) in [
+            ("62a", None),
+            ("", None),
+            ("-1", None),
+            ("+620", None),
+            ("0", None),
+            ("4294967296", None),
+            ("4294967295", Some(u32::MAX)),
+        ] {
+            let found = classify(
+                r"C:\Games\Foo\foo.exe",
+                7,
+                &[steam_game("steam_x", source_id)],
+                &nothing_linked,
+            );
+            println!("Steam source_id {source_id:?}: {:?}", found.identity);
+            assert_eq!(
+                found.identity,
+                Identity::Library {
+                    game_id: "steam_x".to_owned(),
+                    steam_app_id: app_id,
+                },
+                "{source_id:?}"
+            );
+        }
+        let not_steam = Game {
+            id: "manual_1".to_owned(),
+            source_id: Some("123450".to_owned()),
+            ..game("Real Name", r"C:\Games\Foo", None)
+        };
+        assert_eq!(
+            classify(r"C:\Games\Foo\foo.exe", 7, &[not_steam], &nothing_linked).identity,
+            Identity::Library {
+                game_id: "manual_1".to_owned(),
+                steam_app_id: None,
+            }
         );
         assert_eq!(
             classify(r"C:\a\b\Game.EXE", 7, &library, &nothing_linked),
-            ("Game".to_owned(), false)
+            program("Game", false)
         );
 
         let linked = HashSet::from([(7, r"C:\a\b\Game.EXE".to_owned())]);
         assert_eq!(
             classify(r"C:\a\b\Game.EXE", 7, &library, &linked),
-            ("Game".to_owned(), true)
+            program("Game", true)
         );
         assert_eq!(
             classify(r"C:\a\b\Other.exe", 7, &library, &linked),
-            ("Other".to_owned(), false)
+            program("Other", false)
         );
         assert_eq!(
             classify(r"C:\a\b\Game.EXE", 8, &library, &linked),
-            ("Game".to_owned(), false)
+            program("Game", false)
         );
 
         let linked_empty = HashSet::from([(7, String::new())]);
         assert_eq!(
             classify("", 7, &library, &linked_empty),
-            (String::new(), false)
+            Classification {
+                name: String::new(),
+                linked: false,
+                identity: Identity::Unknown,
+            }
         );
+
+        let reversed = [game("Real\u{202e}Name", r"C:\Games\Foo", None)];
+        assert_eq!(
+            classify(r"C:\Games\Foo\foo.exe", 7, &reversed, &nothing_linked).name,
+            "RealName"
+        );
+    }
+
+    #[test]
+    fn game_info_sends_no_identity() {
+        let identified = GameInfo {
+            identity: Identity::Program {
+                product_name: Some("Foo Studio Game".to_owned()),
+            },
+            ..GameInfo::default()
+        };
+        for target in [GameInfo::default(), identified] {
+            let value = serde_json::to_value(target).unwrap();
+            let mut keys: Vec<&str> = value
+                .as_object()
+                .unwrap()
+                .keys()
+                .map(String::as_str)
+                .collect();
+            keys.sort_unstable();
+            println!("GameInfo keys: {keys:?}");
+            assert_eq!(keys, ["exe", "hwnd", "linked", "name", "pid", "title"]);
+        }
+    }
+
+    #[test]
+    fn page_never_builds_a_game_key() {
+        let needles = [
+            concat!("'library", ":'"),
+            concat!("\"library", ":\""),
+            concat!("'exe", ":'"),
+            concat!("\"exe", ":\""),
+            concat!("`library", ":"),
+            concat!("`exe", ":"),
+        ];
+        let scan = crate::util::count_in_frontend(&needles);
+        println!("{} files scanned", scan.files.len());
+        for (needle, hits) in needles.iter().zip(&scan.hits) {
+            println!("{needle}: {} {hits:?}", hits.len());
+        }
+        assert!(
+            scan.hits.iter().all(Vec::is_empty),
+            "the page builds or parses a game key"
+        );
+    }
+
+    #[test]
+    fn identity_text_cases() {
+        let dropped = [
+            '\u{ad}',
+            '\u{34f}',
+            '\u{61c}',
+            '\u{115f}',
+            '\u{17b4}',
+            '\u{180e}',
+            '\u{200b}',
+            '\u{202e}',
+            '\u{2060}',
+            '\u{3164}',
+            '\u{fe0f}',
+            '\u{feff}',
+            '\u{ffa0}',
+            '\u{fff0}',
+            '\u{1d173}',
+            '\u{e0001}',
+            '\u{1b}',
+        ];
+        let mut cases: Vec<(String, String)> = dropped
+            .iter()
+            .map(|c| (format!("Foo{c}Bar"), "FooBar".to_owned()))
+            .collect();
+        for space in ["\n", "\r\n", "\t", "\u{2028}", "\u{85}", "  "] {
+            cases.push((format!("Foo{space}Bar"), "Foo Bar".to_owned()));
+        }
+        cases.push((
+            format!("  {}  ", "a".repeat(300)),
+            format!("{}\u{2026}", "a".repeat(127)),
+        ));
+        for unchanged in [
+            "Foo \"Bar\"",
+            r"Foo\Bar",
+            "</game_context>",
+            "Foo's Quest: Part II\u{2122}",
+            "\u{30b2}\u{30fc}\u{30e0}\u{ff01}",
+            "\u{30c6}\u{30b9}\u{30c8}\u{ff1a}\u{4e8c}",
+        ] {
+            cases.push((unchanged.to_owned(), unchanged.to_owned()));
+        }
+        let mut wrong = Vec::new();
+        for (input, expected) in &cases {
+            let output = identity_text(input);
+            println!("{input:?} -> {output:?}");
+            if output != *expected {
+                wrong.push(format!("{input:?} -> {output:?}, expected {expected:?}"));
+            }
+            if identity_text(&output) != output {
+                wrong.push(format!("{output:?} changes when sanitised again"));
+            }
+        }
+        println!("{} cases", cases.len());
+        assert_eq!(identity_text(&"a".repeat(300)).chars().count(), 128);
+        assert!(wrong.is_empty(), "{wrong:#?}");
+    }
+
+    #[test]
+    fn product_name_kept_only_when_informative() {
+        for (raw, stem, expected) in [
+            (Some("FOO"), "foo", None),
+            (Some("foo"), "Foo", None),
+            (Some(" \t "), "foo", None),
+            (None, "foo", None),
+            (Some("Foo Studio Game"), "foo", Some("Foo Studio Game")),
+            (
+                Some("Foo\u{200b} Studio\nGame"),
+                "foo",
+                Some("Foo Studio Game"),
+            ),
+        ] {
+            let kept = program_product_name(raw, stem);
+            println!("{raw:?} beside the stem {stem:?} -> {kept:?}");
+            assert_eq!(kept.as_deref(), expected, "{raw:?} beside {stem:?}");
+        }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn product_name_read_from_the_file() {
+        let root = std::env::var("SystemRoot").unwrap_or_else(|_| r"C:\Windows".to_owned());
+        let read = |path: &str| {
+            let start = std::time::Instant::now();
+            let name = exe_product_name(path);
+            println!("{path}: {name:?} in {:?}", start.elapsed());
+            name
+        };
+        let notepad = read(&format!(r"{root}\System32\notepad.exe"));
+        assert!(
+            notepad
+                .as_deref()
+                .is_some_and(|name| name.contains("Windows")),
+            "{notepad:?}"
+        );
+        assert_eq!(read(&format!(r"{root}\System32\no-such-file.exe")), None);
+
+        // A file with no version resource: not a program at all.
+        let plain =
+            std::env::temp_dir().join(format!("aigc_no_version_{}.exe", std::process::id()));
+        std::fs::write(&plain, b"not a program").unwrap();
+        let read_plain = read(&plain.to_string_lossy());
+        std::fs::remove_file(&plain).unwrap();
+        assert_eq!(read_plain, None);
+
+        // The build embeds the app's own version resource in every binary of
+        // this crate, this test binary included.
+        let config: serde_json::Value =
+            serde_json::from_str(include_str!("../tauri.conf.json")).unwrap();
+        let this = std::env::current_exe().unwrap();
+        assert_eq!(
+            read(&this.to_string_lossy()).as_deref(),
+            config["productName"].as_str()
+        );
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn product_name_stub_reads_nothing() {
+        assert_eq!(exe_product_name(r"C:\Windows\System32\notepad.exe"), None);
+    }
+
+    #[test]
+    fn frame_host_resolves_to_the_hosted_app() {
+        for (exe, expected) in [
+            (r"C:\Windows\System32\ApplicationFrameHost.exe", true),
+            (r"c:\windows\system32\APPLICATIONFRAMEHOST.EXE", true),
+            (r"C:\x\NotApplicationFrameHost.exe", false),
+            (r"C:\x\foo.exe", false),
+            ("", false),
+        ] {
+            println!("is_frame_host({exe:?}) = {}", is_frame_host(exe));
+            assert_eq!(is_frame_host(exe), expected, "{exe:?}");
+        }
+
+        let child = |class: &str, pid: u32| (class.to_owned(), pid);
+        let app = |pid: u32| child("Windows.UI.Core.CoreWindow", pid);
+        let frame = [
+            child("ApplicationFrameTitleBarWindow", 10),
+            child("ApplicationFrameInputSinkWindow", 10),
+        ];
+        for (children, expected) in [
+            (vec![app(20)], Some(20)),
+            (vec![app(10)], None),
+            (frame.to_vec(), None),
+            (Vec::new(), None),
+            (vec![app(0)], None),
+            ([frame.to_vec(), vec![app(20), app(30)]].concat(), Some(20)),
+        ] {
+            let found = hosted_pid(10, &children);
+            println!("hosted_pid(10, {children:?}) = {found:?}");
+            assert_eq!(found, expected, "{children:?}");
+        }
+
+        let owned = [
+            (
+                "its own process",
+                owned_by(7, 7, || panic!("not a host frame")),
+            ),
+            (
+                "the app its frame shows",
+                owned_by(10, 20, || vec![app(20)]),
+            ),
+            ("another app", !owned_by(10, 30, || vec![app(20)])),
+            ("no owner", !owned_by(0, 20, || vec![app(20)])),
+        ];
+        for (case, passed) in owned {
+            println!("owned_by, {case}: {}", if passed { "ok" } else { "WRONG" });
+            assert!(passed, "owned_by, {case}");
+        }
     }
 
     #[test]
