@@ -193,6 +193,62 @@ fn needle_lines(text: &str, needle: &str) -> Vec<usize> {
     lines
 }
 
+/// The fields of the TypeScript object type that `opener` starts
+/// (`type GameInfo = {`), up to the next `}`, as (name without `?`, type,
+/// optional). `//` comments are dropped; a field without `:` has an empty
+/// type. Empty when `opener` is absent, so callers assert a non-empty result.
+#[cfg(test)]
+pub(crate) fn ts_fields(source: &str, opener: &str) -> Vec<(String, String, bool)> {
+    let Some((body, _)) = source
+        .split_once(opener)
+        .and_then(|(_, rest)| rest.split_once('}'))
+    else {
+        return Vec::new();
+    };
+    let code: Vec<&str> = body
+        .lines()
+        .map(|line| line.split_once("//").map_or(line, |(code, _)| code))
+        .collect();
+    code.join("\n")
+        .split(';')
+        .map(str::trim)
+        .filter(|field| !field.is_empty())
+        .map(|field| match field.split_once(':') {
+            Some((name, ty)) => {
+                let name = name.trim();
+                (
+                    name.trim_end_matches('?').to_owned(),
+                    ty.trim().to_owned(),
+                    name.ends_with('?'),
+                )
+            }
+            None => (field.to_owned(), String::new(), false),
+        })
+        .collect()
+}
+
+/// Each field of a serialised JSON object with the TypeScript type it maps to:
+/// `string`, `number` or `boolean`, else `unsupported`. Empty for a non-object.
+#[cfg(test)]
+pub(crate) fn json_fields(value: &serde_json::Value) -> Vec<(String, &'static str)> {
+    value.as_object().map_or_default(|object| {
+        object
+            .iter()
+            .map(|(key, value)| {
+                let ty = match value {
+                    serde_json::Value::String(_) => "string",
+                    serde_json::Value::Number(_) => "number",
+                    serde_json::Value::Bool(_) => "boolean",
+                    serde_json::Value::Null
+                    | serde_json::Value::Array(_)
+                    | serde_json::Value::Object(_) => "unsupported",
+                };
+                (key.clone(), ty)
+            })
+            .collect()
+    })
+}
+
 /// `src` without its `#[cfg(test)]` inline modules.
 ///
 /// A small lexer tracks comments, strings, raw strings and char literals, so a

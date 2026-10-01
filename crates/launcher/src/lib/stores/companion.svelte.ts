@@ -5,6 +5,7 @@
 
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
+import type { LauncherSettings } from '../settings';
 
 export type Provider = 'gemini' | 'claude' | 'openai';
 
@@ -108,7 +109,7 @@ export function setProvider(p: Provider): void {
  */
 export async function loadProvider(): Promise<void> {
   try {
-    const settings = await invoke<{ active_provider?: string }>('get_settings');
+    const settings = await invoke<LauncherSettings>('get_settings');
     const saved = settings.active_provider;
     if (saved && saved in PROVIDERS) {
       provider = saved as Provider;

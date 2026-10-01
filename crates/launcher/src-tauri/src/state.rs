@@ -5,7 +5,7 @@ use std::time::Duration;
 
 use parking_lot::Mutex;
 
-use crate::models::LauncherState;
+use crate::models::{LauncherSettings, LauncherState};
 
 /// Reads of the state file, in total, before it counts as unreadable: about a
 /// second, for a scanner that holds the file open without read sharing.
@@ -84,6 +84,20 @@ impl AppState {
             file.sync_all().map_err(|e| e.to_string())?;
         }
         std::fs::rename(&tmp_path, &self.state_path).map_err(|e| e.to_string())
+    }
+
+    /// The one write path for a settings setter. Refuses in read-only mode
+    /// before changing memory, so a refused value is never in effect; else
+    /// applies `edit` in one lock hold, releases it and saves.
+    pub(crate) fn edit_settings(
+        &self,
+        edit: impl FnOnce(&mut LauncherSettings),
+    ) -> Result<(), String> {
+        if let Some(reason) = self.load_error() {
+            return Err(reason.to_owned());
+        }
+        edit(&mut self.launcher.lock().settings);
+        self.save()
     }
 }
 
@@ -640,6 +654,79 @@ mod tests {
         assert_eq!(app.load_error(), None);
         assert_eq!(app.launcher.lock().games.len(), 1);
         cleanup(&path);
+    }
+
+    #[test]
+    fn edit_settings_refuses_before_changing_memory() {
+        let path = temp_state_path("edit_settings_read_only");
+        std::fs::create_dir(&path).unwrap();
+        let app = AppState::load(path.clone());
+        let before = serde_json::to_string(&*app.launcher.lock()).unwrap();
+        let refused = app
+            .edit_settings(|settings| settings.gemini_model = "changed".to_owned())
+            .unwrap_err();
+        println!("read-only: refused with {refused:?}");
+        assert_eq!(
+            serde_json::to_string(&*app.launcher.lock()).unwrap(),
+            before,
+            "a refused edit changed memory"
+        );
+        assert!(!path.with_extension("json.tmp").exists());
+        cleanup(&path);
+
+        let path = temp_state_path("edit_settings_writable");
+        let app = AppState::load(path.clone());
+        app.edit_settings(|settings| settings.gemini_model = "changed".to_owned())
+            .unwrap();
+        assert_eq!(app.launcher.lock().settings.gemini_model, "changed");
+        let reloaded = AppState::load(path.clone());
+        println!(
+            "writable: memory and file hold {:?}",
+            reloaded.launcher.lock().settings.gemini_model
+        );
+        assert_eq!(reloaded.launcher.lock().settings.gemini_model, "changed");
+        cleanup(&path);
+    }
+
+    /// Outside this file, only Save's merge assigns the settings, and no code
+    /// borrows them mutably or assigns one of their fields: every other write
+    /// goes through `edit_settings`, which refuses before changing memory.
+    #[test]
+    fn settings_are_written_only_by_their_writers() {
+        let count = |needle: &str| -> Vec<(PathBuf, usize)> {
+            crate::util::count_in_sources_by_file(needle)
+                .into_iter()
+                .filter(|(file, _)| file != Path::new("state.rs"))
+                .collect()
+        };
+        let hits = |counts: &[(PathBuf, usize)]| -> Vec<(PathBuf, usize)> {
+            counts.iter().filter(|(_, n)| *n > 0).cloned().collect()
+        };
+        let assigned = count(concat!("launcher.settings", " = "));
+        println!("{} files scanned (state.rs excluded)", assigned.len());
+        assert!(!assigned.is_empty(), "the source scan found no files");
+        let mut wrong = Vec::new();
+        println!("launcher.settings = : {:?}", hits(&assigned));
+        if hits(&assigned) != [(PathBuf::from("commands/settings.rs"), 1)] {
+            wrong.push(format!(
+                "launcher.settings = is allowed once, in commands/settings.rs: {:?}",
+                hits(&assigned)
+            ));
+        }
+        let mut needles = vec![concat!("&mut launcher", ".settings").to_owned()];
+        let fields = serde_json::to_value(LauncherSettings::default()).unwrap();
+        for field in fields.as_object().unwrap().keys() {
+            needles.push(format!(".settings.{field} = "));
+            needles.push(format!(".settings.{field}.clone_from("));
+        }
+        for needle in &needles {
+            let found = hits(&count(needle));
+            println!("{needle}: {found:?}");
+            if !found.is_empty() {
+                wrong.push(format!("{needle} outside state.rs: {found:?}"));
+            }
+        }
+        assert!(wrong.is_empty(), "{wrong:#?}");
     }
 
     #[test]

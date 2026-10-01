@@ -103,6 +103,81 @@ pub(crate) struct LauncherState {
 #[cfg(test)]
 mod tests {
     use super::LauncherSettings;
+    use std::path::Path;
+
+    /// The page's one `LauncherSettings` type carries every field Rust sends,
+    /// with the same JSON type, and nothing Rust lacks: Save sends the object
+    /// back, and serde would drop an unknown field without a word.
+    #[test]
+    fn launcher_settings_type_mirrors_rust() {
+        let source = include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../src/lib/settings.ts"
+        ));
+        let typescript =
+            crate::util::ts_fields(source, concat!("export interface Launcher", "Settings {"));
+        let rust =
+            crate::util::json_fields(&serde_json::to_value(LauncherSettings::default()).unwrap());
+        println!("Rust:       {rust:?}");
+        println!("TypeScript: {typescript:?}");
+        assert!(
+            !rust.is_empty() && !typescript.is_empty(),
+            "no LauncherSettings fields found"
+        );
+        let missing: Vec<String> = rust
+            .iter()
+            .filter(|(key, ty)| {
+                !typescript
+                    .iter()
+                    .any(|(name, ts_ty, _)| name == key && ts_ty == ty)
+            })
+            .map(|(key, ty)| format!("{key}: {ty}"))
+            .collect();
+        let extra: Vec<&str> = typescript
+            .iter()
+            .filter(|(name, _, _)| !rust.iter().any(|(key, _)| key == name))
+            .map(|(name, _, _)| name.as_str())
+            .collect();
+        println!(
+            "checked {} of {} fields",
+            rust.len() - missing.len(),
+            rust.len()
+        );
+        assert!(
+            missing.is_empty() && extra.is_empty(),
+            "missing or mistyped in TypeScript: {missing:?}; not in Rust: {extra:?}"
+        );
+
+        let scan = crate::util::count_in_frontend(&[
+            concat!("interface Launcher", "Settings"),
+            concat!("type Launcher", "Settings"),
+            concat!("'get_", "settings'"),
+            concat!("invoke<Launcher", "Settings>('get_settings')"),
+        ]);
+        println!("{} files scanned", scan.files.len());
+        for (needle, hits) in ["interface", "type", "get_settings", "typed get_settings"]
+            .iter()
+            .zip(&scan.hits)
+        {
+            println!("{needle}: {} {hits:?}", hits.len());
+        }
+        let declarations: Vec<&Path> = scan.hits[0]
+            .iter()
+            .chain(&scan.hits[1])
+            .map(|(file, _)| file.as_path())
+            .collect();
+        assert_eq!(
+            declarations,
+            [Path::new("src/lib/settings.ts")],
+            "LauncherSettings is declared once, in src/lib/settings.ts"
+        );
+        assert!(!scan.hits[2].is_empty(), "no get_settings call found");
+        assert_eq!(
+            scan.hits[2].len(),
+            scan.hits[3].len(),
+            "every get_settings call is typed with LauncherSettings"
+        );
+    }
 
     #[test]
     fn gemini_model_defaults_and_round_trips() {

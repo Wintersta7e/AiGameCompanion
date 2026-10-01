@@ -76,13 +76,8 @@ pub(crate) fn set_active_provider(
     provider: Provider,
     state: State<'_, AppState>,
 ) -> Result<(), String> {
-    {
-        let mut launcher = state.launcher.lock();
-        provider
-            .as_str()
-            .clone_into(&mut launcher.settings.active_provider);
-    }
-    let saved = state.save();
+    let saved =
+        state.edit_settings(|settings| provider.as_str().clone_into(&mut settings.active_provider));
     crate::ai::notify_providers_changed(&app);
     saved
 }

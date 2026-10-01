@@ -64,10 +64,12 @@ commands::games::tests::empty_complete_scan_clears_the_library run
 commands::games::tests::empty_partial_scan_keeps_the_whole_library run
 commands::games::tests::partial_scan_keeps_games_it_did_not_reach run
 commands::settings::tests::checked_link_table run
+commands::settings::tests::merge_settings_owners run
 commands::settings::tests::no_config_button_command run
 commands::settings::tests::no_error_sends_users_to_config_toml run
 commands::settings::tests::save_keeps_the_stored_provider run
 models::tests::gemini_model_defaults_and_round_trips run
+models::tests::launcher_settings_type_mirrors_rust run
 models::tests::new_install_has_no_saved_provider run
 npm_lock_policy::committed_lock_meets_the_policy run
 npm_lock_policy::planted_locks_are_judged_by_each_rule run
@@ -84,6 +86,7 @@ state::tests::backup_never_replaces_an_existing_one run
 state::tests::corrupt_state_falls_back_to_default_and_backs_up run
 state::tests::corrupt_state_without_backup_is_read_only run
 state::tests::dropped_entries_are_preserved run
+state::tests::edit_settings_refuses_before_changing_memory run
 state::tests::load_drops_only_the_unreadable_game_entry run
 state::tests::load_fills_defaults_for_fields_missing_in_old_json run
 state::tests::load_returns_default_when_file_absent run
@@ -94,6 +97,7 @@ state::tests::read_retries_transient_errors_only run
 state::tests::recovers_state_from_leftover_tmp_when_main_missing run
 state::tests::save_is_atomic_and_leaves_no_tmp run
 state::tests::save_then_load_round_trips_games run
+state::tests::settings_are_written_only_by_their_writers run
 state::tests::tmp_is_promoted_only_when_state_is_absent run
 state::tests::unreadable_state_is_never_overwritten run
 state::tests::writable_outcomes_stay_writable run

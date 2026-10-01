@@ -448,41 +448,14 @@ mod tests {
             env!("CARGO_MANIFEST_DIR"),
             "/../src/lib/components/Overlay.svelte"
         ));
-        let body = source
-            .split_once("type GameInfo = {")
-            .and_then(|(_, rest)| rest.split_once('}'))
-            .map(|(body, _)| body)
-            .unwrap();
-        let typescript: Vec<(String, String, bool)> = body
-            .split(';')
-            .map(str::trim)
-            .filter(|field| !field.is_empty())
-            .map(|field| {
-                let (name, ty) = field.split_once(':').unwrap();
-                let optional = name.trim().ends_with('?');
-                let name = name.trim().trim_end_matches('?').to_owned();
-                (name, ty.trim().to_owned(), optional)
-            })
-            .collect();
-        let rust: Vec<(String, &str)> = serde_json::to_value(GameInfo::default())
-            .unwrap()
-            .as_object()
-            .unwrap()
-            .iter()
-            .map(|(key, value)| {
-                let ty = match value {
-                    serde_json::Value::String(_) => "string",
-                    serde_json::Value::Number(_) => "number",
-                    serde_json::Value::Bool(_) => "boolean",
-                    serde_json::Value::Null
-                    | serde_json::Value::Array(_)
-                    | serde_json::Value::Object(_) => "unsupported",
-                };
-                (key.clone(), ty)
-            })
-            .collect();
+        let typescript = crate::util::ts_fields(source, "type GameInfo = {");
+        let rust = crate::util::json_fields(&serde_json::to_value(GameInfo::default()).unwrap());
         println!("Rust:       {rust:?}");
         println!("TypeScript: {typescript:?}");
+        assert!(
+            !typescript.is_empty(),
+            "no GameInfo type found in Overlay.svelte"
+        );
 
         let missing: Vec<String> = rust
             .iter()
