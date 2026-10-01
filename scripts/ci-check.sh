@@ -1259,6 +1259,7 @@ st_run() {
 		unset GITHUB_ACTIONS GITHUB_EVENT_NAME GITHUB_STEP_SUMMARY CI_CHECK_UPDATE_BASELINES
 		unset RUSTUP_TOOLCHAIN ImageOS ImageVersion
 		export RUNNER_TEMP="${ST_DIR}/temp"
+		# shellcheck disable=SC2030 # each nested run sets its own PATH
 		export PATH="${ST_DIR}/bin:${PATH}"
 		local word
 		for word in "${env_words[@]}"; do
@@ -1618,6 +1619,101 @@ st_matchers() {
 	fi
 }
 
+# ---------------------------------------------------------------------------
+# The zizmor row's cases: zizmor_audit itself, in throwaway repositories, with
+# stub zizmor and gh commands first on PATH. The token is a string made here
+# at run time; a case fails if it reaches the output.
+
+# st_audit_repo <dir> <tracked inputs: 0 or 2>
+st_audit_repo() {
+	mkdir -p "$1/.github/workflows"
+	GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 git -C "$1" init -q
+	printf 'x\n' >"$1/notes.txt"
+	if (($2 > 0)); then
+		printf 'on: push\n' >"$1/.github/workflows/w.yml"
+		printf 'version: 2\n' >"$1/.github/dependabot.yml"
+	fi
+	GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 git -C "$1" add -A
+}
+
+# st_audit_case <label> <repo> <0|1 expected status> <text the output must hold>
+# <zizmor runs: y|n> <token: env|gh|absent|empty> <NAME=value to export, or ->
+# <zizmor's exit status> <zizmor's output lines...>
+st_audit_case() {
+	local label=$1 repo=$2 expect=$3 text=$4 want=$5 token=$6 extra=$7 status=$8 bin out rc=0 ran=n why=''
+	shift 8
+	bin=$(mktemp -d "${ST_DIR}/audit/bin.XXXXXX") || return 1
+	cat >"${bin}/zizmor" <<'STUB'
+#!/usr/bin/env bash
+here=$(dirname "$0")
+: >"${here}/ran"
+if [[ "${GH_TOKEN:-}" == "$(cat "${here}/expected")" ]]; then : >"${here}/token"; fi
+cat "${here}/lines"
+exit "$(cat "${here}/status")"
+STUB
+	printf '%s\n' "${ST_AUDIT_TOKEN}" >"${bin}/expected"
+	printf '%s\n' "$@" >"${bin}/lines"
+	printf '%s\n' "${status}" >"${bin}/status"
+	case "${token}" in
+	gh) printf '#!/usr/bin/env bash\necho %q\n' "${ST_AUDIT_TOKEN}" >"${bin}/gh" ;;
+	absent) printf '#!/usr/bin/env bash\nexit 127\n' >"${bin}/gh" ;;
+	*) printf '#!/usr/bin/env bash\nexit 1\n' >"${bin}/gh" ;;
+	esac
+	chmod +x "${bin}/zizmor" "${bin}/gh"
+	# shellcheck disable=SC2031 # each case sets its own PATH, as each st_run does
+	out=$(
+		cd -- "${ST_DIR}/audit/${repo}" || exit 2
+		unset GH_TOKEN ZIZMOR_OFFLINE ZIZMOR_NO_ONLINE_AUDITS
+		case "${token}" in
+		env) export GH_TOKEN="${ST_AUDIT_TOKEN}" ;;
+		empty) export GH_TOKEN='' ;;
+		*) ;;
+		esac
+		if [[ "${extra}" != - ]]; then export "${extra?}"; fi
+		PATH="${bin}:${PATH}" zizmor_audit 2>&1
+	) || rc=$?
+	if [[ -e "${bin}/ran" && -e "${bin}/token" ]]; then
+		ran=y
+	elif [[ -e "${bin}/ran" ]]; then
+		ran=without-token
+	fi
+	if [[ "${expect}" -eq 0 && "${rc}" -ne 0 ]] || [[ "${expect}" -ne 0 && "${rc}" -eq 0 ]]; then
+		why+="status ${rc}, expected ${expect}; "
+	fi
+	[[ "${out}" == *"${text}"* ]] || why+="no line holding '${text}'; "
+	[[ "${ran}" == "${want}" ]] || why+="zizmor ran: ${ran}, expected ${want}; "
+	[[ "${out}" != *"${ST_AUDIT_TOKEN}"* ]] || why+='the token was printed; '
+	st_case "${label}" "${why}"
+}
+
+st_audits() {
+	local -a clean=() two=()
+	ST_AUDIT_TOKEN="tok${RANDOM}${RANDOM}x"
+	mkdir -p "${ST_DIR}/audit"
+	st_audit_repo "${ST_DIR}/audit/two" 2 >/dev/null 2>&1
+	st_audit_repo "${ST_DIR}/audit/none" 0 >/dev/null 2>&1
+	clean=(' INFO audit: zizmor: completed ./.github/dependabot.yml'
+		' INFO audit: zizmor: completed ./.github/workflows/w.yml'
+		'No findings to report. Good job! (0 suppressed)')
+	two=(' INFO audit: zizmor: completed a' ' INFO audit: zizmor: completed b')
+	st_audit_case 'a clean audit passes' two 0 'token source: GH_TOKEN from the environment' y env - 0 "${clean[@]}"
+	st_audit_case 'a token from gh is used' two 0 'token source: gh auth token' y gh - 0 "${clean[@]}"
+	st_audit_case 'no token fails before the audit' two 1 'no GitHub token' n absent - 0 "${clean[@]}"
+	st_audit_case 'an empty token without a gh login fails' two 1 'no GitHub token' n empty - 0 "${clean[@]}"
+	st_audit_case 'the offline switch fails' two 1 'ZIZMOR_OFFLINE is set' n env ZIZMOR_OFFLINE=true 0 "${clean[@]}"
+	st_audit_case 'the online-audits switch fails' two 1 'ZIZMOR_NO_ONLINE_AUDITS is set' n env \
+		ZIZMOR_NO_ONLINE_AUDITS=true 0 "${clean[@]}"
+	st_audit_case 'a finding fails' two 1 'zizmor exited 13' y env - 13 "${two[@]}" '1 findings'
+	st_audit_case 'a warning line fails' two 1 '1 zizmor log lines at WARN or ERROR level' y env - 0 \
+		' WARN audit: request error while accessing GitHub API' "${two[@]}" 'No findings to report.'
+	st_audit_case 'an error line fails' two 1 '1 zizmor log lines at WARN or ERROR level' y env - 0 \
+		' ERROR audit: an audit failed' "${two[@]}" 'No findings to report.'
+	st_audit_case 'an unaudited input fails' two 1 'the audited count (1) differs from the tracked count (2)' y env - 0 \
+		' INFO audit: zizmor: completed a' 'No findings to report.'
+	st_audit_case 'no tracked input fails' none 1 'no tracked workflow or Dependabot file to audit' y env - 0 \
+		'No findings to report.'
+}
+
 runner_self_test() {
 	local repo tool_version
 	repo=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P) || return 1
@@ -1641,6 +1737,7 @@ runner_self_test() {
 	st_tables
 	st_usages
 	st_matchers "${repo}/.github/problem-matchers.json"
+	st_audits
 	if require_non_root_user 0 >/dev/null; then st_case 'root is refused' 'uid 0 passed'; else st_case 'root is refused' ''; fi
 	if require_non_root_user 1000 >/dev/null; then st_case 'a user is let through' ''; else st_case 'a user is let through' 'uid 1000 failed'; fi
 	rm -rf -- "${ST_DIR}"
@@ -1655,7 +1752,7 @@ runner_self_test() {
 # node_modules, which runs the installed copy or fails, never a fetched one.
 
 declare_table() {
-	row name='runner self-test' tags=workflows category=both target=any tools=jq \
+	row name='runner self-test' tags=workflows category=both target=any tools=jq,git \
 		count='^runner self-test: ' zero='cases ([0-9]+)' \
 		cmd='source scripts/ci-check.sh && runner_self_test'
 	row name='wiring self-check self-test' tags=workflows category=both target=any tools=node,bash,jq,git \
