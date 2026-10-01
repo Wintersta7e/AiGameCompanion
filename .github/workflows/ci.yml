@@ -26,7 +26,7 @@ concurrency:
 # freshness report; the SDK and CRT values move with a deliberate review.
 jobs:
   rust:
-    name: Rust (fmt, clippy, test)
+    name: Windows target (fmt, clippy, tests, docs)
     # Runs natively on Windows so the cfg(windows) code is compiled, linted and
     # tested with the MSVC toolchain.
     runs-on: windows-2025-vs2026
@@ -63,7 +63,7 @@ jobs:
         run: ./scripts/ci-check.sh --job rust
 
   rust-host:
-    name: Rust (non-Windows build)
+    name: Linux target (clippy, tests)
     # The launcher is cfg-gated: everything behind cfg(not(windows)) is invisible
     # to the Windows job, and stub functions drifted out of lint compliance there
     # unnoticed. This is also the target `cargo test` runs on locally.
@@ -107,7 +107,7 @@ jobs:
         run: ./scripts/ci-check.sh --job rust-host
 
   frontend:
-    name: Frontend (lint, types, build)
+    name: Frontend (eslint, prettier, types, knip, tests, build, npm audit)
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     permissions:
@@ -202,7 +202,7 @@ jobs:
           key: xwin-sdk-${{ steps.pins.outputs.image }}-${{ steps.pins.outputs.CARGO_XWIN }}-${{ steps.pins.outputs.XWIN_SDK_VERSION }}-${{ steps.pins.outputs.XWIN_CRT_VERSION }}
 
   supply-chain:
-    name: Supply chain (cargo-deny)
+    name: Rust dependencies (cargo-deny)
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     permissions:
@@ -231,7 +231,7 @@ jobs:
         run: ./scripts/ci-check.sh --job supply-chain
 
   workflows:
-    name: Workflows (actionlint)
+    name: Workflows and CI wiring (actionlint, zizmor, pins, self-checks)
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     permissions:
@@ -279,7 +279,7 @@ jobs:
         run: ./scripts/ci-check.sh --job workflows
 
   secrets:
-    name: Secrets (gitleaks)
+    name: Known secret shapes in commits (gitleaks)
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     permissions:

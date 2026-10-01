@@ -13,7 +13,7 @@ import {
   REQUIRED_JOB_NAMES,
   UnrecognisedShape,
 } from './wiring-check.ts';
-import type { Workflow } from './wiring-check.ts';
+import type { RequiredJob, Workflow } from './wiring-check.ts';
 
 const CHECKOUT = [
   '      - name: Check out the repository',
@@ -66,13 +66,13 @@ const CLEAN_CI = [
   '',
   '# A comment line.',
   'jobs:',
-  job('rust', 'Rust (fmt, clippy, test)', 'windows-2025-vs2026', 'rust'),
-  job('rust-host', 'Rust (non-Windows build)', 'ubuntu-24.04', 'rust-host'),
-  job('frontend', 'Frontend (lint, types, build)', 'ubuntu-24.04', 'frontend'),
-  job('release-audit', 'Release build + binary audit', 'ubuntu-24.04', 'release-audit'),
-  job('supply-chain', 'Supply chain (cargo-deny)', 'ubuntu-24.04', 'supply-chain'),
-  job('workflows', 'Workflows (actionlint)', 'ubuntu-24.04', 'workflows'),
-  job('secrets', 'Secrets (gitleaks)', 'ubuntu-24.04', 'secrets'),
+  job('rust', 'Windows rows', 'windows-2025-vs2026', 'rust'),
+  job('rust-host', 'Host rows', 'ubuntu-24.04', 'rust-host'),
+  job('frontend', 'Web rows', 'ubuntu-24.04', 'frontend'),
+  job('release-audit', 'Release rows', 'ubuntu-24.04', 'release-audit'),
+  job('supply-chain', 'Dependency rows', 'ubuntu-24.04', 'supply-chain'),
+  job('workflows', 'Workflow rows', 'ubuntu-24.04', 'workflows'),
+  job('secrets', 'Scan rows', 'ubuntu-24.04', 'secrets'),
   '  aggregate:',
   '    name: Result of the needed CI jobs',
   '    if: always()',
@@ -132,16 +132,12 @@ const PR_TEXT_LIST = CLEAN_LIST.replace(
   `${row('pr text', 'pr-text', 'ci-only', 'node scripts/pr.ts')}\nrows\t8`,
 );
 
-const EIGHT_NAMES = [
-  'Rust (fmt, clippy, test)',
-  'Rust (non-Windows build)',
-  'Frontend (lint, types, build)',
-  'Release build + binary audit',
-  'Supply chain (cargo-deny)',
-  'Workflows (actionlint)',
-  'Secrets (gitleaks)',
-  'Result of the needed CI jobs',
+const TWO_NAMES: readonly RequiredJob[] = [
+  { file: 'ci.yml', job: 'aggregate', name: 'Result of the needed CI jobs' },
+  { file: 'pr-text.yml', job: 'pr-text', name: 'PR title, body and branch name' },
 ];
+// The cases built on ci.yml alone require only the aggregate job's name.
+const AGGREGATE_ONLY = TWO_NAMES.slice(0, 1);
 
 // Replaces `from` (which must occur exactly `times` times) with `to`.
 const swap = (text: string, from: string, to: string, times = 1): string => {
@@ -160,6 +156,10 @@ interface Case {
   readonly expect: readonly string[];
   // A part the counts line must hold.
   readonly counts?: string;
+  // A part one failure message must hold.
+  readonly message?: string;
+  // The required job names; AGGREGATE_ONLY when absent.
+  readonly required?: readonly RequiredJob[];
 }
 
 const j = (...parts: readonly string[]): string => parts.join('');
@@ -230,8 +230,8 @@ const conditionCases: readonly Case[] = [
     files: ci(
       swap(
         CLEAN_CI,
-        '    name: Rust (fmt, clippy, test)\n',
-        "    name: Rust (fmt, clippy, test)\n    if: github.event_name == 'push'\n",
+        '    name: Windows rows\n',
+        "    name: Windows rows\n    if: github.event_name == 'push'\n",
       ),
     ),
     expect: ['job if'],
@@ -241,8 +241,8 @@ const conditionCases: readonly Case[] = [
     files: ci(
       swap(
         CLEAN_CI,
-        '    name: Secrets (gitleaks)\n    runs-on: ubuntu-24.04\n    timeout-minutes: 10\n',
-        '    name: Secrets (gitleaks)\n    runs-on: ubuntu-24.04\n',
+        '    name: Scan rows\n    runs-on: ubuntu-24.04\n    timeout-minutes: 10\n',
+        '    name: Scan rows\n    runs-on: ubuntu-24.04\n',
       ),
     ),
     expect: ['job shape'],
@@ -435,11 +435,7 @@ const nonBlockingCases: readonly Case[] = [
   ),
   full(
     'the toolchain override in the host Rust job',
-    swap(
-      fullCi(),
-      '    name: Rust (non-Windows build)\n',
-      `    name: Rust (non-Windows build)\n${BETA_ENV}`,
-    ),
+    swap(fullCi(), '    name: Host rows\n', `    name: Host rows\n${BETA_ENV}`),
     ['escape'],
   ),
   full('the toolchain override in a job of another workflow', fullCi(), ['escape'], {
@@ -478,8 +474,8 @@ const nonBlockingCases: readonly Case[] = [
     'the coverage tag also called by the Windows Rust job',
     swap(
       fullCi(),
-      job('rust', 'Rust (fmt, clippy, test)', 'windows-2025-vs2026', 'rust'),
-      job('rust', 'Rust (fmt, clippy, test)', 'windows-2025-vs2026', 'coverage'),
+      job('rust', 'Windows rows', 'windows-2025-vs2026', 'rust'),
+      job('rust', 'Windows rows', 'windows-2025-vs2026', 'coverage'),
     ),
     ['tag callers', 'non-blocking'],
   ),
@@ -514,11 +510,60 @@ const nonBlockingCases: readonly Case[] = [
   ),
 ];
 
-const nameCases: readonly Case[] = EIGHT_NAMES.map((name) => ({
-  name: `the required name "${name}" renamed`,
-  files: ci(swap(CLEAN_CI, `    name: ${name}\n`, `    name: ${name} renamed\n`)),
-  expect: ['names'],
-}));
+// The checker's own list of required job names, against literal workflows.
+const withPrText = (ciText: string): Readonly<Record<string, string>> => ({
+  ...ci(ciText),
+  '.github/workflows/pr-text.yml': PR_TEXT,
+});
+const requiredCases: readonly Case[] = [
+  {
+    name: 'the required names on the aggregate and PR text jobs pass',
+    files: withPrText(CLEAN_CI),
+    list: PR_TEXT_LIST,
+    required: REQUIRED_JOB_NAMES,
+    expect: [],
+    counts: 'required job names 2 of 2',
+  },
+  {
+    name: 'the aggregate job renamed',
+    files: withPrText(
+      swap(CLEAN_CI, '    name: Result of the needed CI jobs\n', '    name: Needed jobs\n'),
+    ),
+    list: PR_TEXT_LIST,
+    required: REQUIRED_JOB_NAMES,
+    expect: ['names'],
+    message:
+      'the required job name "Result of the needed CI jobs" should be the name of ci.yml job aggregate alone; it is the name of 0 jobs (none)',
+    counts: 'required job names 1 of 2',
+  },
+  {
+    name: 'the PR text job name also on a ci.yml job',
+    files: withPrText(
+      swap(CLEAN_CI, '    name: Scan rows\n', '    name: PR title, body and branch name\n'),
+    ),
+    list: PR_TEXT_LIST,
+    required: REQUIRED_JOB_NAMES,
+    expect: ['names'],
+    message:
+      'the required job name "PR title, body and branch name" should be the name of pr-text.yml job pr-text alone; it is the name of 2 jobs (ci.yml job secrets, pr-text.yml job pr-text)',
+  },
+  {
+    name: 'no PR text workflow',
+    files: ci(CLEAN_CI),
+    required: REQUIRED_JOB_NAMES,
+    expect: ['names'],
+    message:
+      'the required job name "PR title, body and branch name" should be the name of pr-text.yml job pr-text alone; there is no pr-text.yml',
+  },
+  {
+    name: 'an empty list of required job names',
+    files: withPrText(CLEAN_CI),
+    list: PR_TEXT_LIST,
+    required: [],
+    expect: ['names'],
+    counts: 'required job names 0 of 0',
+  },
+];
 
 const statusCache = new Map<string, Promise<number[] | null>>();
 
@@ -547,30 +592,33 @@ const runCase = async (c: Case): Promise<string | null> => {
     unrecognised,
     listText: c.list ?? CLEAN_LIST,
     aggregateStatuses: await statusesFor(workflows),
-    requiredNames: EIGHT_NAMES,
+    requiredNames: c.required ?? AGGREGATE_ONLY,
     buildScript: c.build ?? CLEAN_BUILD,
     trackedFiles: Object.entries(tracked).map(([file, text]) => ({ path: file, text })),
   });
   const got = [...new Set(result.failures.map((failure) => failure.condition))].sort();
   const want = [...c.expect].sort();
   const countsOk = c.counts === undefined || result.counts.includes(c.counts);
-  if (got.join('|') === want.join('|') && countsOk) return null;
+  const messageOk =
+    c.message === undefined ||
+    result.failures.some((failure) => failure.message.includes(c.message ?? ''));
+  if (got.join('|') === want.join('|') && countsOk && messageOk) return null;
   const detail = result.failures.map((failure) => failure.message).join('; ');
   return `${c.name}: reported [${got.join(', ')}], expected [${want.join(', ')}] (${detail}; ${result.counts})`;
 };
 
 const constantCases = (): (string | null)[] => [
-  REQUIRED_JOB_NAMES.join('|') === EIGHT_NAMES.join('|')
+  JSON.stringify(REQUIRED_JOB_NAMES) === JSON.stringify(TWO_NAMES)
     ? null
-    : 'the required job names are not the eight contexts',
+    : 'the required job names are not the two the branch rules require',
   NON_BLOCKING_JOBS.join('|') ===
   ['canary-linux', 'canary-windows', 'freshness', 'coverage'].join('|')
     ? null
     : 'the non-blocking job list is not the four scheduled or measure-only jobs',
 ];
 
-const SECRETS_JOB = job('secrets', 'Secrets (gitleaks)', 'ubuntu-24.04', 'secrets');
-const WORKFLOWS_JOB = job('workflows', 'Workflows (actionlint)', 'ubuntu-24.04', 'workflows');
+const SECRETS_JOB = job('secrets', 'Scan rows', 'ubuntu-24.04', 'secrets');
+const WORKFLOWS_JOB = job('workflows', 'Workflow rows', 'ubuntu-24.04', 'workflows');
 const secretsJob = (from: string, to: string): Readonly<Record<string, string>> =>
   ci(swap(CLEAN_CI, SECRETS_JOB, swap(SECRETS_JOB, from, to)));
 const PERMS = '    permissions:\n      contents: read\n';
@@ -794,7 +842,7 @@ const bannedCases: readonly Case[] = [
 const cases = [
   ...conditionCases,
   ...nonBlockingCases,
-  ...nameCases,
+  ...requiredCases,
   ...lockedCases,
   ...permissionCases,
   ...bannedCases,
