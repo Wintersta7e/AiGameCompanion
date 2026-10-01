@@ -183,6 +183,20 @@
           "file": 2
         }
       ]
+    },
+    {
+      "owner": "knip",
+      "fromPath": "crates/launcher/package.json",
+      "severity": "error",
+      "pattern": [
+        {
+          "regexp": "^(\\S+)\\s+(?:\\S+\\s+)?([^\\s:]+):(\\d+):(\\d+)\\s*$",
+          "message": 1,
+          "file": 2,
+          "line": 3,
+          "column": 4
+        }
+      ]
     }
   ]
 }

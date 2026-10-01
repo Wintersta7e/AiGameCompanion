@@ -1115,6 +1115,23 @@ hygiene_self_tests() {
 	return "${status}"
 }
 
+# Filters knip --debug: prints knip's report and the number of project files
+# knip resolved (the paths of its first "Finding project paths" block), never
+# the debug dump itself.
+knip_project_files() {
+	awk '
+		{ gsub(/\033\[[0-9;]*m/, "") }
+		/^\[[.*]\] / { if (st == 1) st = 3; if ($0 == "[.] Finding project paths" && st == 0) st = 1; next }
+		st == 1 && /^  paths: \[\]/ { st = 3; next }
+		st == 1 && /^  paths: \[/ { st = 2; next }
+		st == 2 && /^  \]/ { st = 3; next }
+		st == 2 && /^    [^ ]/ { n++; next }
+		/^[[:space:]{}\[\]]/ { next }
+		{ print }
+		END { printf "knip: %d project files resolved\n", n }
+	'
+}
+
 # Filters tsc --listFiles: prints the diagnostics and one count of the listed
 # files outside node_modules, never the file list itself.
 tsc_listed_files() {
@@ -1495,11 +1512,17 @@ st_matcher_samples() {
 	# The planted misspelling is written with an escape so typos passes this file.
 	MS_SAMPLE[typos]=$'src/main.rs:12:9: error: `te\x68` should be `the`'
 	MS_SAMPLE[shellcheck]='scripts/sample.sh:3:1: warning: Use cd ... || exit in case cd fails. [SC2164]'
+	MS_SAMPLE[knip]='getAccent        function  src/lib/stores/accent.svelte.ts:18:17'
+	# Further lines a one-pattern owner must match: knip prints a dependency
+	# issue without the type column.
+	MS_ALSO=()
+	MS_ALSO[knip]='@tauri-apps/plugin-shell  package.json:38:6'
 	# Lines of other tools an owner must not complete.
 	MS_MISS=()
 	MS_MISS[prettier]='[warn] ../../README.md'
 	MS_MISS[prettier-root]='[warn] src/lib/a.ts'
 	MS_MISS[actionlint]='scripts/sample.sh:3:1: warning: Use cd ... || exit in case cd fails. [SC2164]'
+	MS_MISS[knip]=$'knip: 18 project files resolved\nConfiguration hints (2)\nscripts/test-ids.ts!  knip.json  Remove redundant entry pattern'
 	MS_MISS[hygiene-scan]=$'0123456789ab: subject length: 73 characters, limit 72\npr-body:3: test plan heading\nscripts/sample.sh:3:1: warning: Use cd ... || exit in case cd fails. [SC2164]'
 	MS_GREEN="test result: ok. 110 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.12s
 warning[duplicate]: found 2 duplicate entries for crate 'windows-sys'
@@ -1583,6 +1606,21 @@ matcher_green_problems() {
 	done
 }
 
+# Prints a problem for each MS_ALSO line of an owner that its one pattern
+# misses.
+matcher_also_problems() {
+	local owner=$1 line
+	local -a lines=()
+	if [[ "${MS_PAT_COUNT[${owner}]:-0}" -ne 1 ]]; then
+		printf 'owner %s has %s patterns, not the one its further sample lines need\n' "${owner}" "${MS_PAT_COUNT[${owner}]:-0}"
+		return 0
+	fi
+	mapfile -t lines <<<"${MS_ALSO[${owner}]}"
+	for line in "${lines[@]}"; do
+		pcre_matches "${MS_PAT["${owner} 0"]}" "${line}" || printf 'owner %s pattern 1 misses the sample line %s\n' "${owner}" "${line}"
+	done
+}
+
 # Prints a problem for each run of an owner's patterns that completes on its
 # MS_MISS lines.
 matcher_miss_problems() {
@@ -1602,7 +1640,7 @@ matcher_miss_problems() {
 
 st_matchers() {
 	local file=$1 owner why
-	declare -gA MS_SAMPLE=() MS_MISS=() MS_PAT=() MS_PAT_COUNT=()
+	declare -gA MS_SAMPLE=() MS_ALSO=() MS_MISS=() MS_PAT=() MS_PAT_COUNT=()
 	st_matcher_samples
 	matcher_load "${file}"
 	why=$(matcher_file_problems "${file}")
@@ -1610,6 +1648,10 @@ st_matchers() {
 	for owner in "${!MS_SAMPLE[@]}"; do
 		why=$(matcher_owner_problems "${owner}")
 		st_case "matcher owner ${owner} matches its sample" "${why}"
+	done
+	for owner in "${!MS_ALSO[@]}"; do
+		why=$(matcher_also_problems "${owner}")
+		st_case "matcher owner ${owner} matches its further sample lines" "${why}"
 	done
 	why=''
 	for owner in "${MS_OWNERS[@]}"; do
@@ -1818,6 +1860,13 @@ declare_table() {
 		tools=node,npm:typescript#tsc dir=crates/launcher count='^tsc: [0-9]+ files type-checked$' \
 		zero='^tsc: ([0-9]+) files type-checked$' \
 		cmd='source ../../scripts/ci-check.sh && node node_modules/typescript/bin/tsc --noEmit --pretty false --listFiles -p tsconfig.node.json | tsc_listed_files'
+	row name='knip (unused exports + types + files)' tags=frontend category=both target=any tools=node,npm:knip \
+		dir=crates/launcher count='^knip: [0-9]+ project files resolved$' zero='^knip: ([0-9]+) project files resolved$' \
+		cmd='source ../../scripts/ci-check.sh && node node_modules/knip/bin/knip.js --production --include exports,types,files --debug --no-progress | knip_project_files'
+	row name='knip (unused + unlisted + unresolved npm dependencies)' tags=frontend category=both target=any \
+		tools=node,npm:knip dir=crates/launcher count='^knip: [0-9]+ project files resolved$' \
+		zero='^knip: ([0-9]+) project files resolved$' \
+		cmd='source ../../scripts/ci-check.sh && node node_modules/knip/bin/knip.js --include dependencies,unlisted,unresolved --debug --no-progress | knip_project_files'
 	row name='test identity self-test' tags=frontend category=both target=any tools=node,git \
 		count='^test identity self-test: ' zero='cases ([0-9]+)' cmd='node crates/launcher/scripts/test-ids.selftest.ts'
 	# shellcheck disable=SC2016 # the row's own bash expands these, not this file

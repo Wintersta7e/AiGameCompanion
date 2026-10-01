@@ -1,25 +1,19 @@
 /**
- * Live accent store. Holds the current accent colour (driven by the selected
- * game's cover art) and writes it to the document root as `--accent`, which
- * every component reads. Results are cached per game id; the hashed-hue
- * fallback is applied instantly so there's never an un-themed flash.
+ * Live accent store. Sets the document root's `--accent` from the selected
+ * game's cover art, which every component reads. Results are cached per game
+ * id; the hashed-hue fallback is applied instantly so there's never an
+ * un-themed flash.
  */
 import type { Game } from './games.svelte';
 import { dominantAccent, hashHue } from '../utils/accent';
 
-let accent = $state<string>('#e0a23c');
 // eslint-disable-next-line svelte/prefer-svelte-reactivity -- a plain memo, never read in a template or $derived
 const cache = new Map<string, string>();
 // Latest game we were asked to theme for; guards async cover-art extraction
 // against a stale result landing after the user has switched games.
 let currentGameId: string | null = null;
 
-export function getAccent(): string {
-  return accent;
-}
-
 function apply(value: string): void {
-  accent = value;
   document.documentElement.style.setProperty('--accent', value);
 }
 

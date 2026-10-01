@@ -618,4 +618,181 @@ pub(crate) fn helper() { NEEDLE(); }
         assert!(!files.is_empty(), "the scan read no file");
         assert!(failures.is_empty(), "{failures:#?}");
     }
+
+    /// A JSON config file of the frontend package, with its whole-line `//`
+    /// comments dropped (the tsconfig files hold no other kind).
+    fn read_json(root: &Path, name: &str) -> Result<serde_json::Value, String> {
+        let text = std::fs::read_to_string(root.join(name))
+            .map_err(|err| format!("cannot read {name}: {err}"))?;
+        let kept: Vec<&str> = text
+            .lines()
+            .filter(|line| !line.trim_start().starts_with("//"))
+            .collect();
+        serde_json::from_str(&kept.join("\n"))
+            .map_err(|err| format!("{name} does not parse: {err}"))
+    }
+
+    /// The items of a JSON array of strings; `None` for anything else.
+    fn strings(value: Option<&serde_json::Value>) -> Option<Vec<&str>> {
+        value?
+            .as_array()?
+            .iter()
+            .map(serde_json::Value::as_str)
+            .collect()
+    }
+
+    /// The Node program's problems, and its `include` globs outside the
+    /// package root.
+    fn node_program_globs(root: &Path) -> (Vec<String>, Vec<String>) {
+        let node = match read_json(root, "tsconfig.node.json") {
+            Ok(node) => node,
+            Err(err) => return (vec![err], Vec::new()),
+        };
+        let mut problems = Vec::new();
+        let include = strings(node.get("include")).unwrap_or_default();
+        if include.is_empty() {
+            problems.push(
+                "tsconfig.node.json: include is missing, empty or not a list of strings".to_owned(),
+            );
+        }
+        if strings(node.get("exclude")).is_none_or(|exclude| !exclude.is_empty()) {
+            problems.push("tsconfig.node.json: exclude is not []".to_owned());
+        }
+        for key in ["files", "references"] {
+            if node.get(key).is_some() {
+                problems.push(format!("tsconfig.node.json: has a {key} key"));
+            }
+        }
+        let (at_root, others): (Vec<&str>, Vec<&str>) =
+            include.iter().partition(|glob| !glob.contains('/'));
+        println!("tsconfig.node.json include: package root {at_root:?}, others {others:?}");
+        if at_root != ["*.js", "*.ts"] {
+            problems.push(format!(
+                "tsconfig.node.json: the package-root globs are {at_root:?}, not [\"*.js\", \"*.ts\"]"
+            ));
+        }
+        (problems, others.into_iter().map(str::to_owned).collect())
+    }
+
+    /// eslint's lists of the same files: the package-root globs in
+    /// `allowDefaultProject` and the Node-globals block, the others in the
+    /// block that lints them with the Node program.
+    fn eslint_lists(root: &Path, others: &[String]) -> Vec<String> {
+        let text = match std::fs::read_to_string(root.join("eslint.config.js")) {
+            Ok(text) => text,
+            Err(err) => return vec![format!("cannot read eslint.config.js: {err}")],
+        };
+        let root_list = "['*.js', '*.ts']";
+        let quoted: Vec<String> = others.iter().map(|glob| format!("'{glob}'")).collect();
+        let other_list = format!("[{}]", quoted.join(", "));
+        let root_count = text.matches(root_list).count();
+        let other_count = text.matches(&other_list).count();
+        println!(
+            "eslint.config.js: {root_list} {root_count} times, {other_list} {other_count} times"
+        );
+        let mut problems = Vec::new();
+        if root_count != 2 {
+            problems.push(format!(
+                "eslint.config.js holds {root_list} {root_count} times, not 2 (allowDefaultProject and the Node-globals block)"
+            ));
+        }
+        if others.is_empty() || other_count != 1 {
+            problems.push(format!(
+                "eslint.config.js holds {other_list} {other_count} times, not once"
+            ));
+        }
+        problems
+    }
+
+    /// The app program leaves the tests to the Node program and never loads
+    /// Node's types.
+    fn app_program(root: &Path) -> Vec<String> {
+        let app = match read_json(root, "tsconfig.json") {
+            Ok(app) => app,
+            Err(err) => return vec![err],
+        };
+        let mut problems = Vec::new();
+        let types = app
+            .get("compilerOptions")
+            .and_then(|options| options.get("types"));
+        if types
+            .is_some_and(|types| strings(Some(types)).is_none_or(|types| types.contains(&"node")))
+        {
+            problems.push("tsconfig.json: compilerOptions.types names node".to_owned());
+        }
+        let exclude = strings(app.get("exclude"));
+        println!("tsconfig.json exclude: {exclude:?}");
+        if exclude != Some(vec!["src/**/*.test.ts"]) {
+            problems.push(format!(
+                "tsconfig.json: exclude is {exclude:?}, not [\"src/**/*.test.ts\"]"
+            ));
+        }
+        problems
+    }
+
+    /// knip's entries are exactly the gate helpers under `scripts/`, each
+    /// with the production mark.
+    fn knip_entries(root: &Path) -> Vec<String> {
+        let knip = match read_json(root, "knip.json") {
+            Ok(knip) => knip,
+            Err(err) => return vec![err],
+        };
+        let mut problems = Vec::new();
+        let keys: Vec<&str> = knip
+            .as_object()
+            .map(|object| object.keys().map(String::as_str).collect())
+            .unwrap_or_default();
+        if keys != ["entry"] {
+            problems.push(format!("knip.json: its keys are {keys:?}, not [\"entry\"]"));
+        }
+        let entries = strings(knip.get("entry")).unwrap_or_default();
+        let mut named = std::collections::BTreeSet::new();
+        for entry in &entries {
+            let Some(file) = entry.strip_suffix('!') else {
+                problems.push(format!("knip.json: {entry} lacks the production mark !"));
+                continue;
+            };
+            if !root.join(file).is_file() {
+                problems.push(format!("knip.json: {entry} names no file"));
+            }
+            named.insert(file.to_owned());
+        }
+        let helpers: std::collections::BTreeSet<String> =
+            match script_files(root, Path::new("scripts")) {
+                Ok(files) => files
+                    .iter()
+                    .map(|file| file.to_string_lossy().replace('\\', "/"))
+                    .collect(),
+                Err(err) => {
+                    problems.push(err);
+                    std::collections::BTreeSet::new()
+                }
+            };
+        println!(
+            "knip entries {}, gate helper files {}",
+            entries.len(),
+            helpers.len()
+        );
+        if entries.is_empty() || helpers.is_empty() {
+            problems.push("knip.json or scripts/ lists no gate helper".to_owned());
+        }
+        let unlisted: Vec<&String> = helpers.difference(&named).collect();
+        let extra: Vec<&String> = named.difference(&helpers).collect();
+        if !unlisted.is_empty() || !extra.is_empty() {
+            problems.push(format!(
+                "knip.json lacks an entry for the gate helpers {unlisted:?} and names {extra:?}, which are not gate helpers"
+            ));
+        }
+        problems
+    }
+
+    #[test]
+    fn node_files_are_listed_once() {
+        let root = count_in_frontend(&[]).root;
+        let (mut failures, others) = node_program_globs(&root);
+        failures.extend(eslint_lists(&root, &others));
+        failures.extend(app_program(&root));
+        failures.extend(knip_entries(&root));
+        assert!(failures.is_empty(), "{failures:#?}");
+    }
 }
