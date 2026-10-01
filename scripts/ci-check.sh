@@ -1513,6 +1513,7 @@ st_matcher_samples() {
 	MS_SAMPLE[typos]=$'src/main.rs:12:9: error: `te\x68` should be `the`'
 	MS_SAMPLE[shellcheck]='scripts/sample.sh:3:1: warning: Use cd ... || exit in case cd fails. [SC2164]'
 	MS_SAMPLE[knip]='getAccent        function  src/lib/stores/accent.svelte.ts:18:17'
+	MS_SAMPLE[node-test]=$'not ok 2 - formatPlayTime: under an hour shows minutes\n  ---\n  duration_ms: 0.865411\n  type: \'test\'\n  location: \'/work/app/crates/launcher/src/lib/utils/format.test.ts:12:6\''
 	# Further lines a one-pattern owner must match: knip prints a dependency
 	# issue without the type column.
 	MS_ALSO=()
@@ -1532,7 +1533,12 @@ All matched files use Prettier code style!
 1 commits scanned.
 no leaks found
  INFO audit: zizmor: ${rainbow} completed ./.github/dependabot.yml
-pin guard: runner labels: scanned 11 runs-on lines, violations 0"
+pin guard: runner labels: scanned 11 runs-on lines, violations 0
+ok 1 - formatPlayTime: no play time reads 0h
+  ---
+  duration_ms: 0.865411
+  type: 'test'
+  ..."
 }
 
 # Loads MS_OWNERS, MS_PAT["<owner> <index>"] and MS_PAT_COUNT[<owner>].
@@ -1869,6 +1875,9 @@ declare_table() {
 		cmd='source ../../scripts/ci-check.sh && node node_modules/knip/bin/knip.js --include dependencies,unlisted,unresolved --debug --no-progress | knip_project_files'
 	row name='test identity self-test' tags=frontend category=both target=any tools=node,git \
 		count='^test identity self-test: ' zero='cases ([0-9]+)' cmd='node crates/launcher/scripts/test-ids.selftest.ts'
+	row name='frontend unit tests + test identity' tags=frontend category=both target=any tools=node,npm dir=. \
+		count='^# tests [0-9]+$|^test identity: ' zero='ids ([0-9]+)' \
+		cmd='node --version && npm --prefix crates/launcher test | node crates/launcher/scripts/test-ids.ts tap scripts/test-baselines/frontend.list'
 	# shellcheck disable=SC2016 # the row's own bash expands these, not this file
 	row name='npm audit' tags=frontend category=both target=any tools=node,npm dir=crates/launcher \
 		count='^found [0-9]+ (vulnerability|vulnerabilities)|^[0-9]+ (info|low|moderate|high|critical) severity (vulnerability|vulnerabilities)|^[0-9]+ vulnerabilities \(|^npm audit: dependencies audited: ' \

@@ -1,0 +1,7 @@
+formatHotkeyStatus: names every hotkey that failed run
+formatHotkeyStatus: ready when nothing failed run
+formatLastPlayed: counts back in the largest whole unit run
+formatLastPlayed: never played and unreadable dates run
+formatPlayTime: hours, with minutes only when verbose run
+formatPlayTime: no play time reads 0h run
+formatPlayTime: under an hour shows minutes run
