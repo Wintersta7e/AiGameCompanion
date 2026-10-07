@@ -4,7 +4,7 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## Unreleased
+## 2.1.0 - 2026-10-07
 
 ### Added
 
@@ -21,9 +21,13 @@ All notable changes to this project are documented here. The format is based on
 
 - **The overlay window can use only the commands its own controls need.** Links
   open only as https web addresses, in your default browser.
+- **The launcher is built with Control Flow Guard and opts in to CET shadow
+  stacks,** Windows protections that make memory-corruption exploits harder.
 
 ### Fixed
 
+- **A Steam scan no longer erases games from other sources.** A manually added
+  game, with its playtime, was removed by the next startup scan.
 - **Closing the panel with Alt+F4 now hands focus back to the game, as the
   hotkey does.**
 - **Claude errors show the Claude CLI's own message** instead of a generic one.
@@ -48,6 +52,7 @@ All notable changes to this project are documented here. The format is based on
   meaning, and run after a branch is pushed.
 - **Security problems can be reported privately.** `SECURITY.md` explains how,
   and that only the latest release is supported.
+- **Dependencies refreshed; the project builds with Rust 1.99.0.**
 
 ## 2.0.2 - 2026-09-26
 
