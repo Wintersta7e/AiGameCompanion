@@ -14,6 +14,7 @@ const APP_COMMANDS: &[&str] = &[
     "hotkey_status",
     "open_url",
     "open_config_folder",
+    "set_hints_first",
     "ask_sage",
     "cancel_sage",
     "available_providers",

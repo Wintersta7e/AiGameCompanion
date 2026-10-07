@@ -10,6 +10,12 @@ All notable changes to this project are documented here. The format is based on
 
 - **The panel opens on the game's monitor, along the right edge of the game,
   and remembers where you drag or resize it.**
+- **Hints first, on by default -- including after an upgrade.** Questions about
+  where to go or how to get past something first get a nudge; **Another hint**
+  goes one step further and **Full answer** gives the solution. Switch it off
+  from the panel.
+- **Formatted answers and a Copy button.** Lists, bold text, code and tables
+  display as such; Copy copies the answer's text.
 
 ### Security
 
@@ -32,6 +38,7 @@ All notable changes to this project are documented here. The format is based on
 
 - **Sage now tells the AI a linked game's Steam app id, or a linked program's
   product name.**
+- **Sage no longer volunteers story spoilers and skips preamble.**
 
 ### Infrastructure
 

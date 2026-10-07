@@ -456,8 +456,9 @@ fn stream_error_message(json: &str) -> Option<String> {
 mod tests {
     use super::{
         build_request, http_error_message, process_sse_lines, resolve_model, stream_error_message,
-        validate_model, ChatMessage,
+        validate_model, ChatMessage, Part,
     };
+    use crate::ai::prompt::{assemble, PromptKind};
 
     #[test]
     fn resolve_model_precedence() {
@@ -583,6 +584,22 @@ mod tests {
             assert!(value.get("tools").is_none(), "the request carries tools");
             assert!(!text.contains(concat!("google", "_search")));
         }
+    }
+
+    #[test]
+    fn system_prompt_reaches_gemini_unchanged() {
+        let prompt = assemble(PromptKind::Chat { hints: true });
+        println!("system prompt: {} bytes", prompt.len());
+        let request = build_request(&[turn("user", "Where now?")], &prompt, None);
+        let parts = request
+            .system_instruction
+            .expect("the request has a system instruction")
+            .parts;
+        assert_eq!(parts.len(), 1);
+        assert!(
+            matches!(parts.first(), Some(Part::Text { text }) if *text == prompt),
+            "the system instruction is not the prompt as built"
+        );
     }
 
     #[test]

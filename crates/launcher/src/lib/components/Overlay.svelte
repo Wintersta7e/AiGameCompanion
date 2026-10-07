@@ -3,8 +3,10 @@
   import { invoke, Channel } from '@tauri-apps/api/core';
   import { listen } from '@tauri-apps/api/event';
   import { hashHue } from '../utils/accent';
+  import { ANOTHER_HINT_TURN, FULL_ANSWER_TURN, showHintChips } from '../utils/hints';
   import { PROVIDERS, modelName, type ModelNames, type Provider } from '../stores/companion.svelte';
   import type { LauncherSettings } from '../settings';
+  import Markdown from './Markdown.svelte';
 
   type GameInfo = {
     hwnd: number;
@@ -36,6 +38,12 @@
     streaming?: boolean;
     // Set only when the answer finished ("done"); stopped and failed ones never are.
     complete?: boolean;
+    // Set once the answer is too long or too slow to format; it then stays plain text.
+    plain?: boolean;
+    // Why the answer failed; shown on its own line, never part of `content`.
+    error?: string;
+    // Asked with hints first on; the follow-up chips show only after such an answer.
+    hinted?: boolean;
   }
 
   const PROVIDER_ORDER: Provider[] = ['gemini', 'claude', 'openai'];
@@ -56,9 +64,14 @@
   let dropdownOpen = $state(false);
   let tab = $state<'chat' | 'translate'>('chat');
   let attach = $state(false);
+  // Hints first: answers to progress questions start as a nudge. Each send
+  // carries the value shown here, whatever the saved setting says.
+  let hintsFirst = $state(true);
   let prompt = $state('');
   let asking = $state(false);
   let messages = $state<Msg[]>([]);
+  // The answer whose Copy just succeeded, by index; -1 for none.
+  let copiedIndex = $state(-1);
 
   let inputEl = $state<HTMLInputElement | null>(null);
   let translateBtn = $state<HTMLButtonElement | null>(null);
@@ -88,6 +101,7 @@
   // same gate, this only keeps the controls honest.
   const canAttach = $derived(Boolean(game?.linked));
   const canSend = $derived(Boolean(game?.linked) && availability[provider]);
+  const hintChips = $derived(showHintChips(messages, hintsFirst, asking, canSend));
   // The exe's file name, for the link control ("Link foo.exe ...").
   const exeFile = $derived(game?.exe.split(/[\\/]/u).pop() ?? '');
   const captureHint = $derived.by(() => {
@@ -102,8 +116,17 @@
   // -- scrolling up to re-read history must not be yanked back down. The check
   // has to happen before the DOM grows, hence $effect.pre.
   $effect.pre(() => {
-    // Re-runs on every appended chunk and on every new message.
-    const growth = messages.length + (messages.at(-1)?.content.length ?? 0);
+    // Re-runs on every appended chunk, on every new message, when an answer
+    // fails (its error line sits below the text) or finishes (the status line
+    // under the input can then wrap, shrinking the list) and when the hint
+    // chips show.
+    const last = messages.at(-1);
+    const growth =
+      messages.length +
+      (last?.content.length ?? 0) +
+      (last?.error?.length ?? 0) +
+      (last?.streaming ? 1 : 0) +
+      (hintChips ? 1 : 0);
     const el = msglistEl;
     if (!el || growth === 0) return;
     if (el.scrollHeight - el.scrollTop - el.clientHeight > 50) return;
@@ -137,6 +160,18 @@
     }
   }
 
+  // The switch applies at once and to every later send, even when the backend
+  // refuses to remember it (a read-only state file), like a provider pick.
+  async function toggleHints() {
+    const on = !hintsFirst;
+    hintsFirst = on;
+    try {
+      await invoke('set_hints_first', { on });
+    } catch {
+      /* the choice still applies for this session */
+    }
+  }
+
   async function newChat() {
     const inflight = asking ? activeRequestId : 0;
     // Reset synchronously first so a Send fired during the cancel IPC gap cannot
@@ -145,6 +180,7 @@
     asking = false;
     conversationId += 1;
     messages = [];
+    copiedIndex = -1;
     prompt = '';
     if (inflight !== 0) {
       try {
@@ -203,7 +239,13 @@
     messages = [
       ...messages,
       { role: 'user', content: question, screenshot: withShot },
-      { role: 'assistant', content: '', model: modelLabel(provider), streaming: true },
+      {
+        role: 'assistant',
+        content: '',
+        model: modelLabel(provider),
+        streaming: true,
+        hinted: hintsFirst,
+      },
     ];
     const idx = messages.length - 1;
     streamIndex = idx;
@@ -223,8 +265,7 @@
         bubble.complete = true;
         asking = false;
       } else {
-        const msg = event.message ?? 'Unknown error';
-        bubble.content = bubble.content ? `${bubble.content}\n\n[error] ${msg}` : `[error] ${msg}`;
+        bubble.error = event.message ?? 'Unknown error';
         bubble.streaming = false;
         asking = false;
       }
@@ -237,6 +278,7 @@
         provider,
         messages: outgoing,
         attachScreenshot: withShot,
+        hints: hintsFirst,
         channel,
       });
     } catch (err) {
@@ -245,7 +287,7 @@
       if (id !== activeRequestId || convo !== conversationId) return;
       const bubble = messages[idx];
       if (bubble) {
-        bubble.content = `[error] ${String(err)}`;
+        bubble.error = String(err);
         bubble.streaming = false;
       }
       asking = false;
@@ -327,6 +369,23 @@
     inputEl?.focus();
   }
 
+  // A finished or stopped answer with text can be copied.
+  const copyable = (m: Msg) => !m.streaming && m.content.trim() !== '';
+
+  // Copies the answer as it arrived, Markdown included: never the error line or
+  // the rendered text. "Copied" shows only once the clipboard took it.
+  async function copyAnswer(text: string, index: number) {
+    try {
+      await navigator.clipboard.writeText(text);
+    } catch {
+      return;
+    }
+    copiedIndex = index;
+    setTimeout(() => {
+      if (copiedIndex === index) copiedIndex = -1;
+    }, 1500);
+  }
+
   async function copyTranslation() {
     if (!translateText) return;
     try {
@@ -354,12 +413,25 @@
     await refreshProviders();
   }
 
+  // Read once, at mount. Re-reading it on a provider change would put back a
+  // value the backend refused to store, and the panel would then show one
+  // value while the last send used another.
+  async function loadHintsFirst() {
+    try {
+      const settings = await invoke<LauncherSettings>('get_settings');
+      if (typeof settings.hints_first === 'boolean') hintsFirst = settings.hints_first;
+    } catch {
+      /* the default applies */
+    }
+  }
+
   onMount(() => {
     // Only the overlay window mounts this; keep its surface transparent.
     document.documentElement.style.background = 'transparent';
     document.body.style.background = 'transparent';
 
     void loadSavedProvider();
+    void loadHintsFirst();
 
     const listeners = [
       listen<GameInfo>('overlay-status', (event) => {
@@ -613,22 +685,49 @@
               {:else}
                 <div class="msg sage">
                   <span class="avatar"></span>
-                  <div>
+                  <div class="sage-col">
                     <div class="bubble">
-                      {#if m.content}{m.content}{/if}{#if m.streaming && m.content}<span
-                          class="caret-blink"
-                        ></span>{/if}
+                      <Markdown
+                        complete={m.complete === true}
+                        content={m.content}
+                        onplain={() => {
+                          m.plain = true;
+                        }}
+                        plain={m.plain === true}
+                        streaming={m.streaming === true}
+                      />
                       {#if m.streaming && !m.content}
                         <span class="thinking"><i></i><i></i><i></i></span>
                       {/if}
+                      {#if m.error}
+                        <div class="answer-error" class:spaced={m.content.trim() !== ''}>
+                          [error] {m.error}
+                        </div>
+                      {/if}
                     </div>
-                    {#if m.model && (m.content || !m.streaming)}
-                      <div class="meta">{m.model}{m.streaming ? ' · streaming' : ''}</div>
+                    {#if copyable(m) || (m.model && (m.content || !m.streaming))}
+                      <div class="meta">
+                        {m.model}{m.streaming ? ' · streaming' : ''}{#if copyable(m)}<button
+                            class="copy-btn"
+                            onclick={() => copyAnswer(m.content, i)}
+                            type="button">{copiedIndex === i ? 'Copied' : 'Copy'}</button
+                          >{/if}
+                      </div>
                     {/if}
                   </div>
                 </div>
               {/if}
             {/each}
+            {#if hintChips}
+              <div class="chips">
+                <button class="chip" onclick={() => send(ANOTHER_HINT_TURN)} type="button"
+                  >Another hint</button
+                >
+                <button class="chip" onclick={() => send(FULL_ANSWER_TURN)} type="button"
+                  >Full answer</button
+                >
+              </div>
+            {/if}
           {/if}
         </div>
 
@@ -657,6 +756,29 @@
                   cy="8.5"
                   r="1.5"
                 /><path d="M21 15l-5-5L5 21" /></svg
+              >
+            </button>
+            <button
+              class="attach-btn hints-btn"
+              class:off={!hintsFirst}
+              aria-label="Hints first"
+              aria-pressed={hintsFirst}
+              onclick={toggleHints}
+              title="Hints first"
+              type="button"
+            >
+              <svg
+                fill="none"
+                height="18"
+                stroke="currentColor"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+                stroke-width="1.7"
+                viewBox="0 0 24 24"
+                width="18"
+                ><path
+                  d="M9 18h6M10 21h4M12 3a6 6 0 0 0-3.6 10.8c.6.5 1 1.2 1.1 2V16h5v-.2c.1-.8.5-1.5 1.1-2A6 6 0 0 0 12 3z"
+                /></svg
               >
             </button>
             <input
@@ -1144,6 +1266,26 @@
     margin-top: 7px;
     letter-spacing: 0.04em;
   }
+  .copy-btn {
+    font-family: var(--font-mono);
+    font-size: 10px;
+    letter-spacing: 0.04em;
+    color: var(--color-t-mid);
+    background: none;
+    border: 0;
+    padding: 0;
+    margin-left: 8px;
+    cursor: pointer;
+  }
+  .copy-btn:hover {
+    color: var(--color-t-hi);
+  }
+  .answer-error {
+    white-space: pre-wrap;
+  }
+  .answer-error.spaced {
+    margin-top: 8px;
+  }
   .frame-chip {
     display: inline-flex;
     align-items: center;
@@ -1164,23 +1306,13 @@
     border-radius: 4px;
     background: linear-gradient(135deg, color-mix(in oklab, var(--accent) 52%, #17171b), #101013);
   }
-  .caret-blink {
-    display: inline-block;
-    width: 2px;
-    height: 0.95em;
-    background: var(--accent);
-    margin-left: 2px;
-    vertical-align: text-bottom;
-    animation: blink 1s steps(2) infinite;
+  /* A wide code block or table scrolls inside the answer, never widens the panel. */
+  .sage-col {
+    min-width: 0;
   }
-  @keyframes blink {
-    0%,
-    100% {
-      opacity: 1;
-    }
-    50% {
-      opacity: 0;
-    }
+  /* The answer sets its own wrapping; the template's line breaks around it must not render. */
+  .sage-col .bubble {
+    white-space: normal;
   }
   .thinking {
     display: inline-flex;

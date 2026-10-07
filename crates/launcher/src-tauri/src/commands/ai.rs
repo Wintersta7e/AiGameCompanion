@@ -33,6 +33,10 @@ pub(crate) fn available_providers(
     clippy::needless_pass_by_value,
     reason = "a Tauri command receives its arguments by value"
 )]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "a Tauri command takes each IPC argument as its own parameter"
+)]
 pub(crate) fn ask_sage(
     app: AppHandle,
     request_id: u64,
@@ -40,6 +44,7 @@ pub(crate) fn ask_sage(
     provider: Provider,
     messages: Vec<ChatMessage>,
     attach_screenshot: bool,
+    hints: bool,
     channel: Channel<SageEvent>,
 ) {
     crate::ai::spawn_request(
@@ -50,6 +55,7 @@ pub(crate) fn ask_sage(
             provider,
             messages,
             attach_screenshot,
+            hints,
         },
         channel,
     );

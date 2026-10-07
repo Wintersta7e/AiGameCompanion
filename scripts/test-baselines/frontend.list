@@ -11,3 +11,16 @@ formatLastPlayed: never played and unreadable dates run
 formatPlayTime: hours, with minutes only when verbose run
 formatPlayTime: no play time reads 0h run
 formatPlayTime: under an hour shows minutes run
+isActionableLink: only a complete https link opens run
+renderAnswer: plain past the size cap, markdown below it run
+renderMode: long, slow or failed renders stay plain run
+showHintChips: shown only after a finished hinted answer run
+toNodes: an inline br tag is a line break run
+toNodes: an unclosed fence is a code block run
+toNodes: an unknown token type becomes its raw text run
+toNodes: entities decode once, code spans not at all run
+toNodes: every fixture converts to the closed set of kinds run
+toNodes: headings, tables, quotes and rules run
+toNodes: inline marks convert in order run
+toNodes: lists keep their order, start and task boxes run
+toNodes: raw HTML and images stay literal text run

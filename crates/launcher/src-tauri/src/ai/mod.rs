@@ -8,6 +8,7 @@
 
 mod cli;
 mod gemini;
+mod prompt;
 
 use base64::Engine as _;
 use parking_lot::Mutex;
@@ -136,6 +137,8 @@ pub(crate) struct RequestParams {
     pub provider: Provider,
     pub messages: Vec<ChatMessage>,
     pub attach_screenshot: bool,
+    /// Hints first, as the page showed it when the question was sent.
+    pub hints: bool,
 }
 
 /// The single in-flight request (if any). Aborting `handle` cancels the request
@@ -226,19 +229,18 @@ async fn run(app: AppHandle, params: RequestParams, channel: Channel<SageEvent>)
         provider,
         messages,
         attach_screenshot,
+        hints,
     } = params;
 
     // Read shared state up front so no state guard is held across an await.
     // Only a linked, still-live target contributes an identity or a capture target.
     let ctx = request_context(crate::overlay::linked_game(&app).as_ref());
     let turns = messages.len();
-    tracing::info!(
-        "{}",
-        request_log_line(request_id, provider, attach_screenshot, turns, &ctx)
-    );
+    let log_line = request_log_line(request_id, provider, attach_screenshot, turns, &ctx, hints);
+    tracing::info!("{log_line}");
     let identity = ctx.identity_block.as_deref();
-    let (system_prompt, messages) =
-        payload(PayloadKind::Chat, build_system_prompt(), messages, identity);
+    let system_prompt = prompt::assemble(prompt_kind(hints));
+    let (system_prompt, messages) = payload(PayloadKind::Chat, system_prompt, messages, identity);
     let capture_target = ctx.capture;
     let cli_cfg = app.state::<AiState>().cli.lock().clone();
     let settings_model = app
@@ -526,42 +528,32 @@ fn payload(
     (system, messages)
 }
 
+/// The system prompt a chat request sends, from the flags it was sent with.
+const fn prompt_kind(hints: bool) -> prompt::PromptKind {
+    prompt::PromptKind::Chat { hints }
+}
+
 /// One log line per request recording what the gate let through -- never a name
-/// or a title -- how many chat turns were sent, the new question included, and
-/// which kind of identity block went with them.
+/// or a title -- how many chat turns were sent, the new question included,
+/// which kind of identity block went with them, and whether hints first was on.
 fn request_log_line(
     request_id: u64,
     provider: Provider,
     screenshot_requested: bool,
     turns: usize,
     ctx: &RequestContext,
+    hints: bool,
 ) -> String {
     let yes_no = |flag: bool| if flag { "yes" } else { "no" };
     format!(
-        "Request {request_id}: provider {}, screenshot requested: {}, linked target: {}, turns: {turns}, identity: {}",
+        "Request {request_id}: provider {}, screenshot requested: {}, linked target: {}, turns: {turns}, identity: {}, hints: {}",
         provider.as_str(),
         yes_no(screenshot_requested),
         yes_no(ctx.capture.is_some()),
         ctx.identity.as_str(),
+        yes_no(hints),
     )
 }
-
-/// The Sage persona prompt: compile-time text only. Nothing about the game or
-/// its window goes here; the identity block travels with the question.
-fn build_system_prompt() -> String {
-    "You are Sage, a sharp and knowledgeable game companion embedded in the player's screen. \
-     Keep answers short -- 2-3 sentences unless the player asks for detail. \
-     Never repeat or rephrase what the player just said. \
-     Never state the obvious (e.g. don't say \"I see you're in a menu\"). \
-     Jump straight to the useful part: what to do, where to go, or how something works. \
-     When you see a screenshot, focus only on what's relevant to the player's question. \
-     If no question is asked with a screenshot, give the single most useful observation."
-        .to_owned()
-}
-
-const TRANSLATE_SYSTEM: &str =
-    "You are a screen translator for a gamer. Read the foreign text in the image and translate it \
-     into natural English. Be concise; do not add commentary.";
 
 /// Check a Gemini model id chosen in Settings before it is saved.
 pub(crate) fn validate_gemini_model(model: &str) -> Result<(), String> {
@@ -586,13 +578,10 @@ pub(crate) async fn translate_capture(
     let model = gemini::resolve_model(&settings_model, &gemini::file_model());
     let (system, messages) = payload(
         PayloadKind::Translate,
-        TRANSLATE_SYSTEM.to_owned(),
+        prompt::TRANSLATE_SYSTEM.to_owned(),
         vec![ChatMessage {
             role: "user".to_owned(),
-            content: "Translate any non-English text visible in this screenshot into English. \
-                      Output only the translation. If there is no foreign text, reply exactly: \
-                      No foreign text found."
-                .to_owned(),
+            content: prompt::TRANSLATE_REQUEST.to_owned(),
         }],
         None,
     );
@@ -754,43 +743,45 @@ mod tests {
         let linked = request_context(Some(&target(true)));
         let untargeted = request_context(None);
         let question = || vec![message("user", "Where now?")];
-        let (prompt, messages) = payload(
-            PayloadKind::Chat,
-            build_system_prompt(),
-            question(),
-            linked.identity_block.as_deref(),
-        );
-        let (plain, _) = payload(
-            PayloadKind::Chat,
-            build_system_prompt(),
-            question(),
-            untargeted.identity_block.as_deref(),
-        );
-        println!(
-            "system prompt: {} bytes linked, {} bytes without a target",
-            prompt.len(),
-            plain.len()
-        );
-        assert_eq!(prompt, plain, "the system prompt names no game");
-        let argv = cli::claude_args(cli::DEFAULT_CLAUDE_MODEL, &prompt);
-        assert_eq!(
-            argv,
-            cli::claude_args(cli::DEFAULT_CLAUDE_MODEL, &plain),
-            "the command line names no game"
-        );
-        let block = linked.identity_block.clone().unwrap();
-        println!("{block}");
-        assert!(block.contains("\"Real Name\""), "{block}");
-        assert!(contents(&messages)[0].starts_with(&block));
-        let line = request_log_line(3, Provider::Claude, true, 1, &linked);
-        for (what, text) in [
-            ("prompt", prompt.as_str()),
-            ("argv", argv.join(" ").as_str()),
-            ("block", block.as_str()),
-            ("log line", line.as_str()),
-        ] {
-            for withheld in ["SECRET-TITLE", r"C:\Games\Foo", r"c:\games\foo"] {
-                assert!(!text.contains(withheld), "{what} contains {withheld}");
+        for hints in [true, false] {
+            let (prompt, messages) = payload(
+                PayloadKind::Chat,
+                prompt::assemble(prompt_kind(hints)),
+                question(),
+                linked.identity_block.as_deref(),
+            );
+            let (plain, _) = payload(
+                PayloadKind::Chat,
+                prompt::assemble(prompt_kind(hints)),
+                question(),
+                untargeted.identity_block.as_deref(),
+            );
+            println!(
+                "hints {hints}: system prompt {} bytes linked, {} bytes without a target",
+                prompt.len(),
+                plain.len()
+            );
+            assert_eq!(prompt, plain, "the system prompt names no game");
+            let argv = cli::claude_args(cli::DEFAULT_CLAUDE_MODEL, &prompt);
+            assert_eq!(
+                argv,
+                cli::claude_args(cli::DEFAULT_CLAUDE_MODEL, &plain),
+                "the command line names no game"
+            );
+            let block = linked.identity_block.clone().unwrap();
+            println!("{block}");
+            assert!(block.contains("\"Real Name\""), "{block}");
+            assert!(contents(&messages)[0].starts_with(&block));
+            let line = request_log_line(3, Provider::Claude, true, 1, &linked, hints);
+            for (what, text) in [
+                ("prompt", prompt.as_str()),
+                ("argv", argv.join(" ").as_str()),
+                ("block", block.as_str()),
+                ("log line", line.as_str()),
+            ] {
+                for withheld in ["SECRET-TITLE", r"C:\Games\Foo", r"c:\games\foo"] {
+                    assert!(!text.contains(withheld), "{what} contains {withheld}");
+                }
             }
         }
         assert_eq!(request_context(Some(&target(false))).identity_block, None);
@@ -852,19 +843,30 @@ mod tests {
     }
 
     #[test]
+    fn prompt_kind_selects_by_flags() {
+        for hints in [true, false] {
+            let kind = prompt_kind(hints);
+            println!("hints {hints} -> {kind:?}");
+            assert_eq!(kind, prompt::PromptKind::Chat { hints });
+        }
+    }
+
+    #[test]
     fn request_log_line_names_no_game() {
-        for (linked, expected) in [
+        for (linked, hints, expected) in [
             (
                 true,
-                "Request 3: provider claude, screenshot requested: yes, linked target: yes, turns: 2, identity: library",
+                true,
+                "Request 3: provider claude, screenshot requested: yes, linked target: yes, turns: 2, identity: library, hints: yes",
             ),
             (
                 false,
-                "Request 3: provider claude, screenshot requested: yes, linked target: no, turns: 2, identity: none",
+                false,
+                "Request 3: provider claude, screenshot requested: yes, linked target: no, turns: 2, identity: none, hints: no",
             ),
         ] {
             let ctx = request_context(Some(&target(linked)));
-            let line = request_log_line(3, Provider::Claude, true, 2, &ctx);
+            let line = request_log_line(3, Provider::Claude, true, 2, &ctx, hints);
             println!("{line}");
             assert_eq!(line, expected);
             assert!(!line.contains("Real Name"));
@@ -901,5 +903,24 @@ mod tests {
         println!("scanned {files} files, found {count} occurrence(s) of {needle}");
         assert!(files > 0, "the source scan found no files");
         assert_eq!(count, 0, "capture only through capture_live_window_png");
+    }
+
+    #[test]
+    fn answer_errors_stay_out_of_answer_text() {
+        // The page once appended an error event's message, or an ask_sage
+        // rejection, to the answer text itself, where it would be formatted
+        // and copied as if the model had written it.
+        let needles = [
+            concat!("content}", "\\n\\n[error]"),
+            concat!("content = `", "[error]"),
+        ];
+        let scan = crate::util::count_in_frontend(&needles);
+        println!("{} files scanned", scan.files.len());
+        for (needle, hits) in needles.iter().zip(&scan.hits) {
+            println!("{needle}: {hits:?}");
+        }
+        for (needle, hits) in needles.iter().zip(&scan.hits) {
+            assert_eq!(hits.len(), 0, "{needle} writes an error into an answer");
+        }
     }
 }
