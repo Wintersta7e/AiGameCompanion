@@ -265,6 +265,7 @@ fn main() {
             commands::settings::hotkey_status,
             commands::settings::open_url,
             commands::settings::open_config_folder,
+            commands::settings::set_hints_first,
             commands::ai::ask_sage,
             commands::ai::cancel_sage,
             commands::ai::available_providers,

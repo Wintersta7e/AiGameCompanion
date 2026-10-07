@@ -30,6 +30,18 @@ const FORMAT: &str =
      buttons. Use a table only to compare several things. No headings, images, raw HTML or \
      links unless the player asks.";
 
+/// The task of a chat while hints first is on: a nudge for progress questions,
+/// a direct answer for factual ones, and a ladder the player climbs on request.
+const HINT_LINE: &str =
+    "The player has turned on hints first: they want to work things out themselves. When the \
+     question is about progress -- where to go, what to do next, how to solve a puzzle or get \
+     past an encounter -- give only a nudge: one or two sentences that point their attention \
+     at the specific thing that matters, without the solution. Be specific; never fall back on \
+     generic advice like \"explore the area\". When they ask for another hint, go one step \
+     further, still short of the full solution. When they ask for the full answer, give it. \
+     Answer factual questions -- controls, stats, item effects, enemy weaknesses, what \
+     something on screen means -- directly.";
+
 /// The system prompt of a screen translation.
 pub(crate) const TRANSLATE_SYSTEM: &str =
     "You are a screen translator for a gamer. Read the foreign text in the image and translate it \
@@ -44,14 +56,15 @@ pub(crate) const TRANSLATE_REQUEST: &str =
 /// Which system prompt a request needs.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum PromptKind {
-    /// A chat question.
-    Chat,
+    /// A chat question; `hints` adds the hint line as its task.
+    Chat { hints: bool },
 }
 
 /// The system prompt for `kind`: its slots in order, joined by a blank line.
 pub(crate) fn assemble(kind: PromptKind) -> String {
     let slots: &[&str] = match kind {
-        PromptKind::Chat => &[PERSONA, FORMAT],
+        PromptKind::Chat { hints: true } => &[PERSONA, FORMAT, HINT_LINE],
+        PromptKind::Chat { hints: false } => &[PERSONA, FORMAT],
     };
     slots.join("\n\n")
 }
@@ -61,37 +74,50 @@ mod tests {
     use super::*;
 
     /// Every text constant above, by name.
-    const TEXTS: [(&str, &str); 4] = [
+    const TEXTS: [(&str, &str); 5] = [
         ("PERSONA", PERSONA),
         ("FORMAT", FORMAT),
+        ("HINT_LINE", HINT_LINE),
         ("TRANSLATE_SYSTEM", TRANSLATE_SYSTEM),
         ("TRANSLATE_REQUEST", TRANSLATE_REQUEST),
     ];
 
     /// Every system prompt a chat request can send, built as `run()` builds it.
     fn every_prompt() -> Vec<(&'static str, String)> {
-        vec![("chat", assemble(PromptKind::Chat))]
+        [("chat, hints on", true), ("chat, hints off", false)]
+            .into_iter()
+            .map(|(kind, hints)| (kind, assemble(super::super::prompt_kind(hints))))
+            .collect()
     }
 
     #[test]
     fn slots_in_order() {
-        let prompt = assemble(PromptKind::Chat);
-        println!("{prompt}");
-        assert_eq!(prompt, format!("{PERSONA}\n\n{FORMAT}"));
-        let offsets: Vec<usize> = [PERSONA, FORMAT]
-            .iter()
-            .map(|slot| prompt.find(slot).unwrap())
-            .collect();
-        println!("slot offsets: {offsets:?}");
-        assert!(
-            offsets.windows(2).all(|pair| pair[0] < pair[1]),
-            "slots out of order: {offsets:?}"
-        );
+        for (hints, slots) in [
+            (true, [PERSONA, FORMAT, HINT_LINE].as_slice()),
+            (false, [PERSONA, FORMAT].as_slice()),
+        ] {
+            let prompt = assemble(PromptKind::Chat { hints });
+            println!("hints {hints}:\n{prompt}");
+            assert_eq!(prompt, slots.join("\n\n"), "hints {hints}");
+            let offsets: Vec<usize> = slots
+                .iter()
+                .map(|slot| prompt.find(slot).unwrap())
+                .collect();
+            println!("slot offsets: {offsets:?}");
+            assert!(
+                offsets.windows(2).all(|pair| pair[0] < pair[1]),
+                "slots out of order: {offsets:?}"
+            );
+        }
     }
 
     #[test]
     fn budget_and_ascii() {
-        for (name, text, cap) in [("PERSONA", PERSONA, 1_280), ("FORMAT", FORMAT, 512)] {
+        for (name, text, cap) in [
+            ("PERSONA", PERSONA, 1_280),
+            ("FORMAT", FORMAT, 512),
+            ("HINT_LINE", HINT_LINE, 1_280),
+        ] {
             println!("{name}: {} bytes, cap {cap}", text.len());
             assert!(text.len() <= cap, "{name} is over its cap");
             assert!(text.is_ascii(), "{name} is not ASCII");
@@ -110,7 +136,9 @@ mod tests {
         // The texts as written down: a changed byte shows here first.
         assert_eq!(PERSONA.len(), 1_052);
         assert_eq!(FORMAT.len(), 280);
-        assert_eq!(assemble(PromptKind::Chat).len(), 1_334);
+        assert_eq!(HINT_LINE.len(), 646);
+        assert_eq!(assemble(PromptKind::Chat { hints: false }).len(), 1_334);
+        assert_eq!(assemble(PromptKind::Chat { hints: true }).len(), 1_982);
     }
 
     #[test]

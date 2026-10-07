@@ -57,6 +57,10 @@ pub(crate) struct Game {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "each flag is a separate user setting, stored under its own key in the state file"
+)]
 pub(crate) struct LauncherSettings {
     pub scan_on_startup: bool,
     pub minimize_to_tray: bool,
@@ -66,6 +70,9 @@ pub(crate) struct LauncherSettings {
     pub active_provider: String,
     /// Gemini model chosen in Settings; empty = the default model.
     pub gemini_model: String,
+    /// Answers start as hints; written only by `set_hints_first`. On by
+    /// default, also for a file saved before the field existed.
+    pub hints_first: bool,
 }
 
 impl Default for LauncherSettings {
@@ -76,6 +83,7 @@ impl Default for LauncherSettings {
             launch_on_startup: false,
             active_provider: String::new(),
             gemini_model: String::new(),
+            hints_first: true,
         }
     }
 }
@@ -304,5 +312,52 @@ mod tests {
         let saved: LauncherSettings = serde_json::from_str(r#"{"active_provider":"gemini"}"#)
             .expect("settings with a provider load");
         assert_eq!(saved.active_provider, "gemini", "a stored choice is kept");
+    }
+
+    #[test]
+    fn hints_first_defaults_on_and_round_trips() {
+        assert!(
+            LauncherSettings::default().hints_first,
+            "hints first starts on"
+        );
+        let upgraded: LauncherSettings = serde_json::from_str(r#"{"scan_on_startup":false}"#)
+            .expect("settings saved before the field load");
+        println!(
+            "a file without the field loads hints_first {}",
+            upgraded.hints_first
+        );
+        assert!(
+            upgraded.hints_first,
+            "an upgrade starts with hints first on"
+        );
+        let off = LauncherSettings {
+            hints_first: false,
+            ..LauncherSettings::default()
+        };
+        let value = serde_json::to_value(&off).expect("settings serialise");
+        assert_eq!(value["hints_first"], false);
+        let reloaded: LauncherSettings = serde_json::from_value(value).expect("settings load");
+        assert!(!reloaded.hints_first, "off survives a save and a load");
+    }
+
+    /// The overlay shows hints first before it has read the setting; that
+    /// first value must be the one a new install stores.
+    #[test]
+    fn overlay_hints_default_matches_rust() {
+        let source = include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../src/lib/components/Overlay.svelte"
+        ));
+        let literal = source
+            .split_once("let hintsFirst = $state(")
+            .and_then(|(_, rest)| rest.split_once(')'))
+            .map(|(value, _)| value);
+        let rust = LauncherSettings::default().hints_first.to_string();
+        println!("Overlay.svelte: {literal:?}, Rust default: {rust}");
+        assert_eq!(
+            literal,
+            Some(rust.as_str()),
+            "the overlay's initial hintsFirst differs from the Rust default"
+        );
     }
 }

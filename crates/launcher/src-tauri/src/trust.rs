@@ -124,6 +124,7 @@ mod tests {
         "hide_overlay",
         "link_game",
         "open_url",
+        "set_hints_first",
     ];
     /// Core permissions of the main window.
     const MAIN_CORE: &[&str] = &[

@@ -15,6 +15,7 @@
     "allow-translate-screen",
     "allow-hide-overlay",
     "allow-link-game",
-    "allow-open-url"
+    "allow-open-url",
+    "allow-set-hints-first"
   ]
 }

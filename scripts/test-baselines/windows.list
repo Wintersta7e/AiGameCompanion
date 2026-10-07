@@ -63,6 +63,7 @@ ai::tests::identity_block_is_exact_and_fenced run
 ai::tests::identity_goes_before_the_latest_question run
 ai::tests::identity_log_values run
 ai::tests::identity_never_in_system_prompt_or_argv run
+ai::tests::prompt_kind_selects_by_flags run
 ai::tests::request_log_line_names_no_game run
 ai::tests::unlinked_target_contributes_nothing run
 commands::games::tests::complete_scan_carries_playtime_across run
@@ -72,14 +73,18 @@ commands::games::tests::empty_complete_scan_clears_the_library run
 commands::games::tests::empty_partial_scan_keeps_the_whole_library run
 commands::games::tests::partial_scan_keeps_games_it_did_not_reach run
 commands::settings::tests::checked_link_table run
+commands::settings::tests::hints_first_setter_refuses_read_only_first run
 commands::settings::tests::merge_settings_owners run
 commands::settings::tests::no_config_button_command run
 commands::settings::tests::no_error_sends_users_to_config_toml run
+commands::settings::tests::save_keeps_hints_first run
 commands::settings::tests::save_keeps_the_stored_provider run
 models::tests::game_holds_no_per_game_value run
 models::tests::gemini_model_defaults_and_round_trips run
+models::tests::hints_first_defaults_on_and_round_trips run
 models::tests::launcher_settings_type_mirrors_rust run
 models::tests::new_install_has_no_saved_provider run
+models::tests::overlay_hints_default_matches_rust run
 npm_lock_policy::committed_lock_meets_the_policy run
 npm_lock_policy::planted_locks_are_judged_by_each_rule run
 overlay::tests::classify_cases run

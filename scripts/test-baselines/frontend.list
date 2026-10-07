@@ -14,6 +14,7 @@ formatPlayTime: under an hour shows minutes run
 isActionableLink: only a complete https link opens run
 renderAnswer: plain past the size cap, markdown below it run
 renderMode: long, slow or failed renders stay plain run
+showHintChips: shown only after a finished hinted answer run
 toNodes: an inline br tag is a line break run
 toNodes: an unclosed fence is a code block run
 toNodes: an unknown token type becomes its raw text run

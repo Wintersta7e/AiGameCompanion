@@ -3,6 +3,7 @@
   import { invoke, Channel } from '@tauri-apps/api/core';
   import { listen } from '@tauri-apps/api/event';
   import { hashHue } from '../utils/accent';
+  import { ANOTHER_HINT_TURN, FULL_ANSWER_TURN, showHintChips } from '../utils/hints';
   import { PROVIDERS, modelName, type ModelNames, type Provider } from '../stores/companion.svelte';
   import type { LauncherSettings } from '../settings';
   import Markdown from './Markdown.svelte';
@@ -41,6 +42,8 @@
     plain?: boolean;
     // Why the answer failed; shown on its own line, never part of `content`.
     error?: string;
+    // Asked with hints first on; the follow-up chips show only after such an answer.
+    hinted?: boolean;
   }
 
   const PROVIDER_ORDER: Provider[] = ['gemini', 'claude', 'openai'];
@@ -61,6 +64,9 @@
   let dropdownOpen = $state(false);
   let tab = $state<'chat' | 'translate'>('chat');
   let attach = $state(false);
+  // Hints first: answers to progress questions start as a nudge. Each send
+  // carries the value shown here, whatever the saved setting says.
+  let hintsFirst = $state(true);
   let prompt = $state('');
   let asking = $state(false);
   let messages = $state<Msg[]>([]);
@@ -95,6 +101,7 @@
   // same gate, this only keeps the controls honest.
   const canAttach = $derived(Boolean(game?.linked));
   const canSend = $derived(Boolean(game?.linked) && availability[provider]);
+  const hintChips = $derived(showHintChips(messages, hintsFirst, asking, canSend));
   // The exe's file name, for the link control ("Link foo.exe ...").
   const exeFile = $derived(game?.exe.split(/[\\/]/u).pop() ?? '');
   const captureHint = $derived.by(() => {
@@ -109,15 +116,17 @@
   // -- scrolling up to re-read history must not be yanked back down. The check
   // has to happen before the DOM grows, hence $effect.pre.
   $effect.pre(() => {
-    // Re-runs on every appended chunk, on every new message and when an answer
+    // Re-runs on every appended chunk, on every new message, when an answer
     // fails (its error line sits below the text) or finishes (the status line
-    // under the input can then wrap, shrinking the list).
+    // under the input can then wrap, shrinking the list) and when the hint
+    // chips show.
     const last = messages.at(-1);
     const growth =
       messages.length +
       (last?.content.length ?? 0) +
       (last?.error?.length ?? 0) +
-      (last?.streaming ? 1 : 0);
+      (last?.streaming ? 1 : 0) +
+      (hintChips ? 1 : 0);
     const el = msglistEl;
     if (!el || growth === 0) return;
     if (el.scrollHeight - el.scrollTop - el.clientHeight > 50) return;
@@ -148,6 +157,18 @@
       await invoke('set_active_provider', { provider: p });
     } catch {
       /* selection still applies for this session */
+    }
+  }
+
+  // The switch applies at once and to every later send, even when the backend
+  // refuses to remember it (a read-only state file), like a provider pick.
+  async function toggleHints() {
+    const on = !hintsFirst;
+    hintsFirst = on;
+    try {
+      await invoke('set_hints_first', { on });
+    } catch {
+      /* the choice still applies for this session */
     }
   }
 
@@ -218,7 +239,13 @@
     messages = [
       ...messages,
       { role: 'user', content: question, screenshot: withShot },
-      { role: 'assistant', content: '', model: modelLabel(provider), streaming: true },
+      {
+        role: 'assistant',
+        content: '',
+        model: modelLabel(provider),
+        streaming: true,
+        hinted: hintsFirst,
+      },
     ];
     const idx = messages.length - 1;
     streamIndex = idx;
@@ -251,6 +278,7 @@
         provider,
         messages: outgoing,
         attachScreenshot: withShot,
+        hints: hintsFirst,
         channel,
       });
     } catch (err) {
@@ -385,12 +413,25 @@
     await refreshProviders();
   }
 
+  // Read once, at mount. Re-reading it on a provider change would put back a
+  // value the backend refused to store, and the panel would then show one
+  // value while the last send used another.
+  async function loadHintsFirst() {
+    try {
+      const settings = await invoke<LauncherSettings>('get_settings');
+      if (typeof settings.hints_first === 'boolean') hintsFirst = settings.hints_first;
+    } catch {
+      /* the default applies */
+    }
+  }
+
   onMount(() => {
     // Only the overlay window mounts this; keep its surface transparent.
     document.documentElement.style.background = 'transparent';
     document.body.style.background = 'transparent';
 
     void loadSavedProvider();
+    void loadHintsFirst();
 
     const listeners = [
       listen<GameInfo>('overlay-status', (event) => {
@@ -677,6 +718,16 @@
                 </div>
               {/if}
             {/each}
+            {#if hintChips}
+              <div class="chips">
+                <button class="chip" onclick={() => send(ANOTHER_HINT_TURN)} type="button"
+                  >Another hint</button
+                >
+                <button class="chip" onclick={() => send(FULL_ANSWER_TURN)} type="button"
+                  >Full answer</button
+                >
+              </div>
+            {/if}
           {/if}
         </div>
 
@@ -705,6 +756,29 @@
                   cy="8.5"
                   r="1.5"
                 /><path d="M21 15l-5-5L5 21" /></svg
+              >
+            </button>
+            <button
+              class="attach-btn hints-btn"
+              class:off={!hintsFirst}
+              aria-label="Hints first"
+              aria-pressed={hintsFirst}
+              onclick={toggleHints}
+              title="Hints first"
+              type="button"
+            >
+              <svg
+                fill="none"
+                height="18"
+                stroke="currentColor"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+                stroke-width="1.7"
+                viewBox="0 0 24 24"
+                width="18"
+                ><path
+                  d="M9 18h6M10 21h4M12 3a6 6 0 0 0-3.6 10.8c.6.5 1 1.2 1.1 2V16h5v-.2c.1-.8.5-1.5 1.1-2A6 6 0 0 0 12 3z"
+                /></svg
               >
             </button>
             <input

@@ -588,7 +588,7 @@ mod tests {
 
     #[test]
     fn system_prompt_reaches_gemini_unchanged() {
-        let prompt = assemble(PromptKind::Chat);
+        let prompt = assemble(PromptKind::Chat { hints: true });
         println!("system prompt: {} bytes", prompt.len());
         let request = build_request(&[turn("user", "Where now?")], &prompt, None);
         let parts = request

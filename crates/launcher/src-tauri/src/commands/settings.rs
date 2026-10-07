@@ -99,6 +99,8 @@ fn merge_settings(stored: &LauncherSettings, incoming: LauncherSettings) -> Laun
         // Written only by `set_active_provider`.
         active_provider: _,
         gemini_model,
+        // Written only by `set_hints_first`.
+        hints_first: _,
     } = incoming;
     LauncherSettings {
         scan_on_startup,
@@ -107,6 +109,21 @@ fn merge_settings(stored: &LauncherSettings, incoming: LauncherSettings) -> Laun
         gemini_model: gemini_model.trim().to_owned(),
         ..stored.clone()
     }
+}
+
+/// Remember the overlay's hints-first switch. Refused in read-only mode before
+/// anything changes; the overlay then keeps the choice for this session only.
+#[tauri::command]
+#[expect(
+    clippy::needless_pass_by_value,
+    reason = "a Tauri command receives its arguments by value"
+)]
+pub(crate) fn set_hints_first(on: bool, state: State<'_, AppState>) -> Result<(), String> {
+    store_hints_first(&state, on)
+}
+
+fn store_hints_first(state: &AppState, on: bool) -> Result<(), String> {
+    state.edit_settings(|settings| settings.hints_first = on)
 }
 
 /// The longest link that is opened, in bytes.
@@ -295,6 +312,7 @@ mod tests {
             launch_on_startup: true,
             active_provider: "gemini".to_owned(),
             gemini_model: " gemini-3.8-flash ".to_owned(),
+            hints_first: true,
         };
         let merged = merge_settings(&stored, incoming);
         assert_eq!(merged.active_provider, "claude");
@@ -302,6 +320,80 @@ mod tests {
         assert!(!merged.scan_on_startup);
         assert!(!merged.minimize_to_tray);
         assert!(merged.launch_on_startup);
+    }
+
+    #[test]
+    fn save_keeps_hints_first() {
+        for stored in [false, true] {
+            let merged = merge_settings(
+                &LauncherSettings {
+                    hints_first: stored,
+                    ..LauncherSettings::default()
+                },
+                LauncherSettings {
+                    hints_first: !stored,
+                    ..LauncherSettings::default()
+                },
+            );
+            println!(
+                "stored {stored}, Save sends {}: {} kept",
+                !stored, merged.hints_first
+            );
+            assert_eq!(merged.hints_first, stored, "Save changed hints first");
+        }
+    }
+
+    /// A state file path of this test's own: process id plus label, with
+    /// nothing left there from an earlier run.
+    fn temp_state_path(label: &str) -> std::path::PathBuf {
+        let path =
+            std::env::temp_dir().join(format!("aigc_settings_{}_{label}.json", std::process::id()));
+        remove(&path);
+        path
+    }
+
+    /// Remove the state file (or the directory standing in for it) and its
+    /// temp file, where they exist.
+    fn remove(path: &std::path::Path) {
+        for path in [path.to_path_buf(), path.with_extension("json.tmp")] {
+            if path.is_dir() {
+                std::fs::remove_dir(&path).unwrap();
+            } else if path.exists() {
+                std::fs::remove_file(&path).unwrap();
+            }
+        }
+    }
+
+    #[test]
+    fn hints_first_setter_refuses_read_only_first() {
+        // A directory where the file should be cannot be read: read-only.
+        let path = temp_state_path("hints_read_only");
+        std::fs::create_dir(&path).unwrap();
+        let state = crate::state::AppState::load(path.clone());
+        let refused = super::store_hints_first(&state, false);
+        println!("read-only: {refused:?}");
+        assert_eq!(refused, Err(state.load_error().unwrap().to_owned()));
+        assert!(
+            state.launcher.lock().settings.hints_first,
+            "a refused write changed memory"
+        );
+        assert!(!path.with_extension("json.tmp").exists());
+        remove(&path);
+
+        let path = temp_state_path("hints_writable");
+        let state = crate::state::AppState::load(path.clone());
+        assert_eq!(super::store_hints_first(&state, false), Ok(()));
+        assert!(!state.launcher.lock().settings.hints_first);
+        let file = std::fs::read_to_string(&path).unwrap();
+        let stored = file.contains("\"hints_first\": false");
+        println!("writable: the file holds \"hints_first\": false: {stored}");
+        assert!(stored, "{file}");
+        assert_eq!(
+            super::store_hints_first(&state, false),
+            Ok(()),
+            "a repeated write is refused"
+        );
+        remove(&path);
     }
 
     /// Save takes the modal's fields from what it sends and keeps every other
@@ -315,6 +407,7 @@ mod tests {
             launch_on_startup: false,
             active_provider: "claude".to_owned(),
             gemini_model: "gemini-y".to_owned(),
+            hints_first: false,
         };
         let incoming = LauncherSettings {
             scan_on_startup: false,
@@ -322,6 +415,7 @@ mod tests {
             launch_on_startup: true,
             active_provider: "gemini".to_owned(),
             gemini_model: " gemini-x ".to_owned(),
+            hints_first: true,
         };
         // (field, whether the modal writes it); every other writer is a setter.
         let owners = [
@@ -330,6 +424,7 @@ mod tests {
             ("launch_on_startup", true),
             ("gemini_model", true),
             ("active_provider", false),
+            ("hints_first", false),
         ];
         let stored_value = serde_json::to_value(&stored).unwrap();
         let mut incoming_value = serde_json::to_value(&incoming).unwrap();

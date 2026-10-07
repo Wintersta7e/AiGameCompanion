@@ -1058,7 +1058,8 @@ mod tests {
 
     #[test]
     fn system_prompt_reaches_the_clis_unchanged() {
-        let prompt = crate::ai::prompt::assemble(crate::ai::prompt::PromptKind::Chat);
+        let prompt =
+            crate::ai::prompt::assemble(crate::ai::prompt::PromptKind::Chat { hints: true });
         println!("system prompt: {} bytes", prompt.len());
         let codex = build_codex_input(&prompt, &[msg("user", "Where now?")]);
         assert!(
