@@ -23,7 +23,7 @@
 
   let { open = $bindable(false) }: { open: boolean } = $props();
 
-  const VERSION = 'v2.0.2'; // keep in sync with tauri.conf.json "version"
+  const VERSION = 'v2.1.0'; // keep in sync with tauri.conf.json "version"
   const KEY_URL = 'https://aistudio.google.com/apikey';
   // Gemini models offered by name; anything else is entered as Custom.
   const MODEL_PRESETS = ['gemini-3.6-flash', 'gemini-3.8-flash', 'gemini-3.5-flash-lite'];
