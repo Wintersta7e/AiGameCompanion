@@ -8,6 +8,7 @@
 
 mod cli;
 mod gemini;
+mod prompt;
 
 use base64::Engine as _;
 use parking_lot::Mutex;
@@ -237,8 +238,8 @@ async fn run(app: AppHandle, params: RequestParams, channel: Channel<SageEvent>)
         request_log_line(request_id, provider, attach_screenshot, turns, &ctx)
     );
     let identity = ctx.identity_block.as_deref();
-    let (system_prompt, messages) =
-        payload(PayloadKind::Chat, build_system_prompt(), messages, identity);
+    let system_prompt = prompt::assemble(prompt::PromptKind::Chat);
+    let (system_prompt, messages) = payload(PayloadKind::Chat, system_prompt, messages, identity);
     let capture_target = ctx.capture;
     let cli_cfg = app.state::<AiState>().cli.lock().clone();
     let settings_model = app
@@ -546,23 +547,6 @@ fn request_log_line(
     )
 }
 
-/// The Sage persona prompt: compile-time text only. Nothing about the game or
-/// its window goes here; the identity block travels with the question.
-fn build_system_prompt() -> String {
-    "You are Sage, a sharp and knowledgeable game companion embedded in the player's screen. \
-     Keep answers short -- 2-3 sentences unless the player asks for detail. \
-     Never repeat or rephrase what the player just said. \
-     Never state the obvious (e.g. don't say \"I see you're in a menu\"). \
-     Jump straight to the useful part: what to do, where to go, or how something works. \
-     When you see a screenshot, focus only on what's relevant to the player's question. \
-     If no question is asked with a screenshot, give the single most useful observation."
-        .to_owned()
-}
-
-const TRANSLATE_SYSTEM: &str =
-    "You are a screen translator for a gamer. Read the foreign text in the image and translate it \
-     into natural English. Be concise; do not add commentary.";
-
 /// Check a Gemini model id chosen in Settings before it is saved.
 pub(crate) fn validate_gemini_model(model: &str) -> Result<(), String> {
     gemini::validate_model(model)
@@ -586,13 +570,10 @@ pub(crate) async fn translate_capture(
     let model = gemini::resolve_model(&settings_model, &gemini::file_model());
     let (system, messages) = payload(
         PayloadKind::Translate,
-        TRANSLATE_SYSTEM.to_owned(),
+        prompt::TRANSLATE_SYSTEM.to_owned(),
         vec![ChatMessage {
             role: "user".to_owned(),
-            content: "Translate any non-English text visible in this screenshot into English. \
-                      Output only the translation. If there is no foreign text, reply exactly: \
-                      No foreign text found."
-                .to_owned(),
+            content: prompt::TRANSLATE_REQUEST.to_owned(),
         }],
         None,
     );
@@ -756,13 +737,13 @@ mod tests {
         let question = || vec![message("user", "Where now?")];
         let (prompt, messages) = payload(
             PayloadKind::Chat,
-            build_system_prompt(),
+            prompt::assemble(prompt::PromptKind::Chat),
             question(),
             linked.identity_block.as_deref(),
         );
         let (plain, _) = payload(
             PayloadKind::Chat,
-            build_system_prompt(),
+            prompt::assemble(prompt::PromptKind::Chat),
             question(),
             untargeted.identity_block.as_deref(),
         );

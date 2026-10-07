@@ -32,6 +32,7 @@ ai::cli::tests::shell_escape_preserves_spaces_and_special_chars run
 ai::cli::tests::shell_escape_wraps_in_single_quotes run
 ai::cli::tests::shot_path_names_a_file_in_the_directory run
 ai::cli::tests::sweep_removes_leftover_shots run
+ai::cli::tests::system_prompt_reaches_the_clis_unchanged run
 ai::cli::tests::temp_shot_is_deleted_on_drop run
 ai::cli::tests::temp_shot_never_writes_through_an_existing_file run
 ai::cli::tests::validate_model_name_accepts_typical_ids run
@@ -48,7 +49,12 @@ ai::gemini::tests::no_search_tool_in_sources run
 ai::gemini::tests::rejects_unsafe_model_names run
 ai::gemini::tests::request_carries_no_tools run
 ai::gemini::tests::resolve_model_precedence run
+ai::gemini::tests::system_prompt_reaches_gemini_unchanged run
 ai::gemini::tests::validate_model_messages_name_no_file run
+ai::prompt::tests::budget_and_ascii run
+ai::prompt::tests::instruction_text_lives_only_here run
+ai::prompt::tests::prompt_is_compile_time_text run
+ai::prompt::tests::slots_in_order run
 ai::tests::answer_errors_stay_out_of_answer_text run
 ai::tests::availability_reports_the_models_in_use run
 ai::tests::captures_go_through_the_liveness_check run

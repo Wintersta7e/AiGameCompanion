@@ -1056,6 +1056,36 @@ mod tests {
         assert_eq!(out, "[user]: q1\n[assistant]: a1\n[user]: q2\n");
     }
 
+    #[test]
+    fn system_prompt_reaches_the_clis_unchanged() {
+        let prompt = crate::ai::prompt::assemble(crate::ai::prompt::PromptKind::Chat);
+        println!("system prompt: {} bytes", prompt.len());
+        let codex = build_codex_input(&prompt, &[msg("user", "Where now?")]);
+        assert!(
+            codex.starts_with(&format!("{prompt}\n\n")),
+            "Codex input does not open with the prompt"
+        );
+        let args = claude_args(DEFAULT_CLAUDE_MODEL, &prompt);
+        let flags: Vec<usize> = args
+            .iter()
+            .enumerate()
+            .filter(|(_, arg)| *arg == "--system-prompt")
+            .map(|(at, _)| at)
+            .collect();
+        assert_eq!(
+            flags.len(),
+            1,
+            "--system-prompt given {} times",
+            flags.len()
+        );
+        assert_eq!(args.get(flags[0] + 1), Some(&prompt));
+        let script = claude_wsl_script(DEFAULT_CLAUDE_MODEL, &prompt);
+        assert!(
+            script.contains(&shell_escape(&prompt)),
+            "the WSL script does not carry the quoted prompt"
+        );
+    }
+
     // ---------------- build_claude_input ----------------
 
     #[test]
