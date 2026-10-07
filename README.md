@@ -56,6 +56,8 @@ a working tool you can build and run, not a polished consumer app.
 
 - External transparent overlay window -- topmost, takes focus on demand; toggled
   with **Ctrl+Shift+G**. No injection, any graphics API.
+- The panel opens on the game's monitor, along the right edge of the game, and
+  remembers where you drag or resize it.
 - Multi-provider AI -- Gemini (direct API), Claude & OpenAI (through your own
   `claude` / `codex` CLIs), switchable from an in-panel dropdown that shows only
   available providers and persists your choice.
@@ -73,7 +75,6 @@ a working tool you can build and run, not a polished consumer app.
 **Not done yet / out of scope:**
 
 - Rebindable hotkeys -- the chords are fixed this build (Settings shows them).
-- Positioning the panel over the game's specific monitor.
 - Offline / local-model translation -- translation currently runs through Gemini.
 - Genuine legacy exclusive-fullscreen games -- an external window can't composite
   over those; borderless / FSO windowed is covered.

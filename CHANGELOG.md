@@ -6,6 +6,11 @@ All notable changes to this project are documented here. The format is based on
 
 ## Unreleased
 
+### Added
+
+- **The panel opens on the game's monitor, along the right edge of the game,
+  and remembers where you drag or resize it.**
+
 ### Security
 
 - **The overlay window can use only the commands its own controls need.** Links
@@ -13,6 +18,8 @@ All notable changes to this project are documented here. The format is based on
 
 ### Fixed
 
+- **Closing the panel with Alt+F4 now hands focus back to the game, as the
+  hotkey does.**
 - **Claude errors show the Claude CLI's own message** instead of a generic one.
 - **A game without cover art shows the first letter or number of its name.** A
   name that starts with an emoji showed a broken character instead, and a name
