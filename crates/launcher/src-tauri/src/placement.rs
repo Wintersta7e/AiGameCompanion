@@ -35,6 +35,19 @@ pub(crate) const DEFAULT_WIDTH: f64 = 400.0;
 pub(crate) const MIN_WIDTH: f64 = 320.0;
 pub(crate) const MIN_HEIGHT: f64 = 400.0;
 
+/// How far, in physical px, the panel may end up from where it was put before
+/// it counts as moved by the user: absorbs DPI rounding.
+const MOVE_TOLERANCE_PX: u32 = 2;
+
+/// Whether the panel was dragged or resized: its position or size differs
+/// from where it was put by more than the tolerance.
+pub(crate) const fn user_moved(applied: Rect, now: Rect) -> bool {
+    applied.x.abs_diff(now.x) > MOVE_TOLERANCE_PX
+        || applied.y.abs_diff(now.y) > MOVE_TOLERANCE_PX
+        || applied.w.abs_diff(now.w) > MOVE_TOLERANCE_PX
+        || applied.h.abs_diff(now.h) > MOVE_TOLERANCE_PX
+}
+
 /// A monitor's work area (the monitor minus the taskbar) and its scale factor.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) struct MonitorArea {
@@ -481,6 +494,31 @@ mod tests {
         let n = PLACE_CASES.len();
         println!("checked {n} placement cases");
         assert!(n >= 14, "the table lost cases: {n}");
+        assert!(wrong.is_empty(), "{wrong:#?}");
+    }
+
+    #[test]
+    fn user_moved_tolerance() {
+        let base = rect(100, 100, 400, 800);
+        let mut wrong = Vec::new();
+        let mut n = 0;
+        for field in ["x", "y", "w", "h"] {
+            for (delta, moved) in [(2, false), (-2, false), (3, true), (-3, true)] {
+                let mut now = base;
+                match field {
+                    "x" => now.x += delta,
+                    "y" => now.y += delta,
+                    "w" => now.w = now.w.saturating_add_signed(delta),
+                    _ => now.h = now.h.saturating_add_signed(delta),
+                }
+                n += 1;
+                if user_moved(base, now) != moved {
+                    wrong.push(format!("{field} {delta:+}: moved should be {moved}"));
+                }
+            }
+        }
+        println!("checked {n} tolerance cases");
+        assert_eq!(n, 16, "the table lost cases");
         assert!(wrong.is_empty(), "{wrong:#?}");
     }
 

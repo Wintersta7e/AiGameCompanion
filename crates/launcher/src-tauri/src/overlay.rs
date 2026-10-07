@@ -11,7 +11,7 @@ use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager};
 
 use crate::models::{Game, GameSource};
-use crate::placement::{self, MonitorArea, Placed, Rect};
+use crate::placement::{self, MonitorArea, OverlayPlacement, Placed, Rect};
 use crate::state::AppState;
 
 /// What a linked request may tell a provider about the game, besides its name.
@@ -59,6 +59,16 @@ pub(crate) struct OverlayState {
     pub(crate) game: parking_lot::Mutex<Option<GameInfo>>,
     /// (pid, exe path) of every window the user linked this launcher session.
     pub(crate) user_linked: parking_lot::Mutex<HashSet<(u32, String)>>,
+    /// Where the current show placed the panel; taken by the next hide. Never
+    /// held together with the launcher state's lock.
+    shown: parking_lot::Mutex<Option<Shown>>,
+}
+
+/// The rect a show placed the panel against, and the rect it read back.
+#[derive(Clone, Copy, Debug)]
+struct Shown {
+    reference: Rect,
+    applied: Rect,
 }
 
 /// Toggle the overlay window hidden <-> interactive. On hide, hand focus back to
@@ -92,14 +102,61 @@ pub(crate) fn hide_overlay(app: AppHandle) {
 /// Hide the overlay and hand focus back to the stored target. Every hide of
 /// the overlay window -- the hotkey, its close control, Alt+F4 -- goes through
 /// here.
+///
+/// A panel the user dragged or resized since the show is remembered; an
+/// unmoved one writes nothing, so a default is never frozen into the record.
 pub(crate) fn hide(app: &AppHandle) {
     let Some(overlay) = app.get_webview_window("overlay") else {
         return;
     };
+    let shown = app
+        .try_state::<OverlayState>()
+        .and_then(|state| state.shown.lock().take());
+    let now = read_rect(&overlay);
+    let scale = overlay.scale_factor().ok();
     crate::util::log_if_err("hide overlay", overlay.hide());
     if let Some(game) = live_game(app) {
         focus_window(game.hwnd);
     }
+    if let (Some(shown), Some(now), Some(scale)) = (shown, now, scale) {
+        if placement::user_moved(shown.applied, now) {
+            remember_placement(
+                app,
+                OverlayPlacement {
+                    panel: now,
+                    reference: shown.reference,
+                    scale,
+                },
+            );
+        }
+    }
+}
+
+/// Record a moved panel and save it off the calling thread: `save()` syncs
+/// the file to disk, and a hide runs on the main thread.
+fn remember_placement(app: &AppHandle, record: OverlayPlacement) {
+    let recorded = app
+        .try_state::<AppState>()
+        .is_some_and(|state| record_placement(&state, record));
+    if !recorded {
+        return;
+    }
+    let handle = app.clone();
+    std::thread::spawn(move || {
+        if let Some(Err(err)) = handle.try_state::<AppState>().map(|state| state.save()) {
+            tracing::debug!("Saving the overlay position failed: {err}");
+        }
+    });
+}
+
+/// The one writer of the remembered overlay position. Refuses, changing
+/// nothing, when the state is read-only this run; the caller saves on `true`.
+fn record_placement(state: &AppState, record: OverlayPlacement) -> bool {
+    if state.load_error().is_some() {
+        return false;
+    }
+    state.launcher.lock().overlay_placement = Some(record);
+    true
 }
 
 /// Show the overlay (if hidden) and fire an action event to the overlay UI, e.g.
@@ -182,27 +239,30 @@ fn show_placed(app: &AppHandle, overlay: &tauri::WebviewWindow, game: Option<&Ga
     crate::util::log_if_err("show overlay", overlay.show());
     crate::util::log_if_err("focus overlay", overlay.set_focus());
     raise_topmost(overlay);
-    let Some((_, scale, placed)) = target else {
-        return;
-    };
-    let mut applied = read_rect(overlay);
-    if applied != Some(placed.rect) {
-        tracing::debug!(
-            "Overlay read back at {applied:?}, not {:?}; placing it once more",
-            placed.rect
+    let shown = target.map(|(reference, scale, placed)| {
+        let mut applied = read_rect(overlay);
+        if applied != Some(placed.rect) {
+            tracing::debug!(
+                "Overlay read back at {applied:?}, not {:?}; placing it once more",
+                placed.rect
+            );
+            apply_rect(overlay, placed.rect);
+            applied = read_rect(overlay);
+        }
+        let applied = applied.unwrap_or(placed.rect);
+        tracing::info!(
+            "Overlay placed {},{} {}x{} ({}) scale {scale}",
+            applied.x,
+            applied.y,
+            applied.w,
+            applied.h,
+            placed.from.label()
         );
-        apply_rect(overlay, placed.rect);
-        applied = read_rect(overlay);
+        Shown { reference, applied }
+    });
+    if let Some(state) = app.try_state::<OverlayState>() {
+        *state.shown.lock() = shown;
     }
-    let applied = applied.unwrap_or(placed.rect);
-    tracing::info!(
-        "Overlay placed {},{} {}x{} ({}) scale {scale}",
-        applied.x,
-        applied.y,
-        applied.w,
-        applied.h,
-        placed.from.label()
-    );
 }
 
 fn apply_rect(overlay: &tauri::WebviewWindow, rect: Rect) {
@@ -1404,6 +1464,73 @@ mod tests {
             min_size,
             [("main.rs".into(), 1)],
             "one minimum size, set at setup in main.rs"
+        );
+    }
+
+    #[test]
+    fn record_placement_refuses_read_only() {
+        let record = OverlayPlacement {
+            panel: Rect {
+                x: 1500,
+                y: 20,
+                w: 420,
+                h: 900,
+            },
+            reference: Rect {
+                x: 0,
+                y: 0,
+                w: 1920,
+                h: 1040,
+            },
+            scale: 1.25,
+        };
+        let path = |label: &str| {
+            std::env::temp_dir().join(format!(
+                "aigc_overlay_position_{}_{label}.json",
+                std::process::id()
+            ))
+        };
+
+        // A directory where the state file should be: read-only this run.
+        let read_only = path("read_only");
+        std::fs::create_dir_all(&read_only).unwrap();
+        let state = AppState::load(read_only.clone());
+        let recorded = record_placement(&state, record);
+        let held = state.launcher.lock().overlay_placement;
+        println!("read-only: recorded {recorded}, holds {held:?}");
+        std::fs::remove_dir(&read_only).unwrap();
+        assert!(!recorded, "a read-only state refuses the position");
+        assert_eq!(held, None, "a refused position changed memory");
+
+        let absent = path("writable");
+        if absent.exists() {
+            std::fs::remove_file(&absent).unwrap();
+        }
+        let state = AppState::load(absent.clone());
+        let recorded = record_placement(&state, record);
+        let held = state.launcher.lock().overlay_placement;
+        println!("writable: recorded {recorded}, holds {held:?}");
+        assert!(recorded, "a writable state takes the position");
+        assert_eq!(held, Some(record));
+        assert!(!absent.exists(), "recording does not save");
+    }
+
+    /// The remembered position has one writer, in overlay.rs.
+    #[test]
+    fn overlay_position_has_one_writer() {
+        let needle = concat!("overlay_placement", " =");
+        let counts = crate::util::count_in_sources_by_file(needle);
+        let hits: Vec<(std::path::PathBuf, usize)> = counts
+            .iter()
+            .filter(|(_, count)| *count > 0)
+            .cloned()
+            .collect();
+        println!("{} files scanned; {needle}: {hits:?}", counts.len());
+        assert!(!counts.is_empty(), "the source scan found no files");
+        assert_eq!(
+            hits,
+            [("overlay.rs".into(), 1)],
+            "the overlay position is written once, by record_placement"
         );
     }
 
