@@ -168,6 +168,17 @@ fn main() {
                 }
             }
 
+            // The smallest panel that keeps its tab bar, input and Send usable.
+            if let Some(overlay) = app.get_webview_window("overlay") {
+                util::log_if_err(
+                    "set overlay minimum size",
+                    overlay.set_min_size(Some(tauri::LogicalSize::new(
+                        placement::MIN_WIDTH,
+                        placement::MIN_HEIGHT,
+                    ))),
+                );
+            }
+
             // Register the overlay hotkeys. A failure is logged and recorded, so
             // the main window can say which chord is unavailable.
             let hotkey_status = app.state::<HotkeyStatus>();

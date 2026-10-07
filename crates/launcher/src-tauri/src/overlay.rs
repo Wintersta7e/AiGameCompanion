@@ -181,6 +181,7 @@ fn show_placed(app: &AppHandle, overlay: &tauri::WebviewWindow, game: Option<&Ga
     }
     crate::util::log_if_err("show overlay", overlay.show());
     crate::util::log_if_err("focus overlay", overlay.set_focus());
+    raise_topmost(overlay);
     let Some((_, scale, placed)) = target else {
         return;
     };
@@ -515,6 +516,22 @@ pub(crate) const fn client_rect(_hwnd: i64) -> Option<Rect> {
     None
 }
 
+/// Put the overlay back on top of the topmost windows without activating it,
+/// once per show: a focus request Windows refused leaves a topmost game above
+/// the panel. Setting always-on-top again cannot do this, since re-setting a
+/// set flag changes nothing.
+#[cfg(windows)]
+fn raise_topmost(overlay: &tauri::WebviewWindow) {
+    let raised = overlay
+        .hwnd()
+        .map_err(|err| err.to_string())
+        .and_then(|hwnd| imp::raise_topmost(hwnd.0 as i64).map_err(|err| err.to_string()));
+    crate::util::log_if_err("raise overlay", raised);
+}
+
+#[cfg(not(windows))]
+const fn raise_topmost(_overlay: &tauri::WebviewWindow) {}
+
 #[cfg(windows)]
 fn focus_window(hwnd: i64) {
     imp::focus_window(hwnd);
@@ -621,8 +638,8 @@ mod imp {
     };
     use windows::Win32::UI::WindowsAndMessaging::{
         EnumChildWindows, GetClassNameW, GetForegroundWindow, GetWindowInfo, GetWindowTextW,
-        GetWindowThreadProcessId, IsIconic, IsWindow, SetForegroundWindow, ShowWindow, SW_RESTORE,
-        WINDOWINFO,
+        GetWindowThreadProcessId, IsIconic, IsWindow, SetForegroundWindow, SetWindowPos,
+        ShowWindow, HWND_TOPMOST, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SW_RESTORE, WINDOWINFO,
     };
 
     pub(super) fn foreground_game(self_pid: u32) -> Option<GameInfo> {
@@ -795,6 +812,24 @@ mod imp {
             i64::from(client.right),
             i64::from(client.bottom),
         )
+    }
+
+    /// Move `hwnd` to the top of the topmost band, keeping its position and
+    /// size and without activating it.
+    pub(super) fn raise_topmost(hwnd: i64) -> windows::core::Result<()> {
+        // SAFETY: SetWindowPos takes both handles by value and reports a stale
+        // one through its result; no pointer is passed.
+        unsafe {
+            SetWindowPos(
+                to_hwnd(hwnd),
+                Some(HWND_TOPMOST),
+                0,
+                0,
+                0,
+                0,
+                SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE,
+            )
+        }
     }
 
     /// Whether `hwnd` is still a live window owned by `pid`, or the Store app
@@ -1329,6 +1364,46 @@ mod tests {
             hits,
             [("main.rs".into(), 1), ("overlay.rs".into(), 1)],
             "one hide in overlay::hide, one for the main window"
+        );
+    }
+
+    /// The panel is raised in one place, without taking activation; setting
+    /// always-on-top again would be a no-op, so it never stands in for that.
+    /// The minimum size is set once, at setup.
+    #[test]
+    fn overlay_is_raised_once_without_activating() {
+        let in_file = |needle: &str| -> (usize, Vec<(std::path::PathBuf, usize)>) {
+            let counts = crate::util::count_in_sources_by_file(needle);
+            assert!(!counts.is_empty(), "the source scan found no files");
+            let hits: Vec<(std::path::PathBuf, usize)> = counts
+                .iter()
+                .filter(|(_, count)| *count > 0)
+                .cloned()
+                .collect();
+            println!("{} files scanned; {needle}: {hits:?}", counts.len());
+            (counts.len(), hits)
+        };
+        let (files, raise) = in_file(concat!("SetWindow", "Pos("));
+        assert!(files > 0, "the source scan found no files");
+        assert_eq!(
+            raise,
+            [("overlay.rs".into(), 1)],
+            "one raise, in overlay.rs"
+        );
+        let (_, no_activate) = in_file(concat!("SWP_NO", "ACTIVATE"));
+        assert!(
+            no_activate.iter().any(|(file, count)| file.as_path()
+                == std::path::Path::new("overlay.rs")
+                && *count >= 1),
+            "the raise does not take activation: {no_activate:?}"
+        );
+        let (_, on_top) = in_file(concat!("set_always", "_on_top("));
+        assert!(on_top.is_empty(), "always-on-top is set again: {on_top:?}");
+        let (_, min_size) = in_file(concat!("set_min", "_size("));
+        assert_eq!(
+            min_size,
+            [("main.rs".into(), 1)],
+            "one minimum size, set at setup in main.rs"
         );
     }
 

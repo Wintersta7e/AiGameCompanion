@@ -85,6 +85,7 @@ overlay::tests::identity_text_cases run
 overlay::tests::library_match_cases run
 overlay::tests::link_requires_the_displayed_window run
 overlay::tests::overlay_game_info_type_mirrors_rust run
+overlay::tests::overlay_is_raised_once_without_activating run
 overlay::tests::page_never_builds_a_game_key run
 overlay::tests::product_name_kept_only_when_informative run
 overlay::tests::product_name_stub_reads_nothing run
