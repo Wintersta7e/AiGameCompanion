@@ -1,7 +1,7 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "overlay",
-  "description": "Overlay: only the commands its UI calls; no file or folder opens.",
+  "description": "Overlay: only the commands its UI calls; https links open in the browser via open_url; no file or folder opens.",
   "windows": ["overlay"],
   "permissions": [
     "core:event:allow-listen",
@@ -14,6 +14,7 @@
     "allow-cancel-sage",
     "allow-translate-screen",
     "allow-hide-overlay",
-    "allow-link-game"
+    "allow-link-game",
+    "allow-open-url"
   ]
 }

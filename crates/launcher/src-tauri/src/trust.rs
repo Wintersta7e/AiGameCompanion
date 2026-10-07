@@ -123,6 +123,7 @@ mod tests {
         "translate_screen",
         "hide_overlay",
         "link_game",
+        "open_url",
     ];
     /// Core permissions of the main window.
     const MAIN_CORE: &[&str] = &[
@@ -139,8 +140,7 @@ mod tests {
         "core:event:allow-unlisten",
         "core:window:allow-start-dragging",
     ];
-    const OVERLAY_DESCRIPTION: &str =
-        "Overlay: only the commands its UI calls; no file or folder opens.";
+    const OVERLAY_DESCRIPTION: &str = "Overlay: only the commands its UI calls; https links open in the browser via open_url; no file or folder opens.";
 
     /// The command names registered in `main.rs`'s `generate_handler!`.
     fn handler_commands() -> Vec<String> {

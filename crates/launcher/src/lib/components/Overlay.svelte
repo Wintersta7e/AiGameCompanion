@@ -5,6 +5,7 @@
   import { hashHue } from '../utils/accent';
   import { PROVIDERS, modelName, type ModelNames, type Provider } from '../stores/companion.svelte';
   import type { LauncherSettings } from '../settings';
+  import Markdown from './Markdown.svelte';
 
   type GameInfo = {
     hwnd: number;
@@ -36,6 +37,8 @@
     streaming?: boolean;
     // Set only when the answer finished ("done"); stopped and failed ones never are.
     complete?: boolean;
+    // Set once the answer is too long or too slow to format; it then stays plain text.
+    plain?: boolean;
   }
 
   const PROVIDER_ORDER: Provider[] = ['gemini', 'claude', 'openai'];
@@ -613,11 +616,17 @@
               {:else}
                 <div class="msg sage">
                   <span class="avatar"></span>
-                  <div>
+                  <div class="sage-col">
                     <div class="bubble">
-                      {#if m.content}{m.content}{/if}{#if m.streaming && m.content}<span
-                          class="caret-blink"
-                        ></span>{/if}
+                      <Markdown
+                        complete={m.complete === true}
+                        content={m.content}
+                        onplain={() => {
+                          m.plain = true;
+                        }}
+                        plain={m.plain === true}
+                        streaming={m.streaming === true}
+                      />
                       {#if m.streaming && !m.content}
                         <span class="thinking"><i></i><i></i><i></i></span>
                       {/if}
@@ -1164,23 +1173,13 @@
     border-radius: 4px;
     background: linear-gradient(135deg, color-mix(in oklab, var(--accent) 52%, #17171b), #101013);
   }
-  .caret-blink {
-    display: inline-block;
-    width: 2px;
-    height: 0.95em;
-    background: var(--accent);
-    margin-left: 2px;
-    vertical-align: text-bottom;
-    animation: blink 1s steps(2) infinite;
+  /* A wide code block or table scrolls inside the answer, never widens the panel. */
+  .sage-col {
+    min-width: 0;
   }
-  @keyframes blink {
-    0%,
-    100% {
-      opacity: 1;
-    }
-    50% {
-      opacity: 0;
-    }
+  /* The answer sets its own wrapping; the template's line breaks around it must not render. */
+  .sage-col .bubble {
+    white-space: normal;
   }
   .thinking {
     display: inline-flex;
