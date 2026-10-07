@@ -11,6 +11,7 @@ use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager};
 
 use crate::models::{Game, GameSource};
+use crate::placement::{self, MonitorArea, OverlayPlacement, Placed, Rect};
 use crate::state::AppState;
 
 /// What a linked request may tell a provider about the game, besides its name.
@@ -58,6 +59,16 @@ pub(crate) struct OverlayState {
     pub(crate) game: parking_lot::Mutex<Option<GameInfo>>,
     /// (pid, exe path) of every window the user linked this launcher session.
     pub(crate) user_linked: parking_lot::Mutex<HashSet<(u32, String)>>,
+    /// Where the current show placed the panel; taken by the next hide. Never
+    /// held together with the launcher state's lock.
+    shown: parking_lot::Mutex<Option<Shown>>,
+}
+
+/// The rect a show placed the panel against, and the rect it read back.
+#[derive(Clone, Copy, Debug)]
+struct Shown {
+    reference: Rect,
+    applied: Rect,
 }
 
 /// Toggle the overlay window hidden <-> interactive. On hide, hand focus back to
@@ -88,14 +99,64 @@ pub(crate) fn hide_overlay(app: AppHandle) {
     hide(&app);
 }
 
-fn hide(app: &AppHandle) {
+/// Hide the overlay and hand focus back to the stored target. Every hide of
+/// the overlay window -- the hotkey, its close control, Alt+F4 -- goes through
+/// here.
+///
+/// A panel the user dragged or resized since the show is remembered; an
+/// unmoved one writes nothing, so a default is never frozen into the record.
+pub(crate) fn hide(app: &AppHandle) {
     let Some(overlay) = app.get_webview_window("overlay") else {
         return;
     };
+    let shown = app
+        .try_state::<OverlayState>()
+        .and_then(|state| state.shown.lock().take());
+    let now = read_rect(&overlay);
+    let scale = overlay.scale_factor().ok();
     crate::util::log_if_err("hide overlay", overlay.hide());
     if let Some(game) = live_game(app) {
         focus_window(game.hwnd);
     }
+    if let (Some(shown), Some(now), Some(scale)) = (shown, now, scale) {
+        if placement::user_moved(shown.applied, now) {
+            remember_placement(
+                app,
+                OverlayPlacement {
+                    panel: now,
+                    reference: shown.reference,
+                    scale,
+                },
+            );
+        }
+    }
+}
+
+/// Record a moved panel and save it off the calling thread: `save()` syncs
+/// the file to disk, and a hide runs on the main thread.
+fn remember_placement(app: &AppHandle, record: OverlayPlacement) {
+    let recorded = app
+        .try_state::<AppState>()
+        .is_some_and(|state| record_placement(&state, record));
+    if !recorded {
+        return;
+    }
+    let handle = app.clone();
+    std::thread::spawn(move || {
+        if let Some(Err(err)) = handle.try_state::<AppState>().map(|state| state.save()) {
+            tracing::debug!("Saving the overlay position failed: {err}");
+        }
+    });
+}
+
+/// The one writer of the remembered overlay position. Refuses, changing
+/// nothing, when the state is read-only this run; the caller saves on `true`.
+fn record_placement(state: &AppState, record: OverlayPlacement) -> bool {
+    if state.load_error().is_some() {
+        return false;
+    }
+    state.launcher.lock().overlay_placement = Some(record);
+    true
 }
 
 /// Show the overlay (if hidden) and fire an action event to the overlay UI, e.g.
@@ -158,13 +219,125 @@ fn show_overlay(app: &AppHandle) {
         }
         None => live_game(app),
     };
-    crate::util::log_if_err("show overlay", overlay.show());
-    crate::util::log_if_err("focus overlay", overlay.set_focus());
+    show_placed(app, &overlay, game.as_ref());
     // A null payload tells the overlay UI "no game detected".
     crate::util::log_if_err(
         "emit overlay-status",
         app.emit_to("overlay", "overlay-status", game),
     );
+}
+
+/// Show and focus the overlay, first placed for `game` when a reference rect
+/// is found. Position before size: a move onto a monitor of another DPI keeps
+/// the logical size, which the size then overrides. A read-back that differs
+/// from the target is applied once more, never in a loop.
+fn show_placed(app: &AppHandle, overlay: &tauri::WebviewWindow, game: Option<&GameInfo>) {
+    let target = placement_target(app, game);
+    if let Some((_, _, placed)) = &target {
+        apply_rect(overlay, placed.rect);
+    }
+    crate::util::log_if_err("show overlay", overlay.show());
+    crate::util::log_if_err("focus overlay", overlay.set_focus());
+    raise_topmost(overlay);
+    let shown = target.map(|(reference, scale, placed)| {
+        let mut applied = read_rect(overlay);
+        if applied != Some(placed.rect) {
+            tracing::debug!(
+                "Overlay read back at {applied:?}, not {:?}; placing it once more",
+                placed.rect
+            );
+            apply_rect(overlay, placed.rect);
+            applied = read_rect(overlay);
+        }
+        let applied = applied.unwrap_or(placed.rect);
+        tracing::info!(
+            "Overlay placed {},{} {}x{} ({}) scale {scale}",
+            applied.x,
+            applied.y,
+            applied.w,
+            applied.h,
+            placed.from.label()
+        );
+        Shown { reference, applied }
+    });
+    if let Some(state) = app.try_state::<OverlayState>() {
+        *state.shown.lock() = shown;
+    }
+}
+
+fn apply_rect(overlay: &tauri::WebviewWindow, rect: Rect) {
+    crate::util::log_if_err(
+        "move overlay",
+        overlay.set_position(tauri::PhysicalPosition::new(rect.x, rect.y)),
+    );
+    crate::util::log_if_err(
+        "size overlay",
+        overlay.set_size(tauri::PhysicalSize::new(rect.w, rect.h)),
+    );
+}
+
+/// The overlay's outer position and inner size: what `apply_rect` sets.
+fn read_rect(overlay: &tauri::WebviewWindow) -> Option<Rect> {
+    let position = overlay.outer_position().ok()?;
+    let size = overlay.inner_size().ok()?;
+    Some(Rect {
+        x: position.x,
+        y: position.y,
+        w: size.width,
+        h: size.height,
+    })
+}
+
+fn monitor_area(monitor: &tauri::Monitor) -> MonitorArea {
+    let work = monitor.work_area();
+    MonitorArea {
+        work: Rect {
+            x: work.position.x,
+            y: work.position.y,
+            w: work.size.width,
+            h: work.size.height,
+        },
+        scale: monitor.scale_factor(),
+    }
+}
+
+/// The reference rect for `game`, its scale and where to put the panel.
+/// `None` when no monitor or reference rect is known: the panel then keeps its
+/// last spot.
+fn placement_target(app: &AppHandle, game: Option<&GameInfo>) -> Option<(Rect, f64, Placed)> {
+    let monitors: Vec<MonitorArea> = match app.available_monitors() {
+        Ok(listed) if !listed.is_empty() => listed.iter().map(monitor_area).collect(),
+        outcome => {
+            let why = outcome.map_or_else(|err| err.to_string(), |_| "none listed".to_owned());
+            tracing::debug!("Overlay not placed: no monitor ({why})");
+            return None;
+        }
+    };
+    let monitor_at = |(x, y): (f64, f64)| {
+        app.monitor_from_point(x, y)
+            .ok()
+            .flatten()
+            .map(|monitor| monitor_area(&monitor))
+    };
+    let client = game.and_then(|game| client_rect(game.hwnd));
+    let at_centre = client.and_then(|client| monitor_at(client.centre()));
+    let at_cursor = app
+        .cursor_position()
+        .ok()
+        .and_then(|cursor| monitor_at((cursor.x, cursor.y)));
+    let Some((r, r_scale)) = placement::reference(client, at_centre, at_cursor) else {
+        tracing::debug!("Overlay not placed: no reference rect");
+        return None;
+    };
+    // One lock hold, copied out.
+    let saved = app
+        .try_state::<AppState>()
+        .and_then(|state| state.launcher.lock().overlay_placement);
+    Some((
+        r,
+        r_scale,
+        placement::place(saved.as_ref(), r, r_scale, &monitors),
+    ))
 }
 
 /// What `classify` decides about a detected window.
@@ -390,6 +563,35 @@ const fn foreground_game(_self_pid: u32) -> Option<GameInfo> {
     None
 }
 
+/// A window's client area in screen pixels; `None` when it is minimised, its
+/// frame cannot be read or the area is empty. The crate's one reader of a
+/// window's frame.
+#[cfg(windows)]
+pub(crate) fn client_rect(hwnd: i64) -> Option<Rect> {
+    imp::client_rect(hwnd)
+}
+
+#[cfg(not(windows))]
+pub(crate) const fn client_rect(_hwnd: i64) -> Option<Rect> {
+    None
+}
+
+/// Put the overlay back on top of the topmost windows without activating it,
+/// once per show: a focus request Windows refused leaves a topmost game above
+/// the panel. Setting always-on-top again cannot do this, since re-setting a
+/// set flag changes nothing.
+#[cfg(windows)]
+fn raise_topmost(overlay: &tauri::WebviewWindow) {
+    let raised = overlay
+        .hwnd()
+        .map_err(|err| err.to_string())
+        .and_then(|hwnd| imp::raise_topmost(hwnd.0 as i64).map_err(|err| err.to_string()));
+    crate::util::log_if_err("raise overlay", raised);
+}
+
+#[cfg(not(windows))]
+const fn raise_topmost(_overlay: &tauri::WebviewWindow) {}
+
 #[cfg(windows)]
 fn focus_window(hwnd: i64) {
     imp::focus_window(hwnd);
@@ -484,6 +686,7 @@ mod imp {
     )]
 
     use super::GameInfo;
+    use crate::placement::Rect;
     use windows::core::{BOOL, PCWSTR, PWSTR};
     use windows::Win32::Foundation::{CloseHandle, HWND, LPARAM};
     use windows::Win32::Storage::FileSystem::{
@@ -494,8 +697,9 @@ mod imp {
         PROCESS_QUERY_LIMITED_INFORMATION,
     };
     use windows::Win32::UI::WindowsAndMessaging::{
-        EnumChildWindows, GetClassNameW, GetForegroundWindow, GetWindowTextW,
-        GetWindowThreadProcessId, IsIconic, IsWindow, SetForegroundWindow, ShowWindow, SW_RESTORE,
+        EnumChildWindows, GetClassNameW, GetForegroundWindow, GetWindowInfo, GetWindowTextW,
+        GetWindowThreadProcessId, IsIconic, IsWindow, SetForegroundWindow, SetWindowPos,
+        ShowWindow, HWND_TOPMOST, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SW_RESTORE, WINDOWINFO,
     };
 
     pub(super) fn foreground_game(self_pid: u32) -> Option<GameInfo> {
@@ -642,6 +846,50 @@ mod imp {
 
     fn to_hwnd(hwnd: i64) -> HWND {
         HWND(usize::try_from(hwnd).unwrap_or(0) as *mut core::ffi::c_void)
+    }
+
+    /// `hwnd`'s client area in screen coordinates, which are physical pixels
+    /// in this per-monitor DPI aware process. `None` when the window is
+    /// minimised, cannot be read or has an empty client area.
+    pub(super) fn client_rect(hwnd: i64) -> Option<Rect> {
+        let handle = to_hwnd(hwnd);
+        // SAFETY: IsIconic takes the handle by value and reports a stale one
+        // through its return value; a stale handle is not UB.
+        if unsafe { IsIconic(handle) }.as_bool() {
+            return None;
+        }
+        let mut info = WINDOWINFO {
+            cbSize: u32::try_from(size_of::<WINDOWINFO>()).ok()?,
+            ..Default::default()
+        };
+        // SAFETY: `info` is a local with `cbSize` set as the call requires,
+        // and outlives the call; a stale handle only makes the call fail.
+        unsafe { GetWindowInfo(handle, &raw mut info) }.ok()?;
+        let client = info.rcClient;
+        Rect::from_edges(
+            i64::from(client.left),
+            i64::from(client.top),
+            i64::from(client.right),
+            i64::from(client.bottom),
+        )
+    }
+
+    /// Move `hwnd` to the top of the topmost band, keeping its position and
+    /// size and without activating it.
+    pub(super) fn raise_topmost(hwnd: i64) -> windows::core::Result<()> {
+        // SAFETY: SetWindowPos takes both handles by value and reports a stale
+        // one through its result; no pointer is passed.
+        unsafe {
+            SetWindowPos(
+                to_hwnd(hwnd),
+                Some(HWND_TOPMOST),
+                0,
+                0,
+                0,
+                0,
+                SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE,
+            )
+        }
     }
 
     /// Whether `hwnd` is still a live window owned by `pid`, or the Store app
@@ -1152,6 +1400,138 @@ mod tests {
             ..stored
         };
         assert!(!may_link(Some(&unidentified), 42, 7), "an unreadable exe");
+    }
+
+    /// Every hide of the overlay window goes through `hide`, which hands focus
+    /// back to the game; the only other hide is the main window's tray hide.
+    #[test]
+    fn every_overlay_hide_goes_through_overlay_hide() {
+        let needle = concat!(".hide", "())");
+        let counts = crate::util::count_in_sources_by_file(needle);
+        let hits: Vec<(std::path::PathBuf, usize)> = counts
+            .iter()
+            .filter(|(_, count)| *count > 0)
+            .cloned()
+            .collect();
+        let total: usize = counts.iter().map(|(_, count)| count).sum();
+        println!(
+            "{} files scanned; {needle}: {total} in {hits:?}",
+            counts.len()
+        );
+        assert!(!counts.is_empty(), "the source scan found no files");
+        assert_eq!(total, 2, "hides outside overlay::hide: {hits:?}");
+        assert_eq!(
+            hits,
+            [("main.rs".into(), 1), ("overlay.rs".into(), 1)],
+            "one hide in overlay::hide, one for the main window"
+        );
+    }
+
+    /// The panel is raised in one place, without taking activation; setting
+    /// always-on-top again would be a no-op, so it never stands in for that.
+    /// The minimum size is set once, at setup.
+    #[test]
+    fn overlay_is_raised_once_without_activating() {
+        let in_file = |needle: &str| -> (usize, Vec<(std::path::PathBuf, usize)>) {
+            let counts = crate::util::count_in_sources_by_file(needle);
+            assert!(!counts.is_empty(), "the source scan found no files");
+            let hits: Vec<(std::path::PathBuf, usize)> = counts
+                .iter()
+                .filter(|(_, count)| *count > 0)
+                .cloned()
+                .collect();
+            println!("{} files scanned; {needle}: {hits:?}", counts.len());
+            (counts.len(), hits)
+        };
+        let (files, raise) = in_file(concat!("SetWindow", "Pos("));
+        assert!(files > 0, "the source scan found no files");
+        assert_eq!(
+            raise,
+            [("overlay.rs".into(), 1)],
+            "one raise, in overlay.rs"
+        );
+        let (_, no_activate) = in_file(concat!("SWP_NO", "ACTIVATE"));
+        assert!(
+            no_activate.iter().any(|(file, count)| file.as_path()
+                == std::path::Path::new("overlay.rs")
+                && *count >= 1),
+            "the raise does not take activation: {no_activate:?}"
+        );
+        let (_, on_top) = in_file(concat!("set_always", "_on_top("));
+        assert!(on_top.is_empty(), "always-on-top is set again: {on_top:?}");
+        let (_, min_size) = in_file(concat!("set_min", "_size("));
+        assert_eq!(
+            min_size,
+            [("main.rs".into(), 1)],
+            "one minimum size, set at setup in main.rs"
+        );
+    }
+
+    #[test]
+    fn record_placement_refuses_read_only() {
+        let record = OverlayPlacement {
+            panel: Rect {
+                x: 1500,
+                y: 20,
+                w: 420,
+                h: 900,
+            },
+            reference: Rect {
+                x: 0,
+                y: 0,
+                w: 1920,
+                h: 1040,
+            },
+            scale: 1.25,
+        };
+        let path = |label: &str| {
+            std::env::temp_dir().join(format!(
+                "aigc_overlay_position_{}_{label}.json",
+                std::process::id()
+            ))
+        };
+
+        // A directory where the state file should be: read-only this run.
+        let read_only = path("read_only");
+        std::fs::create_dir_all(&read_only).unwrap();
+        let state = AppState::load(read_only.clone());
+        let recorded = record_placement(&state, record);
+        let held = state.launcher.lock().overlay_placement;
+        println!("read-only: recorded {recorded}, holds {held:?}");
+        std::fs::remove_dir(&read_only).unwrap();
+        assert!(!recorded, "a read-only state refuses the position");
+        assert_eq!(held, None, "a refused position changed memory");
+
+        let absent = path("writable");
+        if absent.exists() {
+            std::fs::remove_file(&absent).unwrap();
+        }
+        let state = AppState::load(absent.clone());
+        let recorded = record_placement(&state, record);
+        let held = state.launcher.lock().overlay_placement;
+        println!("writable: recorded {recorded}, holds {held:?}");
+        assert!(recorded, "a writable state takes the position");
+        assert_eq!(held, Some(record));
+        assert!(!absent.exists(), "recording does not save");
+    }
+
+    /// The remembered position has one writer, in overlay.rs.
+    #[test]
+    fn overlay_position_has_one_writer() {
+        let needle = concat!("overlay_placement", " =");
+        let counts = crate::util::count_in_sources_by_file(needle);
+        let hits: Vec<(std::path::PathBuf, usize)> = counts
+            .iter()
+            .filter(|(_, count)| *count > 0)
+            .cloned()
+            .collect();
+        println!("{} files scanned; {needle}: {hits:?}", counts.len());
+        assert!(!counts.is_empty(), "the source scan found no files");
+        assert_eq!(
+            hits,
+            [("overlay.rs".into(), 1)],
+            "the overlay position is written once, by record_placement"
+        );
     }
 
     #[test]

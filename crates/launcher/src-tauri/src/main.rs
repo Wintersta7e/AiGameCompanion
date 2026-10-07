@@ -10,6 +10,7 @@ mod models;
 mod npm_lock_policy;
 mod overlay;
 mod overlay_capture;
+mod placement;
 mod process_watch;
 mod secrets;
 mod state;
@@ -167,6 +168,17 @@ fn main() {
                 }
             }
 
+            // The smallest panel that keeps its tab bar, input and Send usable.
+            if let Some(overlay) = app.get_webview_window("overlay") {
+                util::log_if_err(
+                    "set overlay minimum size",
+                    overlay.set_min_size(Some(tauri::LogicalSize::new(
+                        placement::MIN_WIDTH,
+                        placement::MIN_HEIGHT,
+                    ))),
+                );
+            }
+
             // Register the overlay hotkeys. A failure is logged and recorded, so
             // the main window can say which chord is unavailable.
             let hotkey_status = app.state::<HotkeyStatus>();
@@ -221,11 +233,12 @@ fn main() {
         })
         .on_window_event(|window, event| {
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
-                // The overlay window only hides; the main window drives the
-                // launcher's tray / exit behaviour.
+                // The overlay window only hides, handing focus back to the
+                // game; the main window drives the launcher's tray / exit
+                // behaviour.
                 if window.label() == "overlay" {
                     api.prevent_close();
-                    util::log_if_err("hide overlay window", window.hide());
+                    overlay::hide(window.app_handle());
                     return;
                 }
                 let state = window.state::<AppState>();

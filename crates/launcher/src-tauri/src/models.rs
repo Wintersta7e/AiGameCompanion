@@ -9,6 +9,8 @@ use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 
+use crate::placement::OverlayPlacement;
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 // Deserialize via String so an unrecognised source (a state file written by a
 // newer build, then opened by an older one) degrades to `Manual` instead of
@@ -129,6 +131,23 @@ where
         .collect())
 }
 
+/// Load the overlay position leniently: `null` loads as none silently, and any
+/// value that is not a readable position loads as none with one warning. A
+/// window position is re-derived at the next show, while failing the parse
+/// would send the whole library down the corrupt-file path.
+fn placement_lenient<'de, D>(deserializer: D) -> Result<Option<OverlayPlacement>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let value = serde_json::Value::deserialize(deserializer)?;
+    if value.is_null() {
+        return Ok(None);
+    }
+    Ok(serde_json::from_value::<OverlayPlacement>(value)
+        .inspect_err(|e| tracing::warn!("Dropping unreadable overlay position: {e}"))
+        .ok())
+}
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 // `#[serde(default)]` here as well as on the inner structs: without it, adding
 // any new top-level field makes every existing state file fail to parse, which
@@ -142,6 +161,10 @@ pub(crate) struct LauncherState {
     /// games and would erase a value stored on one.
     #[serde(deserialize_with = "game_prefs_lenient")]
     pub game_prefs: BTreeMap<String, GamePrefs>,
+    /// Where the user last left the overlay panel. Written by the overlay when
+    /// the panel is hidden after a move, never by Settings.
+    #[serde(deserialize_with = "placement_lenient")]
+    pub overlay_placement: Option<OverlayPlacement>,
 }
 
 #[cfg(test)]

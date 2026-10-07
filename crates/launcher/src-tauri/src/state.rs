@@ -250,6 +250,7 @@ mod tests {
 
     use super::*;
     use crate::models::{Game, GamePrefs, GameSource};
+    use crate::placement::{place, MonitorArea, OverlayPlacement, Placed, PlacedFrom, Rect};
     use std::path::Path;
 
     /// Unique temp path per test (process id + label) so parallel tests
@@ -707,6 +708,112 @@ mod tests {
             outside.is_empty(),
             "game_prefs field access outside state.rs and models.rs: {outside:?}"
         );
+    }
+
+    /// An unreadable overlay position costs only the position: it loads as
+    /// none, with the library and settings intact, no backup and no read-only
+    /// run. A readable one survives a save unchanged.
+    #[test]
+    fn overlay_position_loads_leniently() {
+        let path = temp_state_path("placement_absent");
+        std::fs::write(&path, ONE_GAME).unwrap();
+        let app = AppState::load(path.clone());
+        let st = app.launcher.lock();
+        println!("no record: {:?}", st.overlay_placement);
+        assert_eq!(st.overlay_placement, None);
+        assert_eq!(st.games.len(), 1);
+        drop(st);
+        assert_eq!(app.load_error(), None);
+        cleanup(&path);
+
+        let state_with = |placement: &str| {
+            format!(
+                r#"{{"games":[{{"id":"g1","name":"Foo"}}],"settings":{{"scan_on_startup":false}},"overlay_placement":{placement}}}"#
+            )
+        };
+        for (label, placement, expected) in [
+            ("empty", "{}", Some(OverlayPlacement::default())),
+            ("string", r#""x""#, None),
+            ("bad_field", r#"{"panel":{"x":"a"}}"#, None),
+            ("null", "null", None),
+        ] {
+            let path = temp_state_path(&format!("placement_{label}"));
+            std::fs::write(&path, state_with(placement)).unwrap();
+            let app = AppState::load(path.clone());
+            let st = app.launcher.lock();
+            println!("{placement}: {:?}", st.overlay_placement);
+            assert_eq!(st.overlay_placement, expected, "{placement}");
+            assert_eq!(st.games.len(), 1, "{placement}: the library is intact");
+            assert!(
+                !st.settings.scan_on_startup,
+                "{placement}: the settings are intact"
+            );
+            drop(st);
+            assert_eq!(app.load_error(), None, "{placement}: writable");
+            assert!(
+                !path.with_extension("json.bak").exists(),
+                "{placement}: not the corrupt path"
+            );
+            // Whatever loaded, the next show uses the default placement.
+            let work = Rect {
+                x: 0,
+                y: 0,
+                w: 1920,
+                h: 1040,
+            };
+            let loaded = app.launcher.lock().overlay_placement;
+            let placed = place(
+                loaded.as_ref(),
+                work,
+                1.0,
+                &[MonitorArea { work, scale: 1.0 }],
+            );
+            println!("{placement}: next show {placed:?}");
+            assert_eq!(
+                placed,
+                Placed {
+                    rect: Rect {
+                        x: 1520,
+                        y: 0,
+                        w: 400,
+                        h: 1040
+                    },
+                    from: PlacedFrom::Default,
+                },
+                "{placement}"
+            );
+            cleanup(&path);
+        }
+
+        let valid = r#"{"panel":{"x":1500,"y":20,"w":420,"h":900},"reference":{"x":0,"y":0,"w":1920,"h":1040},"scale":1.25}"#;
+        let record = OverlayPlacement {
+            panel: Rect {
+                x: 1500,
+                y: 20,
+                w: 420,
+                h: 900,
+            },
+            reference: Rect {
+                x: 0,
+                y: 0,
+                w: 1920,
+                h: 1040,
+            },
+            scale: 1.25,
+        };
+        let path = temp_state_path("placement_valid");
+        std::fs::write(&path, state_with(valid)).unwrap();
+        let app = AppState::load(path.clone());
+        let loaded = app.launcher.lock().overlay_placement;
+        println!("valid: {loaded:?}");
+        assert_eq!(loaded, Some(record));
+        app.save().unwrap();
+        let reloaded = AppState::load(path.clone())
+            .launcher
+            .lock()
+            .overlay_placement;
+        assert_eq!(reloaded, Some(record), "survives a save and a reload");
+        cleanup(&path);
     }
 
     #[test]
