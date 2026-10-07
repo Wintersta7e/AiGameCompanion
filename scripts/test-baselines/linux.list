@@ -93,6 +93,8 @@ overlay_capture::tests::fit_within_averages_each_block run
 overlay_capture::tests::fit_within_keeps_the_aspect_of_odd_sizes run
 overlay_capture::tests::fit_within_leaves_small_frames_alone run
 overlay_capture::tests::fit_within_scales_large_frames run
+placement::tests::placement_table run
+placement::tests::reference_cases run
 state::tests::backup_never_replaces_an_existing_one run
 state::tests::corrupt_state_falls_back_to_default_and_backs_up run
 state::tests::corrupt_state_without_backup_is_read_only run
@@ -105,6 +107,7 @@ state::tests::load_fills_defaults_for_fields_missing_in_old_json run
 state::tests::load_returns_default_when_file_absent run
 state::tests::load_tolerates_missing_top_level_fields run
 state::tests::load_tolerates_unknown_game_source run
+state::tests::overlay_position_loads_leniently run
 state::tests::read_error_makes_state_read_only run
 state::tests::read_retries_transient_errors_only run
 state::tests::recovers_state_from_leftover_tmp_when_main_missing run

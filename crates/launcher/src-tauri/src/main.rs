@@ -10,6 +10,7 @@ mod models;
 mod npm_lock_policy;
 mod overlay;
 mod overlay_capture;
+mod placement;
 mod process_watch;
 mod secrets;
 mod state;

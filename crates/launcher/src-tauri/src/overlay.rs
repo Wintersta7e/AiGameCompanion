@@ -11,6 +11,7 @@ use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager};
 
 use crate::models::{Game, GameSource};
+use crate::placement::{self, MonitorArea, Placed, Rect};
 use crate::state::AppState;
 
 /// What a linked request may tell a provider about the game, besides its name.
@@ -161,13 +162,121 @@ fn show_overlay(app: &AppHandle) {
         }
         None => live_game(app),
     };
-    crate::util::log_if_err("show overlay", overlay.show());
-    crate::util::log_if_err("focus overlay", overlay.set_focus());
+    show_placed(app, &overlay, game.as_ref());
     // A null payload tells the overlay UI "no game detected".
     crate::util::log_if_err(
         "emit overlay-status",
         app.emit_to("overlay", "overlay-status", game),
     );
+}
+
+/// Show and focus the overlay, first placed for `game` when a reference rect
+/// is found. Position before size: a move onto a monitor of another DPI keeps
+/// the logical size, which the size then overrides. A read-back that differs
+/// from the target is applied once more, never in a loop.
+fn show_placed(app: &AppHandle, overlay: &tauri::WebviewWindow, game: Option<&GameInfo>) {
+    let target = placement_target(app, game);
+    if let Some((_, _, placed)) = &target {
+        apply_rect(overlay, placed.rect);
+    }
+    crate::util::log_if_err("show overlay", overlay.show());
+    crate::util::log_if_err("focus overlay", overlay.set_focus());
+    let Some((_, scale, placed)) = target else {
+        return;
+    };
+    let mut applied = read_rect(overlay);
+    if applied != Some(placed.rect) {
+        tracing::debug!(
+            "Overlay read back at {applied:?}, not {:?}; placing it once more",
+            placed.rect
+        );
+        apply_rect(overlay, placed.rect);
+        applied = read_rect(overlay);
+    }
+    let applied = applied.unwrap_or(placed.rect);
+    tracing::info!(
+        "Overlay placed {},{} {}x{} ({}) scale {scale}",
+        applied.x,
+        applied.y,
+        applied.w,
+        applied.h,
+        placed.from.label()
+    );
+}
+
+fn apply_rect(overlay: &tauri::WebviewWindow, rect: Rect) {
+    crate::util::log_if_err(
+        "move overlay",
+        overlay.set_position(tauri::PhysicalPosition::new(rect.x, rect.y)),
+    );
+    crate::util::log_if_err(
+        "size overlay",
+        overlay.set_size(tauri::PhysicalSize::new(rect.w, rect.h)),
+    );
+}
+
+/// The overlay's outer position and inner size: what `apply_rect` sets.
+fn read_rect(overlay: &tauri::WebviewWindow) -> Option<Rect> {
+    let position = overlay.outer_position().ok()?;
+    let size = overlay.inner_size().ok()?;
+    Some(Rect {
+        x: position.x,
+        y: position.y,
+        w: size.width,
+        h: size.height,
+    })
+}
+
+fn monitor_area(monitor: &tauri::Monitor) -> MonitorArea {
+    let work = monitor.work_area();
+    MonitorArea {
+        work: Rect {
+            x: work.position.x,
+            y: work.position.y,
+            w: work.size.width,
+            h: work.size.height,
+        },
+        scale: monitor.scale_factor(),
+    }
+}
+
+/// The reference rect for `game`, its scale and where to put the panel.
+/// `None` when no monitor or reference rect is known: the panel then keeps its
+/// last spot.
+fn placement_target(app: &AppHandle, game: Option<&GameInfo>) -> Option<(Rect, f64, Placed)> {
+    let monitors: Vec<MonitorArea> = match app.available_monitors() {
+        Ok(listed) if !listed.is_empty() => listed.iter().map(monitor_area).collect(),
+        outcome => {
+            let why = outcome.map_or_else(|err| err.to_string(), |_| "none listed".to_owned());
+            tracing::debug!("Overlay not placed: no monitor ({why})");
+            return None;
+        }
+    };
+    let monitor_at = |(x, y): (f64, f64)| {
+        app.monitor_from_point(x, y)
+            .ok()
+            .flatten()
+            .map(|monitor| monitor_area(&monitor))
+    };
+    let client = game.and_then(|game| client_rect(game.hwnd));
+    let at_centre = client.and_then(|client| monitor_at(client.centre()));
+    let at_cursor = app
+        .cursor_position()
+        .ok()
+        .and_then(|cursor| monitor_at((cursor.x, cursor.y)));
+    let Some((r, r_scale)) = placement::reference(client, at_centre, at_cursor) else {
+        tracing::debug!("Overlay not placed: no reference rect");
+        return None;
+    };
+    // One lock hold, copied out.
+    let saved = app
+        .try_state::<AppState>()
+        .and_then(|state| state.launcher.lock().overlay_placement);
+    Some((
+        r,
+        r_scale,
+        placement::place(saved.as_ref(), r, r_scale, &monitors),
+    ))
 }
 
 /// What `classify` decides about a detected window.
@@ -393,6 +502,19 @@ const fn foreground_game(_self_pid: u32) -> Option<GameInfo> {
     None
 }
 
+/// A window's client area in screen pixels; `None` when it is minimised, its
+/// frame cannot be read or the area is empty. The crate's one reader of a
+/// window's frame.
+#[cfg(windows)]
+pub(crate) fn client_rect(hwnd: i64) -> Option<Rect> {
+    imp::client_rect(hwnd)
+}
+
+#[cfg(not(windows))]
+pub(crate) const fn client_rect(_hwnd: i64) -> Option<Rect> {
+    None
+}
+
 #[cfg(windows)]
 fn focus_window(hwnd: i64) {
     imp::focus_window(hwnd);
@@ -487,6 +609,7 @@ mod imp {
     )]
 
     use super::GameInfo;
+    use crate::placement::Rect;
     use windows::core::{BOOL, PCWSTR, PWSTR};
     use windows::Win32::Foundation::{CloseHandle, HWND, LPARAM};
     use windows::Win32::Storage::FileSystem::{
@@ -497,8 +620,9 @@ mod imp {
         PROCESS_QUERY_LIMITED_INFORMATION,
     };
     use windows::Win32::UI::WindowsAndMessaging::{
-        EnumChildWindows, GetClassNameW, GetForegroundWindow, GetWindowTextW,
+        EnumChildWindows, GetClassNameW, GetForegroundWindow, GetWindowInfo, GetWindowTextW,
         GetWindowThreadProcessId, IsIconic, IsWindow, SetForegroundWindow, ShowWindow, SW_RESTORE,
+        WINDOWINFO,
     };
 
     pub(super) fn foreground_game(self_pid: u32) -> Option<GameInfo> {
@@ -645,6 +769,32 @@ mod imp {
 
     fn to_hwnd(hwnd: i64) -> HWND {
         HWND(usize::try_from(hwnd).unwrap_or(0) as *mut core::ffi::c_void)
+    }
+
+    /// `hwnd`'s client area in screen coordinates, which are physical pixels
+    /// in this per-monitor DPI aware process. `None` when the window is
+    /// minimised, cannot be read or has an empty client area.
+    pub(super) fn client_rect(hwnd: i64) -> Option<Rect> {
+        let handle = to_hwnd(hwnd);
+        // SAFETY: IsIconic takes the handle by value and reports a stale one
+        // through its return value; a stale handle is not UB.
+        if unsafe { IsIconic(handle) }.as_bool() {
+            return None;
+        }
+        let mut info = WINDOWINFO {
+            cbSize: u32::try_from(size_of::<WINDOWINFO>()).ok()?,
+            ..Default::default()
+        };
+        // SAFETY: `info` is a local with `cbSize` set as the call requires,
+        // and outlives the call; a stale handle only makes the call fail.
+        unsafe { GetWindowInfo(handle, &raw mut info) }.ok()?;
+        let client = info.rcClient;
+        Rect::from_edges(
+            i64::from(client.left),
+            i64::from(client.top),
+            i64::from(client.right),
+            i64::from(client.bottom),
+        )
     }
 
     /// Whether `hwnd` is still a live window owned by `pid`, or the Store app
