@@ -902,4 +902,23 @@ mod tests {
         assert!(files > 0, "the source scan found no files");
         assert_eq!(count, 0, "capture only through capture_live_window_png");
     }
+
+    #[test]
+    fn answer_errors_stay_out_of_answer_text() {
+        // The page once appended an error event's message, or an ask_sage
+        // rejection, to the answer text itself, where it would be formatted
+        // and copied as if the model had written it.
+        let needles = [
+            concat!("content}", "\\n\\n[error]"),
+            concat!("content = `", "[error]"),
+        ];
+        let scan = crate::util::count_in_frontend(&needles);
+        println!("{} files scanned", scan.files.len());
+        for (needle, hits) in needles.iter().zip(&scan.hits) {
+            println!("{needle}: {hits:?}");
+        }
+        for (needle, hits) in needles.iter().zip(&scan.hits) {
+            assert_eq!(hits.len(), 0, "{needle} writes an error into an answer");
+        }
+    }
 }

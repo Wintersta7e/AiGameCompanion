@@ -39,6 +39,8 @@
     complete?: boolean;
     // Set once the answer is too long or too slow to format; it then stays plain text.
     plain?: boolean;
+    // Why the answer failed; shown on its own line, never part of `content`.
+    error?: string;
   }
 
   const PROVIDER_ORDER: Provider[] = ['gemini', 'claude', 'openai'];
@@ -62,6 +64,8 @@
   let prompt = $state('');
   let asking = $state(false);
   let messages = $state<Msg[]>([]);
+  // The answer whose Copy just succeeded, by index; -1 for none.
+  let copiedIndex = $state(-1);
 
   let inputEl = $state<HTMLInputElement | null>(null);
   let translateBtn = $state<HTMLButtonElement | null>(null);
@@ -105,8 +109,15 @@
   // -- scrolling up to re-read history must not be yanked back down. The check
   // has to happen before the DOM grows, hence $effect.pre.
   $effect.pre(() => {
-    // Re-runs on every appended chunk and on every new message.
-    const growth = messages.length + (messages.at(-1)?.content.length ?? 0);
+    // Re-runs on every appended chunk, on every new message and when an answer
+    // fails (its error line sits below the text) or finishes (the status line
+    // under the input can then wrap, shrinking the list).
+    const last = messages.at(-1);
+    const growth =
+      messages.length +
+      (last?.content.length ?? 0) +
+      (last?.error?.length ?? 0) +
+      (last?.streaming ? 1 : 0);
     const el = msglistEl;
     if (!el || growth === 0) return;
     if (el.scrollHeight - el.scrollTop - el.clientHeight > 50) return;
@@ -148,6 +159,7 @@
     asking = false;
     conversationId += 1;
     messages = [];
+    copiedIndex = -1;
     prompt = '';
     if (inflight !== 0) {
       try {
@@ -226,8 +238,7 @@
         bubble.complete = true;
         asking = false;
       } else {
-        const msg = event.message ?? 'Unknown error';
-        bubble.content = bubble.content ? `${bubble.content}\n\n[error] ${msg}` : `[error] ${msg}`;
+        bubble.error = event.message ?? 'Unknown error';
         bubble.streaming = false;
         asking = false;
       }
@@ -248,7 +259,7 @@
       if (id !== activeRequestId || convo !== conversationId) return;
       const bubble = messages[idx];
       if (bubble) {
-        bubble.content = `[error] ${String(err)}`;
+        bubble.error = String(err);
         bubble.streaming = false;
       }
       asking = false;
@@ -328,6 +339,23 @@
     if (canAttach) attach = true;
     await tick();
     inputEl?.focus();
+  }
+
+  // A finished or stopped answer with text can be copied.
+  const copyable = (m: Msg) => !m.streaming && m.content.trim() !== '';
+
+  // Copies the answer as it arrived, Markdown included: never the error line or
+  // the rendered text. "Copied" shows only once the clipboard took it.
+  async function copyAnswer(text: string, index: number) {
+    try {
+      await navigator.clipboard.writeText(text);
+    } catch {
+      return;
+    }
+    copiedIndex = index;
+    setTimeout(() => {
+      if (copiedIndex === index) copiedIndex = -1;
+    }, 1500);
   }
 
   async function copyTranslation() {
@@ -630,9 +658,20 @@
                       {#if m.streaming && !m.content}
                         <span class="thinking"><i></i><i></i><i></i></span>
                       {/if}
+                      {#if m.error}
+                        <div class="answer-error" class:spaced={m.content.trim() !== ''}>
+                          [error] {m.error}
+                        </div>
+                      {/if}
                     </div>
-                    {#if m.model && (m.content || !m.streaming)}
-                      <div class="meta">{m.model}{m.streaming ? ' · streaming' : ''}</div>
+                    {#if copyable(m) || (m.model && (m.content || !m.streaming))}
+                      <div class="meta">
+                        {m.model}{m.streaming ? ' · streaming' : ''}{#if copyable(m)}<button
+                            class="copy-btn"
+                            onclick={() => copyAnswer(m.content, i)}
+                            type="button">{copiedIndex === i ? 'Copied' : 'Copy'}</button
+                          >{/if}
+                      </div>
                     {/if}
                   </div>
                 </div>
@@ -1152,6 +1191,26 @@
     color: var(--color-t-lo);
     margin-top: 7px;
     letter-spacing: 0.04em;
+  }
+  .copy-btn {
+    font-family: var(--font-mono);
+    font-size: 10px;
+    letter-spacing: 0.04em;
+    color: var(--color-t-mid);
+    background: none;
+    border: 0;
+    padding: 0;
+    margin-left: 8px;
+    cursor: pointer;
+  }
+  .copy-btn:hover {
+    color: var(--color-t-hi);
+  }
+  .answer-error {
+    white-space: pre-wrap;
+  }
+  .answer-error.spaced {
+    margin-top: 8px;
   }
   .frame-chip {
     display: inline-flex;

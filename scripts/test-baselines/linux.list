@@ -51,6 +51,7 @@ ai::gemini::tests::rejects_unsafe_model_names run
 ai::gemini::tests::request_carries_no_tools run
 ai::gemini::tests::resolve_model_precedence run
 ai::gemini::tests::validate_model_messages_name_no_file run
+ai::tests::answer_errors_stay_out_of_answer_text run
 ai::tests::availability_reports_the_models_in_use run
 ai::tests::captures_go_through_the_liveness_check run
 ai::tests::every_provider_change_is_announced run
