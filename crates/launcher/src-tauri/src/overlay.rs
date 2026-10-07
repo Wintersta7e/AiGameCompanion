@@ -698,8 +698,7 @@ mod imp {
         unsafe { GetWindowThreadProcessId(hwnd, Some(&raw mut pid)) };
         let name = class
             .get(..usize::try_from(len).unwrap_or(0))
-            .map(String::from_utf16_lossy)
-            .unwrap_or_default();
+            .map_or_default(String::from_utf16_lossy);
         found.push((name, pid));
         BOOL::from(true)
     }
