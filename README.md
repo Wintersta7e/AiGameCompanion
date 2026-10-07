@@ -88,6 +88,10 @@ a working tool you can build and run, not a polished consumer app.
   -- no DLL, no swapchain hook, works regardless of graphics API.
 - **Ctrl+Shift+G** toggles it; while interactive it takes keyboard focus so your
   typing doesn't reach the game, then hands focus back on hide.
+- **Hints first** is on by default and switched from the panel: questions about
+  progress get a nudge first, with **Another hint** and **Full answer** to go
+  further. Answers are formatted (lists, bold, code, tables) and have a
+  **Copy** button.
 
 <p align="center">
   <img src="screenshots/overlay.png" alt="The Sage overlay linked to a game, ready to answer questions about the screen" width="330" />
