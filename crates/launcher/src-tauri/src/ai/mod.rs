@@ -789,8 +789,8 @@ mod tests {
             ("block", block.as_str()),
             ("log line", line.as_str()),
         ] {
-            for secret in ["SECRET-TITLE", r"C:\Games\Foo", r"c:\games\foo"] {
-                assert!(!text.contains(secret), "{what} contains {secret}");
+            for withheld in ["SECRET-TITLE", r"C:\Games\Foo", r"c:\games\foo"] {
+                assert!(!text.contains(withheld), "{what} contains {withheld}");
             }
         }
         assert_eq!(request_context(Some(&target(false))).identity_block, None);
