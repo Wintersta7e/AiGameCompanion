@@ -183,7 +183,7 @@ jobs:
           cache: npm
           cache-dependency-path: crates/launcher/package-lock.json
       - name: Install cargo-xwin
-        uses: taiki-e/install-action@9983c65e42da123ff25d1f78505eb6de315aa172 # v2.87.20
+        uses: taiki-e/install-action@83ac0ad63c0167e6f06796fab0fce28db1bf3db0 # v2.87.22
         with:
           tool: cargo-xwin@${{ steps.pins.outputs.CARGO_XWIN }}
           fallback: none
@@ -223,7 +223,7 @@ jobs:
       - name: Install the Rust toolchain
         run: rustup toolchain install --no-self-update
       - name: Install cargo-deny
-        uses: taiki-e/install-action@9983c65e42da123ff25d1f78505eb6de315aa172 # v2.87.20
+        uses: taiki-e/install-action@83ac0ad63c0167e6f06796fab0fce28db1bf3db0 # v2.87.22
         with:
           tool: cargo-deny@${{ steps.pins.outputs.CARGO_DENY }}
           fallback: none
@@ -269,7 +269,7 @@ jobs:
           tar xzf "$archive" -C "$RUNNER_TEMP/bin" actionlint
           echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
       - name: Install zizmor
-        uses: taiki-e/install-action@9983c65e42da123ff25d1f78505eb6de315aa172 # v2.87.20
+        uses: taiki-e/install-action@83ac0ad63c0167e6f06796fab0fce28db1bf3db0 # v2.87.22
         with:
           tool: zizmor@${{ steps.pins.outputs.ZIZMOR }}
           fallback: none
@@ -339,7 +339,7 @@ jobs:
         with:
           node-version-file: .nvmrc
       - name: Install typos
-        uses: taiki-e/install-action@9983c65e42da123ff25d1f78505eb6de315aa172 # v2.87.20
+        uses: taiki-e/install-action@83ac0ad63c0167e6f06796fab0fce28db1bf3db0 # v2.87.22
         with:
           tool: typos@${{ steps.pins.outputs.TYPOS }}
           fallback: none
@@ -472,7 +472,7 @@ jobs:
         run: npm ci
         working-directory: crates/launcher
       - name: Install cargo-llvm-cov
-        uses: taiki-e/install-action@9983c65e42da123ff25d1f78505eb6de315aa172 # v2.87.20
+        uses: taiki-e/install-action@83ac0ad63c0167e6f06796fab0fce28db1bf3db0 # v2.87.22
         with:
           tool: cargo-llvm-cov@${{ steps.pins.outputs.CARGO_LLVM_COV }}
           fallback: none
