@@ -24,7 +24,7 @@
     "@types/node": "^22.20.3",
     "eslint": "^10.6.0",
     "eslint-plugin-svelte": "^3.20.0",
-    "globals": "^17.7.0",
+    "globals": "^17.13.0",
     "knip": "^6.39.0",
     "prettier": "^3.8.5",
     "prettier-plugin-svelte": "^4.1.1",
