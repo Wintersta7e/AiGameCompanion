@@ -16,11 +16,6 @@ unsound = "all"
 # when an affected version comes back.
 unused-ignored-advisory = "deny"
 ignore = [
-    { id = "RUSTSEC-2025-0075", reason = "unic-char-range is unmaintained; pulled in by urlpattern via tauri-utils on both graphs; no first-party fix" },
-    { id = "RUSTSEC-2025-0080", reason = "unic-common is unmaintained; pulled in by urlpattern via tauri-utils on both graphs; no first-party fix" },
-    { id = "RUSTSEC-2025-0081", reason = "unic-char-property is unmaintained; pulled in by urlpattern via tauri-utils on both graphs; no first-party fix" },
-    { id = "RUSTSEC-2025-0098", reason = "unic-ucd-version is unmaintained; pulled in by urlpattern via tauri-utils on both graphs; no first-party fix" },
-    { id = "RUSTSEC-2025-0100", reason = "unic-ucd-ident is unmaintained; pulled in by urlpattern via tauri-utils on both graphs; no first-party fix" },
     { id = "RUSTSEC-2024-0370", reason = "proc-macro-error is unmaintained; pulled in by glib-macros 0.18 on the Linux graph only; no first-party fix" },
     { id = "RUSTSEC-2024-0429", reason = "glib 0.18 is unsound; pulled in by the gtk 0.18 stack on the Linux graph only; no first-party fix" },
     { id = "RUSTSEC-2026-0370", reason = "zvariant is unmaintained (merged into zbus 6); pulled in by zbus 5 via tauri-plugin-opener and tauri-plugin-single-instance on the Linux graph only; no first-party fix" },
