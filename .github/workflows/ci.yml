@@ -47,7 +47,7 @@ jobs:
       - name: Install the Rust toolchain
         run: rustup toolchain install --no-self-update
       - name: Cache the Rust build
-        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: Set up Node
@@ -85,7 +85,7 @@ jobs:
       - name: Install the Rust toolchain
         run: rustup toolchain install --no-self-update
       - name: Cache the Rust build
-        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           save-if: ${{ github.ref == 'refs/heads/main' }}
       # Tauri links against the GTK/WebKit stack on Linux.
@@ -167,7 +167,7 @@ jobs:
       - name: Install the Rust toolchain
         run: rustup toolchain install --no-self-update
       - name: Cache the Rust build
-        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: Restore the Windows SDK cache
@@ -183,7 +183,7 @@ jobs:
           cache: npm
           cache-dependency-path: crates/launcher/package-lock.json
       - name: Install cargo-xwin
-        uses: taiki-e/install-action@ab6895351a88b908e96a4697860d4ffea5e57dbe # v2.87.27
+        uses: taiki-e/install-action@1e29709c0ec63babbe8f266397a465f29a825f91 # v2.87.31
         with:
           tool: cargo-xwin@${{ steps.pins.outputs.CARGO_XWIN }}
           fallback: none
@@ -223,7 +223,7 @@ jobs:
       - name: Install the Rust toolchain
         run: rustup toolchain install --no-self-update
       - name: Install cargo-deny
-        uses: taiki-e/install-action@ab6895351a88b908e96a4697860d4ffea5e57dbe # v2.87.27
+        uses: taiki-e/install-action@1e29709c0ec63babbe8f266397a465f29a825f91 # v2.87.31
         with:
           tool: cargo-deny@${{ steps.pins.outputs.CARGO_DENY }}
           fallback: none
@@ -269,7 +269,7 @@ jobs:
           tar xzf "$archive" -C "$RUNNER_TEMP/bin" actionlint
           echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
       - name: Install zizmor
-        uses: taiki-e/install-action@ab6895351a88b908e96a4697860d4ffea5e57dbe # v2.87.27
+        uses: taiki-e/install-action@1e29709c0ec63babbe8f266397a465f29a825f91 # v2.87.31
         with:
           tool: zizmor@${{ steps.pins.outputs.ZIZMOR }}
           fallback: none
@@ -339,7 +339,7 @@ jobs:
         with:
           node-version-file: .nvmrc
       - name: Install typos
-        uses: taiki-e/install-action@ab6895351a88b908e96a4697860d4ffea5e57dbe # v2.87.27
+        uses: taiki-e/install-action@1e29709c0ec63babbe8f266397a465f29a825f91 # v2.87.31
         with:
           tool: typos@${{ steps.pins.outputs.TYPOS }}
           fallback: none
@@ -372,7 +372,7 @@ jobs:
       - name: Install the beta toolchain
         run: rustup toolchain install beta --profile minimal --component rustfmt,clippy --no-self-update
       - name: Cache the Rust build
-        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           save-if: false
       # Tauri links against the GTK/WebKit stack on Linux.
@@ -416,7 +416,7 @@ jobs:
       - name: Install the beta toolchain
         run: rustup toolchain install beta --profile minimal --component rustfmt,clippy --no-self-update
       - name: Cache the Rust build
-        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           save-if: false
       - name: Set up Node
@@ -459,7 +459,7 @@ jobs:
       - name: Add the coverage component
         run: rustup component add llvm-tools
       - name: Cache the Rust build
-        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: Set up Node
@@ -472,7 +472,7 @@ jobs:
         run: npm ci
         working-directory: crates/launcher
       - name: Install cargo-llvm-cov
-        uses: taiki-e/install-action@ab6895351a88b908e96a4697860d4ffea5e57dbe # v2.87.27
+        uses: taiki-e/install-action@1e29709c0ec63babbe8f266397a465f29a825f91 # v2.87.31
         with:
           tool: cargo-llvm-cov@${{ steps.pins.outputs.CARGO_LLVM_COV }}
           fallback: none
