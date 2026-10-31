@@ -1,15 +1,13 @@
-// Module-wide because serde's generated code for `LauncherState` names the
-// map type too, outside any item an attribute here could cover.
-#![expect(
-    clippy::zero_sized_map_values,
-    reason = "GamePrefs has no field until the first per-game setting joins it"
-)]
-
 use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 
 use crate::placement::OverlayPlacement;
+
+/// Fields a newer build wrote that this one does not know, kept as read so the
+/// next save writes them back: going back to an older release must not erase
+/// what a newer one stored.
+pub(crate) type UnknownFields = serde_json::Map<String, serde_json::Value>;
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 // Deserialize via String so an unrecognised source (a state file written by a
@@ -53,6 +51,8 @@ pub(crate) struct Game {
     pub cover_art_path: Option<String>,
     pub last_played: Option<String>,
     pub play_time_minutes: u64,
+    #[serde(flatten)]
+    pub unknown: UnknownFields,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -73,6 +73,8 @@ pub(crate) struct LauncherSettings {
     /// Answers start as hints; written only by `set_hints_first`. On by
     /// default, also for a file saved before the field existed.
     pub hints_first: bool,
+    #[serde(flatten)]
+    pub unknown: UnknownFields,
 }
 
 impl Default for LauncherSettings {
@@ -84,6 +86,7 @@ impl Default for LauncherSettings {
             active_provider: String::new(),
             gemini_model: String::new(),
             hints_first: true,
+            unknown: UnknownFields::new(),
         }
     }
 }
@@ -142,7 +145,10 @@ where
 /// each value reaches it only through its own command.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
-pub(crate) struct GamePrefs {}
+pub(crate) struct GamePrefs {
+    #[serde(flatten)]
+    pub unknown: UnknownFields,
+}
 
 /// Load `game_prefs` one entry at a time, like `games`: an unreadable entry is
 /// dropped, and a value that is not an object loads as empty. The warning never
@@ -204,6 +210,8 @@ pub(crate) struct LauncherState {
     /// the panel is hidden after a move, never by Settings.
     #[serde(deserialize_with = "placement_lenient")]
     pub overlay_placement: Option<OverlayPlacement>,
+    #[serde(flatten)]
+    pub unknown: UnknownFields,
 }
 
 #[cfg(test)]

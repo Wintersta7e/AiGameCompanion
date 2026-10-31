@@ -101,6 +101,8 @@ fn merge_settings(stored: &LauncherSettings, incoming: LauncherSettings) -> Laun
         gemini_model,
         // Written only by `set_hints_first`.
         hints_first: _,
+        // Written by no one here: settings a newer build stored stay as read.
+        unknown: _,
     } = incoming;
     LauncherSettings {
         scan_on_startup,
@@ -304,6 +306,7 @@ mod tests {
     fn save_keeps_the_stored_provider() {
         let stored = LauncherSettings {
             active_provider: "claude".to_owned(),
+            unknown: serde_json::Map::from_iter([("voice_input".to_owned(), true.into())]),
             ..LauncherSettings::default()
         };
         let incoming = LauncherSettings {
@@ -313,8 +316,13 @@ mod tests {
             active_provider: "gemini".to_owned(),
             gemini_model: " gemini-3.8-flash ".to_owned(),
             hints_first: true,
+            unknown: serde_json::Map::new(),
         };
         let merged = merge_settings(&stored, incoming);
+        assert_eq!(
+            merged.unknown, stored.unknown,
+            "a setting a newer build stored survives Save"
+        );
         assert_eq!(merged.active_provider, "claude");
         assert_eq!(merged.gemini_model, "gemini-3.8-flash");
         assert!(!merged.scan_on_startup);
@@ -408,6 +416,7 @@ mod tests {
             active_provider: "claude".to_owned(),
             gemini_model: "gemini-y".to_owned(),
             hints_first: false,
+            unknown: serde_json::Map::new(),
         };
         let incoming = LauncherSettings {
             scan_on_startup: false,
@@ -416,6 +425,7 @@ mod tests {
             active_provider: "gemini".to_owned(),
             gemini_model: " gemini-x ".to_owned(),
             hints_first: true,
+            unknown: serde_json::Map::new(),
         };
         // (field, whether the modal writes it); every other writer is a setter.
         let owners = [

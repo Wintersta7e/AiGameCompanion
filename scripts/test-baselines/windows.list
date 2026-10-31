@@ -73,6 +73,7 @@ commands::games::tests::empty_complete_scan_clears_the_library run
 commands::games::tests::empty_partial_scan_keeps_the_whole_library run
 commands::games::tests::nameless_manifest_keeps_the_stored_game run
 commands::games::tests::partial_scan_keeps_games_it_did_not_reach run
+commands::games::tests::scan_keeps_fields_this_build_does_not_know run
 commands::games::tests::unreadable_manifest_keeps_the_stored_game run
 commands::settings::tests::checked_link_table run
 commands::settings::tests::hints_first_setter_refuses_read_only_first run
@@ -138,6 +139,7 @@ state::tests::save_then_load_round_trips_games run
 state::tests::settings_are_written_only_by_their_writers run
 state::tests::tmp_is_promoted_only_when_state_is_absent run
 state::tests::transient_lock_is_retried run
+state::tests::unknown_fields_survive_a_load_and_a_save run
 state::tests::writable_outcomes_stay_writable run
 tests::hotkey_labels_are_the_documented_chords run
 trust::tests::acl_denies_everything_unlisted run

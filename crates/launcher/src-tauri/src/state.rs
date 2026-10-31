@@ -1195,4 +1195,65 @@ mod tests {
             cleanup(&path);
         }
     }
+
+    /// A file written by a newer build, then opened by this one: fields this
+    /// build does not know -- at the top level, in `settings`, on a game and in
+    /// a game's preferences -- come back unchanged from a load and a save, and
+    /// the fields it knows are written once.
+    #[test]
+    fn unknown_fields_survive_a_load_and_a_save() {
+        let newer = r#"{"games":[{"id":"steam_1","name":"Foo","source":"steam","source_id":"1","play_time_minutes":900,"notes":"my notes"}],"settings":{"launch_on_startup":true,"voice_input":{"key":"F8"}},"game_prefs":{"library:steam_1":{"future_pref":7}},"journals":[{"text":"entry"}]}"#;
+        let path = temp_state_path("unknown_fields");
+        std::fs::write(&path, newer).unwrap();
+        let app = AppState::load(path.clone());
+        assert_eq!(app.load_error(), None);
+        assert_eq!(
+            app.autostart_setting(),
+            Some(true),
+            "an unknown setting is not an unreadable one"
+        );
+        app.save().unwrap();
+        let text = std::fs::read_to_string(&path).unwrap();
+        let saved: serde_json::Value = serde_json::from_str(&text).unwrap();
+        let original: serde_json::Value = serde_json::from_str(newer).unwrap();
+        let mut lost = Vec::new();
+        for pointer in [
+            "/journals",
+            "/settings/voice_input",
+            "/games/0/notes",
+            "/game_prefs/library:steam_1/future_pref",
+        ] {
+            println!("{pointer}: {:?}", saved.pointer(pointer));
+            if saved.pointer(pointer) != original.pointer(pointer) {
+                lost.push(pointer);
+            }
+        }
+        let backups: Vec<PathBuf> = backup_names(&path)
+            .into_iter()
+            .filter(|name| name.exists())
+            .collect();
+        cleanup(&path);
+        assert!(lost.is_empty(), "lost on save: {lost:?}");
+        assert_eq!(backups, Vec::<PathBuf>::new(), "nothing was dropped");
+        for key in [
+            "\"games\"",
+            "\"settings\"",
+            "\"launch_on_startup\"",
+            "\"play_time_minutes\"",
+            "\"notes\"",
+            "\"journals\"",
+        ] {
+            assert_eq!(text.matches(key).count(), 1, "{key} in {text}");
+        }
+
+        // A known setting that could not be read is dropped, never kept
+        // beside its default as an unknown one.
+        let path = temp_state_path("unreadable_known_field");
+        std::fs::write(&path, r#"{"settings":{"scan_on_startup":"yes"}}"#).unwrap();
+        let app = AppState::load(path.clone());
+        app.save().unwrap();
+        let text = std::fs::read_to_string(&path).unwrap();
+        cleanup(&path);
+        assert_eq!(text.matches("\"scan_on_startup\"").count(), 1, "{text}");
+    }
 }

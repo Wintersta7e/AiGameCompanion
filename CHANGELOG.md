@@ -20,6 +20,10 @@ All notable changes to this project are documented here. The format is based on
   library, turn off launch on startup and save over the file. It now keeps
   every value it can read, keeps a copy of the file when it skips one, and
   leaves launch on startup as it was when a setting could not be read.
+- **Going back to an older version no longer erases what a newer one saved.**
+  Settings, game details and per-game preferences that a newer version stored
+  were dropped the first time an older version saved the library; they are now
+  kept as they were.
 
 ## 2.1.0 - 2026-10-07
 

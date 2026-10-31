@@ -141,6 +141,7 @@ pub(crate) fn scan_steam_dir(steam_dir: &SteamDir) -> ScanOutcome {
                 cover_art_path,
                 last_played: None,
                 play_time_minutes: 0,
+                unknown: crate::models::UnknownFields::new(),
             });
         }
     }
