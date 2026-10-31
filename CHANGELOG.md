@@ -14,6 +14,12 @@ All notable changes to this project are documented here. The format is based on
 - **A library file with an unreadable entry is backed up once, not on every
   start.** With scan on startup off, each start kept another copy until the
   launcher ran out of backup names and refused to save anything.
+- **One unreadable setting no longer empties your game library.** A setting of
+  the wrong type, a settings or game list set to null, or a byte order mark at
+  the start of the library file made the launcher start over with an empty
+  library, turn off launch on startup and save over the file. It now keeps
+  every value it can read, keeps a copy of the file when it skips one, and
+  leaves launch on startup as it was when a setting could not be read.
 
 ## 2.1.0 - 2026-10-07
 

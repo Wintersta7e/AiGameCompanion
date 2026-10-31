@@ -150,21 +150,20 @@ fn main() {
             let state_path = app_dir.join("launcher-state.json");
             let app_state = AppState::load(state_path);
 
-            // Apply launch_on_startup from saved settings. Not in read-only
-            // mode: the settings are then defaults, not the user's, and applying
-            // them would delete an autostart entry the user asked for.
-            if app_state.load_error().is_some() {
-                tracing::warn!("Launcher state is read-only; leaving autostart unchanged");
-            } else {
-                let autostart = app.autolaunch();
-                let should_autostart = app_state.launcher.lock().settings.launch_on_startup;
-                if should_autostart {
-                    util::log_if_err("enable autostart", autostart.enable());
-                } else if let Err(err) = autostart.disable() {
-                    // Disabling when no registry entry exists is the normal case
-                    // on a fresh install, so this is not worth a warning on every
-                    // start.
-                    tracing::debug!("disable autostart: {err}");
+            // Apply launch_on_startup from saved settings, only when they are
+            // the user's.
+            match app_state.autostart_setting() {
+                None => tracing::warn!(
+                    "The launch-on-startup setting was not read; leaving autostart unchanged"
+                ),
+                Some(true) => util::log_if_err("enable autostart", app.autolaunch().enable()),
+                Some(false) => {
+                    if let Err(err) = app.autolaunch().disable() {
+                        // Disabling when no registry entry exists is the normal
+                        // case on a fresh install, so this is not worth a
+                        // warning on every start.
+                        tracing::debug!("disable autostart: {err}");
+                    }
                 }
             }
 

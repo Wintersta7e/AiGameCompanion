@@ -113,6 +113,8 @@ overlay_capture::tests::fit_within_scales_large_frames run
 placement::tests::placement_table run
 placement::tests::reference_cases run
 placement::tests::user_moved_tolerance run
+state::tests::a_leading_bom_loads_the_same_file run
+state::tests::autostart_follows_only_settings_that_were_read run
 state::tests::backup_never_replaces_an_existing_one run
 state::tests::backup_reuses_an_identical_copy_past_a_gap run
 state::tests::corrupt_state_falls_back_to_default_and_backs_up run
@@ -126,6 +128,7 @@ state::tests::load_fills_defaults_for_fields_missing_in_old_json run
 state::tests::load_returns_default_when_file_absent run
 state::tests::load_tolerates_missing_top_level_fields run
 state::tests::load_tolerates_unknown_game_source run
+state::tests::one_unreadable_value_keeps_the_library_and_every_readable_setting run
 state::tests::overlay_position_loads_leniently run
 state::tests::read_error_makes_state_read_only run
 state::tests::read_retries_transient_errors_only run

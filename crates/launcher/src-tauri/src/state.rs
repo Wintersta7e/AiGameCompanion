@@ -26,6 +26,9 @@ pub(crate) struct AppState {
     /// Why this run must not write the state file: set when the file found at
     /// load was neither fully loaded nor preserved. `None` means writable.
     load_error: Option<String>,
+    /// Whether the settings in memory are the user's: the file was absent, or
+    /// every value in its `settings` was read.
+    settings_read: bool,
 }
 
 impl AppState {
@@ -43,7 +46,7 @@ impl AppState {
             );
         }
 
-        let (launcher, load_error) = read_state(&state_path);
+        let (launcher, load_error, settings_read) = read_state(&state_path);
         if let Some(reason) = &load_error {
             tracing::error!("Launcher state is read-only this run: {reason}");
         }
@@ -53,12 +56,23 @@ impl AppState {
             active_sessions: Mutex::new(HashSet::new()),
             save_lock: Mutex::new(()),
             load_error,
+            settings_read,
         }
     }
 
     /// Why saving is refused this run, or `None` when the state is writable.
     pub(crate) fn load_error(&self) -> Option<&str> {
         self.load_error.as_deref()
+    }
+
+    /// The launch-on-startup value to apply to the OS at start, or `None` to
+    /// leave the autostart entry alone: the settings in memory are then not
+    /// the user's, and applying them would delete an entry the user asked for.
+    pub(crate) fn autostart_setting(&self) -> Option<bool> {
+        if self.load_error.is_some() || !self.settings_read {
+            return None;
+        }
+        Some(self.launcher.lock().settings.launch_on_startup)
     }
 
     pub(crate) fn save(&self) -> Result<(), String> {
@@ -107,25 +121,35 @@ impl AppState {
 /// Writable: parsed with nothing dropped; absent; or corrupt / partly
 /// unreadable with its bytes now in a backup. Read-only: unreadable after every
 /// retry, or corrupt / partly unreadable with no backup written.
-fn read_state(state_path: &Path) -> (LauncherState, Option<String>) {
+///
+/// The third value says whether every setting was read (see `settings_read`).
+fn read_state(state_path: &Path) -> (LauncherState, Option<String>, bool) {
     let contents = match read_with_retry(state_path, READ_ATTEMPTS, READ_RETRY_DELAY, |path| {
         std::fs::read_to_string(path)
     }) {
         Ok(contents) => contents,
-        Err(e) if e.kind() == ErrorKind::NotFound => return (LauncherState::default(), None),
+        Err(e) if e.kind() == ErrorKind::NotFound => {
+            return (LauncherState::default(), None, true);
+        }
         Err(e) => {
             let reason = format!("could not read {}: {e}", state_path.display());
-            return (LauncherState::default(), Some(reason));
+            return (LauncherState::default(), Some(reason), false);
         }
     };
+    // A UTF-8 byte order mark, as some Windows editors write, is not JSON. The
+    // backup below still keeps the file's own bytes.
+    let text = contents.strip_prefix('\u{feff}').unwrap_or(&contents);
 
-    match serde_json::from_str::<LauncherState>(&contents) {
+    match serde_json::from_str::<LauncherState>(text) {
         Ok(state) => {
-            // One malformed game or per-game entry is dropped rather than
-            // failing the whole file, so a parse can succeed and still lose data.
-            let dropped = dropped_entries(&contents, &state);
+            // One malformed game, per-game entry or setting is dropped rather
+            // than failing the whole file, so a parse can succeed and still
+            // lose data.
+            let dropped = dropped_entries(text, &state);
+            let settings_read = serde_json::from_str(text)
+                .is_ok_and(|raw| dropped_settings(&raw, &state.settings) == 0);
             if dropped == 0 {
-                return (state, None);
+                return (state, None, settings_read);
             }
             tracing::warn!("{dropped} unreadable entries in {}", state_path.display());
             let reason = back_up(state_path, contents.as_bytes()).err().map(|e| {
@@ -134,7 +158,7 @@ fn read_state(state_path: &Path) -> (LauncherState, Option<String>) {
                     state_path.display()
                 )
             });
-            (state, reason)
+            (state, reason, settings_read)
         }
         Err(parse_error) => {
             tracing::error!(
@@ -147,7 +171,7 @@ fn read_state(state_path: &Path) -> (LauncherState, Option<String>) {
                     state_path.display()
                 )
             });
-            (LauncherState::default(), reason)
+            (LauncherState::default(), reason, false)
         }
     }
 }
@@ -185,23 +209,40 @@ const fn should_promote_tmp(state_error: Option<ErrorKind>, tmp_exists: bool) ->
 }
 
 /// Entries the load dropped as unreadable: the file's `games` beyond the loaded
-/// games, plus its `game_prefs` entries beyond the loaded ones, where a
-/// `game_prefs` that is not an object counts as one.
+/// games, plus its `game_prefs` entries beyond the loaded ones, plus its
+/// unreadable settings, where a `games`, `game_prefs` or `settings` of the
+/// wrong kind counts as one.
 fn dropped_entries(contents: &str, state: &LauncherState) -> usize {
     let Ok(raw) = serde_json::from_str::<serde_json::Value>(contents) else {
         return 0;
     };
-    let games = raw
-        .get("games")
-        .and_then(serde_json::Value::as_array)
-        .map_or(0, Vec::len)
-        .saturating_sub(state.games.len());
+    let games = raw.get("games").map_or(0, |value| {
+        value
+            .as_array()
+            .map_or(1, |entries| entries.len().saturating_sub(state.games.len()))
+    });
     let prefs = raw.get("game_prefs").map_or(0, |value| {
         value.as_object().map_or(1, |entries| {
             entries.len().saturating_sub(state.game_prefs.len())
         })
     });
-    games + prefs
+    games + prefs + dropped_settings(&raw, &state.settings)
+}
+
+/// Values in the file's `settings` that did not load: each one whose loaded
+/// value differs from the file's, or one for a `settings` that is not an object.
+fn dropped_settings(raw: &serde_json::Value, settings: &LauncherSettings) -> usize {
+    let Some(stored) = raw.get("settings") else {
+        return 0;
+    };
+    let Some(stored) = stored.as_object() else {
+        return 1;
+    };
+    let loaded = serde_json::to_value(settings).unwrap_or_default();
+    stored
+        .iter()
+        .filter(|&(key, value)| loaded.get(key) != Some(value))
+        .count()
 }
 
 /// Write `bytes` -- what the load already read, never a second read of a file
@@ -1034,5 +1075,124 @@ mod tests {
         let contents = std::fs::read_to_string(&path).unwrap();
         serde_json::from_str::<serde_json::Value>(&contents).unwrap();
         cleanup(&path);
+    }
+
+    const TWO_GAMES: &str = r#""games":[{"id":"steam_1","name":"Foo","source":"steam","source_id":"1","play_time_minutes":900},{"id":"steam_2","name":"Bar","source":"steam","source_id":"2","play_time_minutes":4000}]"#;
+
+    /// One value outside `games[]` that this build cannot read -- a setting of
+    /// the wrong type, a null `settings` or `games` -- used to fail the whole
+    /// file, load an empty library and let the next save write it over.
+    #[test]
+    fn one_unreadable_value_keeps_the_library_and_every_readable_setting() {
+        let cases = [
+            (
+                "bad_setting",
+                format!(
+                    r#"{{{TWO_GAMES},"settings":{{"scan_on_startup":"yes","launch_on_startup":true,"gemini_model":"gemini-x"}}}}"#
+                ),
+            ),
+            (
+                "null_settings",
+                format!(r#"{{{TWO_GAMES},"settings":null}}"#),
+            ),
+            (
+                "null_games",
+                r#"{"games":null,"settings":{"launch_on_startup":true,"gemini_model":"gemini-x"}}"#
+                    .to_owned(),
+            ),
+        ];
+        for (label, text) in cases {
+            let path = temp_state_path(&format!("one_unreadable_{label}"));
+            std::fs::write(&path, &text).unwrap();
+            let app = AppState::load(path.clone());
+            let st = app.launcher.lock().clone();
+            let minutes: Vec<u64> = st.games.iter().map(|g| g.play_time_minutes).collect();
+            println!(
+                "{label}: minutes={minutes:?} launch_on_startup={} gemini_model={:?} load_error={:?} autostart={:?}",
+                st.settings.launch_on_startup,
+                st.settings.gemini_model,
+                app.load_error(),
+                app.autostart_setting()
+            );
+            assert_eq!(app.load_error(), None, "{label}");
+            let backup = std::fs::read_to_string(path.with_extension("json.bak"));
+            assert_eq!(
+                backup.ok().as_deref(),
+                Some(text.as_str()),
+                "{label}: the file is kept as it was"
+            );
+            match label {
+                "bad_setting" => {
+                    assert_eq!(minutes, [900, 4000]);
+                    assert!(st.settings.launch_on_startup, "a readable setting is kept");
+                    assert_eq!(st.settings.gemini_model, "gemini-x");
+                    assert!(
+                        st.settings.scan_on_startup,
+                        "the unreadable one is the default"
+                    );
+                    assert_eq!(
+                        app.autostart_setting(),
+                        None,
+                        "settings that were not all read leave autostart alone"
+                    );
+                }
+                "null_settings" => {
+                    assert_eq!(minutes, [900, 4000]);
+                    assert_eq!(app.autostart_setting(), None);
+                }
+                _ => {
+                    assert_eq!(minutes, Vec::<u64>::new());
+                    assert_eq!(st.settings.gemini_model, "gemini-x");
+                    assert_eq!(app.autostart_setting(), Some(true));
+                }
+            }
+            cleanup(&path);
+        }
+    }
+
+    /// A leading UTF-8 byte order mark, as some Windows editors and shells
+    /// write, is not part of the JSON and must not make the file unreadable.
+    #[test]
+    fn a_leading_bom_loads_the_same_file() {
+        let path = temp_state_path("leading_bom");
+        let text = format!("\u{feff}{{{TWO_GAMES},\"settings\":{{\"launch_on_startup\":true}}}}");
+        std::fs::write(&path, &text).unwrap();
+        let app = AppState::load(path.clone());
+        let minutes: Vec<u64> = app
+            .launcher
+            .lock()
+            .games
+            .iter()
+            .map(|g| g.play_time_minutes)
+            .collect();
+        println!(
+            "bom: minutes={minutes:?} load_error={:?} autostart={:?}",
+            app.load_error(),
+            app.autostart_setting()
+        );
+        assert_eq!(minutes, [900, 4000]);
+        assert_eq!(app.autostart_setting(), Some(true));
+        assert!(
+            backup_names(&path).iter().all(|name| !name.exists()),
+            "nothing was dropped, so nothing is backed up"
+        );
+        cleanup(&path);
+    }
+
+    /// The autostart entry follows only a setting read from the user's file
+    /// (or a new install's default), never a default that stands in for one.
+    #[test]
+    fn autostart_follows_only_settings_that_were_read() {
+        let absent = temp_state_path("autostart_absent");
+        let read = temp_state_path("autostart_read");
+        std::fs::write(&read, r#"{"settings":{"launch_on_startup":true}}"#).unwrap();
+        let corrupt = temp_state_path("autostart_corrupt");
+        std::fs::write(&corrupt, r#"{"settings":{"launch_on_startup":true}"#).unwrap();
+        for (path, expected) in [(absent, Some(false)), (read, Some(true)), (corrupt, None)] {
+            let app = AppState::load(path.clone());
+            println!("{}: {:?}", path.display(), app.autostart_setting());
+            assert_eq!(app.autostart_setting(), expected, "{}", path.display());
+            cleanup(&path);
+        }
     }
 }

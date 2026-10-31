@@ -90,12 +90,16 @@ impl Default for LauncherSettings {
 
 /// Drop individual unreadable game entries rather than failing the whole file.
 /// Without this, one bad field value (a hand edit, a type change between
-/// versions) costs the user their entire library.
+/// versions) costs the user their entire library. A `games` that is not a list
+/// (a null, say) loads as an empty one.
 fn games_lenient<'de, D>(deserializer: D) -> Result<Vec<Game>, D::Error>
 where
     D: serde::Deserializer<'de>,
 {
-    let raw = Vec::<serde_json::Value>::deserialize(deserializer)?;
+    let serde_json::Value::Array(raw) = serde_json::Value::deserialize(deserializer)? else {
+        tracing::warn!("Dropping unreadable game list: not a list");
+        return Ok(Vec::new());
+    };
     Ok(raw
         .into_iter()
         .filter_map(|value| match serde_json::from_value::<Game>(value) {
@@ -106,6 +110,32 @@ where
             }
         })
         .collect())
+}
+
+/// Load `settings` one value at a time: a value of the wrong type falls back to
+/// its default and every readable one is kept, and a `settings` that is not an
+/// object (a null, say) loads as the defaults. Failing the parse would send the
+/// whole library down the corrupt-file path.
+fn settings_lenient<'de, D>(deserializer: D) -> Result<LauncherSettings, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    use serde::de::Error as _;
+
+    let serde_json::Value::Object(raw) = serde_json::Value::deserialize(deserializer)? else {
+        tracing::warn!("Dropping unreadable settings: not an object");
+        return Ok(LauncherSettings::default());
+    };
+    let readable: serde_json::Map<String, serde_json::Value> = raw
+        .into_iter()
+        .filter(|(key, value)| {
+            let alone = serde_json::Map::from_iter([(key.clone(), value.clone())]);
+            serde_json::from_value::<LauncherSettings>(serde_json::Value::Object(alone))
+                .inspect_err(|e| tracing::warn!("Dropping unreadable setting {key}: {e}"))
+                .is_ok()
+        })
+        .collect();
+    serde_json::from_value(serde_json::Value::Object(readable)).map_err(D::Error::custom)
 }
 
 /// Per-game values the user sets, keyed by a game key. Never sent to the page:
@@ -164,6 +194,7 @@ where
 pub(crate) struct LauncherState {
     #[serde(deserialize_with = "games_lenient")]
     pub games: Vec<Game>,
+    #[serde(deserialize_with = "settings_lenient")]
     pub settings: LauncherSettings,
     /// Kept beside the library rather than on `Game`: a scan rebuilds Steam
     /// games and would erase a value stored on one.
