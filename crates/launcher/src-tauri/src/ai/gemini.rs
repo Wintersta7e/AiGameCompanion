@@ -292,12 +292,12 @@ where
             return Err("Response too large. Stream aborted.".to_owned());
         }
         buffer.extend_from_slice(&bytes);
-        received_text |= process_sse_lines(&mut buffer, &mut on_chunk)?;
+        process_sse_lines(&mut buffer, &mut received_text, &mut on_chunk)?;
     }
 
     if !buffer.is_empty() {
         buffer.push(b'\n');
-        received_text |= process_sse_lines(&mut buffer, &mut on_chunk)?;
+        process_sse_lines(&mut buffer, &mut received_text, &mut on_chunk)?;
     }
 
     if received_text {
@@ -375,11 +375,17 @@ pub(crate) fn validate_model(model: &str) -> Result<(), String> {
     Ok(())
 }
 
-fn process_sse_lines<F>(buffer: &mut Vec<u8>, on_chunk: &mut F) -> Result<bool, String>
+/// Emit the text of every complete SSE line in `buffer`. `received_text`
+/// spans the whole response, so a stop reason that arrives after the text is
+/// not reported as an answer that never started.
+fn process_sse_lines<F>(
+    buffer: &mut Vec<u8>,
+    received_text: &mut bool,
+    on_chunk: &mut F,
+) -> Result<(), String>
 where
     F: FnMut(String) -> Result<(), String>,
 {
-    let mut received_text = false;
     while let Some(newline_position) = buffer.iter().position(|&byte| byte == b'\n') {
         let line_bytes = buffer
             .get(..newline_position)
@@ -403,16 +409,14 @@ where
             {
                 return Err(format!("Gemini blocked this request ({reason})."));
             }
-            let blocked = response
+            // Any reason but STOP (token limit, safety, recitation) means the
+            // answer is not complete, even when this frame carries text.
+            let stopped_early = response
                 .candidates
                 .iter()
                 .filter_map(|candidate| candidate.finish_reason.as_deref())
-                .find(|reason| !matches!(*reason, "STOP" | "MAX_TOKENS"))
+                .find(|reason| *reason != "STOP")
                 .map(str::to_owned);
-            let truncated = response
-                .candidates
-                .iter()
-                .any(|candidate| candidate.finish_reason.as_deref() == Some("MAX_TOKENS"));
             let text = response
                 .candidates
                 .into_iter()
@@ -423,15 +427,15 @@ where
                 if let Some(message) = stream_error_message(json) {
                     return Err(format!("API error: {message}"));
                 }
-                if let Some(reason) = blocked {
-                    return Err(format!("Gemini stopped early ({reason})."));
-                }
-                if truncated {
+                if stopped_early.as_deref() == Some("MAX_TOKENS") && !*received_text {
                     return Err("Gemini hit its output limit before writing anything.".to_owned());
                 }
             } else {
-                received_text = true;
+                *received_text = true;
                 on_chunk(text)?;
+            }
+            if let Some(reason) = stopped_early {
+                return Err(format!("Gemini stopped early ({reason})."));
             }
         } else {
             if let Some(message) = stream_error_message(json) {
@@ -440,7 +444,7 @@ where
             tracing::debug!("SSE: skipping unparseable JSON chunk");
         }
     }
-    Ok(received_text)
+    Ok(())
 }
 
 fn stream_error_message(json: &str) -> Option<String> {
@@ -620,19 +624,85 @@ mod tests {
         let split = bytes.iter().position(|byte| *byte == 0xc3).unwrap_or(1) + 1;
         let mut buffer = bytes[..split].to_vec();
         let mut chunks = Vec::new();
+        let mut received_text = false;
 
-        assert!(!process_sse_lines(&mut buffer, &mut |chunk| {
+        process_sse_lines(&mut buffer, &mut received_text, &mut |chunk| {
             chunks.push(chunk);
             Ok(())
         })
-        .expect("partial line should be buffered"));
+        .expect("partial line should be buffered");
+        assert!(!received_text);
         buffer.extend_from_slice(&bytes[split..]);
-        assert!(process_sse_lines(&mut buffer, &mut |chunk| {
+        process_sse_lines(&mut buffer, &mut received_text, &mut |chunk| {
             chunks.push(chunk);
             Ok(())
         })
-        .expect("complete line should parse"));
+        .expect("complete line should parse");
+        assert!(received_text);
         assert_eq!(chunks, ["hello \u{e9}"]);
+    }
+
+    /// One SSE frame as Gemini streams it: `text` (none when empty) and a
+    /// `finishReason` (none when absent).
+    fn frame(text: &str, reason: Option<&str>) -> Vec<u8> {
+        let mut candidate = serde_json::json!({"index": 0});
+        if !text.is_empty() {
+            candidate["content"] = serde_json::json!({"parts": [{"text": text}], "role": "model"});
+        }
+        if let Some(reason) = reason {
+            candidate["finishReason"] = serde_json::json!(reason);
+        }
+        format!("data: {}\n", serde_json::json!({"candidates": [candidate]})).into_bytes()
+    }
+
+    /// Gemini sends its stop reason in the same frame as the last text when it
+    /// stops mid-answer, or in a frame of its own after it. Only `STOP` ends a
+    /// complete answer; the text that came stays on screen with the reason
+    /// under it.
+    #[test]
+    fn an_answer_cut_short_ends_with_its_stop_reason() {
+        for reason in ["MAX_TOKENS", "SAFETY", "RECITATION"] {
+            let mut chunks = Vec::new();
+            let mut received_text = false;
+            let mut buffer = frame("First go to the", Some(reason));
+            let result = process_sse_lines(&mut buffer, &mut received_text, &mut |chunk| {
+                chunks.push(chunk);
+                Ok(())
+            });
+            println!("{reason}: {result:?} {chunks:?}");
+            assert_eq!(chunks, ["First go to the"], "{reason}");
+            assert_eq!(
+                result,
+                Err(format!("Gemini stopped early ({reason}).")),
+                "{reason}"
+            );
+
+            // The reason in a later read, after the text arrived.
+            let mut received_text = false;
+            let mut buffer = frame("First go to the", None);
+            process_sse_lines(&mut buffer, &mut received_text, &mut |_| Ok(())).unwrap();
+            let mut buffer = frame("", Some(reason));
+            assert_eq!(
+                process_sse_lines(&mut buffer, &mut received_text, &mut |_| Ok(())),
+                Err(format!("Gemini stopped early ({reason}).")),
+                "{reason} after the text"
+            );
+        }
+
+        let mut received_text = false;
+        let mut buffer = frame("", Some("MAX_TOKENS"));
+        assert_eq!(
+            process_sse_lines(&mut buffer, &mut received_text, &mut |_| Ok(())),
+            Err("Gemini hit its output limit before writing anything.".to_owned())
+        );
+
+        let mut received_text = false;
+        let mut buffer = frame("Done.", Some("STOP"));
+        assert_eq!(
+            process_sse_lines(&mut buffer, &mut received_text, &mut |_| Ok(())),
+            Ok(())
+        );
+        assert!(received_text);
     }
 
     #[test]

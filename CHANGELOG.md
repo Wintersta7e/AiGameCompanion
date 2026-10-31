@@ -51,6 +51,10 @@ All notable changes to this project are documented here. The format is based on
 - **A Codex answer line written as JSON is shown as written.** A line such as
   a config or save snippet was dropped, cut down to one of its values, or
   turned the whole answer into an error.
+- **A Gemini answer cut off by its length limit or a safety stop says so.** It
+  ended as a complete answer and went back to Gemini as one; the text that
+  arrived now stays with the reason under it, and it is left out of the next
+  question.
 
 ## 2.1.0 - 2026-10-07
 

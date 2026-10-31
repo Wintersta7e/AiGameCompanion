@@ -43,6 +43,7 @@ ai::cli::tests::validate_model_name_rejects_non_ascii run
 ai::cli::tests::validate_model_name_rejects_path_traversal run
 ai::cli::tests::version_probe_escapes_the_name run
 ai::cli::tests::wsl_bash_passes_script_without_a_second_shell run
+ai::gemini::tests::an_answer_cut_short_ends_with_its_stop_reason run
 ai::gemini::tests::buffers_split_utf8_and_emits_complete_text_chunks run
 ai::gemini::tests::detects_streamed_api_errors run
 ai::gemini::tests::http_errors_explain_themselves run
