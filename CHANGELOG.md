@@ -43,6 +43,11 @@ All notable changes to this project are documented here. The format is based on
   damaged library file, or one with entries it could not read, left an empty or
   shorter library with no word of the copy it had kept. The main window now
   names that copy once per start.
+- **A failed Codex or Claude question no longer writes your question into the
+  launcher log.** When the CLI failed, the last lines of its error output went
+  to the log and into the error shown in the panel, and Codex repeats the
+  whole prompt there. The log now keeps how the CLI ended and its own error
+  lines, and the panel shows the CLI's reason, not your question.
 
 ## 2.1.0 - 2026-10-07
 

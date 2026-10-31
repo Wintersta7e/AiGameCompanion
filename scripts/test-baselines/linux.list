@@ -1,3 +1,4 @@
+ai::cli::tests::a_failed_cli_keeps_the_chat_out_of_the_log run
 ai::cli::tests::blank_lines_count_toward_the_byte_cap run
 ai::cli::tests::claude_children_are_locked_down run
 ai::cli::tests::claude_input_appends_image_part_when_screenshot_present run
