@@ -4,6 +4,14 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## Unreleased
+
+### Fixed
+
+- **A Steam game keeps its playtime when a scan cannot read its details.** A
+  game whose Steam manifest was being rewritten, was cut short by a crash or had
+  no name yet was dropped by the scan, and came back with zero playtime.
+
 ## 2.1.0 - 2026-10-07
 
 ### Added

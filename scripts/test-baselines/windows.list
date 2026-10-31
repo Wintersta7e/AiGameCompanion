@@ -71,7 +71,9 @@ commands::games::tests::complete_scan_drops_uninstalled_games run
 commands::games::tests::complete_scan_keeps_other_sources run
 commands::games::tests::empty_complete_scan_clears_the_library run
 commands::games::tests::empty_partial_scan_keeps_the_whole_library run
+commands::games::tests::nameless_manifest_keeps_the_stored_game run
 commands::games::tests::partial_scan_keeps_games_it_did_not_reach run
+commands::games::tests::unreadable_manifest_keeps_the_stored_game run
 commands::settings::tests::checked_link_table run
 commands::settings::tests::hints_first_setter_refuses_read_only_first run
 commands::settings::tests::merge_settings_owners run
