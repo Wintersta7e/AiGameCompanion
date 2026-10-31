@@ -722,6 +722,10 @@
         // input silently refuses focus.
         void tick().then(() => inputEl?.focus());
       }),
+      listen('target-window-closed', () => {
+        // The window this panel names was found closed, so nothing may use it.
+        game = null;
+      }),
       listen('providers-changed', () => {
         void loadSavedProvider();
       }),

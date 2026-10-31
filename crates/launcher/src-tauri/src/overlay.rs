@@ -16,6 +16,8 @@ use crate::state::AppState;
 
 /// Shown when a screenshot or a translation needs a linked game and there is none.
 pub(crate) const NO_LINKED_GAME: &str = "No linked game -- link the window in the overlay first.";
+/// Sent to the overlay page when the stored target window is found closed.
+const TARGET_CLOSED: &str = "target-window-closed";
 
 /// What a linked request may tell a provider about the game, besides its name.
 /// Rust-only: never sent to the page.
@@ -713,8 +715,9 @@ pub(crate) const fn is_live_window(_hwnd: i64, _pid: u32) -> bool {
 /// The stored target, but only if its handle still names a live window of the
 /// process we recorded. Clears the slot otherwise, so a handle Windows reused
 /// for another process is never screenshotted, uploaded or handed focus. It
-/// cannot tell two windows of that same process apart.
-pub(crate) fn live_game(app: &AppHandle) -> Option<GameInfo> {
+/// cannot tell two windows of that same process apart. The page is told when
+/// the slot is cleared: until then it shows the window, linked or not.
+pub(crate) fn live_game<R: tauri::Runtime>(app: &AppHandle<R>) -> Option<GameInfo> {
     let state = app.try_state::<OverlayState>()?;
     let mut slot = state.game.lock();
     let game = slot.clone()?;
@@ -723,6 +726,11 @@ pub(crate) fn live_game(app: &AppHandle) -> Option<GameInfo> {
     }
     tracing::info!("Stored target window {} is gone; clearing", game.hwnd);
     *slot = None;
+    drop(slot);
+    crate::util::log_if_err(
+        "emit target-window-closed",
+        app.emit_to("overlay", TARGET_CLOSED, ()),
+    );
     None
 }
 
@@ -1080,6 +1088,48 @@ mod imp {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A stored target found closed is cleared, and the page is told, so its
+    /// header and image button stop offering the closed window.
+    #[test]
+    fn a_closed_target_is_announced_to_the_page() {
+        let app = tauri::test::mock_app();
+        app.manage(OverlayState::default());
+        // No window has the handle 0, so the stored target counts as closed.
+        *app.state::<OverlayState>().game.lock() = Some(GameInfo {
+            exe: "Lanternfall.exe".to_owned(),
+            linked: true,
+            ..GameInfo::default()
+        });
+        let (tx, rx) = std::sync::mpsc::channel();
+        tauri::Listener::listen_any(&app, TARGET_CLOSED, move |_| {
+            tx.send(()).unwrap();
+        });
+
+        let live = live_game(app.handle());
+        let announced = rx
+            .recv_timeout(std::time::Duration::from_millis(500))
+            .is_ok();
+        let listener = format!("listen('{TARGET_CLOSED}'");
+        let scan = crate::util::count_in_frontend(&[listener.as_str()]);
+        println!(
+            "live: {}, announced: {announced}, {} frontend files scanned, page listeners: {:?}",
+            live.is_some(),
+            scan.files.len(),
+            scan.hits[0]
+        );
+        assert!(live.is_none(), "a closed window counted as live");
+        assert!(app.state::<OverlayState>().game.lock().is_none());
+        assert!(
+            announced,
+            "the page was not told, so it kept showing the closed window as linked"
+        );
+        assert_eq!(
+            scan.hits[0].len(),
+            1,
+            "one page listener for {TARGET_CLOSED}"
+        );
+    }
 
     /// The overlay's hand-written `GameInfo` type must carry every field Rust
     /// sends, with the same JSON type; a field only TypeScript has must be

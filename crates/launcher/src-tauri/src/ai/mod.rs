@@ -667,13 +667,14 @@ pub(crate) const fn translate_gate(
 /// The screenshot is claimed first: a refusal sends nothing and keeps it held.
 pub(crate) async fn translate_held(app: &AppHandle, shot_id: u64) -> Result<Translation, String> {
     let provider = Provider::Gemini;
+    let stored = crate::overlay::stored_game(app);
     let game = crate::overlay::linked_game(app);
     let target = crate::shots::capture_target(game.as_ref());
     let key = gemini::load_config();
     if let Err(block) = translate_gate(target.is_some(), key.is_ok(), provider.takes_screenshot()) {
         tracing::info!("Translate: refused: {}", block.code());
         return Err(match block {
-            TranslateBlock::NotLinked => crate::overlay::NO_LINKED_GAME.to_owned(),
+            TranslateBlock::NotLinked => crate::shots::missing_target(stored.as_ref()).to_owned(),
             TranslateBlock::Unavailable => key.err().unwrap_or_default(),
             TranslateBlock::NoScreenshots => format!(
                 "{} can't receive screenshots, so it can't translate.",

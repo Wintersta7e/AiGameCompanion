@@ -73,6 +73,10 @@ All notable changes to this project are documented here. The format is based on
   the pointer into the game screenshot, where it could cover text.
 - **The chat stays where you left it when you switch tabs.** Coming back from
   the Translate tab showed the first messages instead of the latest.
+- **The panel stops showing a closed game as linked.** After the linked window
+  closed, the panel kept it as linked with the screenshot buttons on, and a
+  translation or a second screenshot said no game was linked. The panel now
+  lets go of the window once it is found closed and says it is no longer open.
 
 ## 2.1.0 - 2026-10-07
 
