@@ -293,8 +293,86 @@ fn version_script(name: &str) -> String {
     format!("{} --version", shell_escape(name))
 }
 
-/// Check if a CLI tool is available, first natively on the Windows PATH, then
-/// inside WSL, using `bash -lic`.
+/// The command that runs the CLI `name` from the Windows PATH.
+fn native_command(name: &str) -> std::process::Command {
+    #[cfg(windows)]
+    if let Some(path) = std::env::var_os("PATH") {
+        return native_command_in(name, &path);
+    }
+    std::process::Command::new(name)
+}
+
+/// `native_command` for the PATH value `path`.
+///
+/// `Command::new(name)` finds only `name.exe`, but npm installs a CLI as a
+/// `name.cmd` batch file. That would have to run through `cmd.exe`, which
+/// parses the command line again: `&`, `|` and `%VAR%` in an argument act, and
+/// an argument cannot hold a line break -- Claude's system prompt is one
+/// argument of many lines. So the batch file is read instead, and what it
+/// runs is started directly with the same arguments.
+#[cfg(windows)]
+fn native_command_in(name: &str, path: &std::ffi::OsStr) -> std::process::Command {
+    for dir in std::env::split_paths(path) {
+        if dir.join(format!("{name}.exe")).is_file() {
+            break;
+        }
+        let shim = dir.join(format!("{name}.cmd"));
+        if !shim.is_file() {
+            continue;
+        }
+        let text = std::fs::read_to_string(&shim).unwrap_or_default();
+        if let Some(cmd) = npm_shim_command(&text, &dir) {
+            return cmd;
+        }
+        tracing::warn!("{name}.cmd is on PATH, but what it runs could not be read from it");
+        break;
+    }
+    std::process::Command::new(name)
+}
+
+/// What an npm batch file in `dir` runs, as a command to which the caller's
+/// arguments are appended. Its last line is either `"%dp0%\<program>" %*`, or
+/// `"%_prog%" "%dp0%\<script>" %*` where `_prog` is the interpreter beside the
+/// batch file when there is one, else the one on PATH. Any other shape is
+/// `None`: it is not run.
+#[cfg(windows)]
+fn npm_shim_command(shim: &str, dir: &std::path::Path) -> Option<std::process::Command> {
+    let last = shim.lines().map(str::trim).rfind(|line| !line.is_empty())?;
+    let (before, target) = last
+        .strip_suffix("%*")?
+        .trim_end()
+        .strip_suffix('"')?
+        .rsplit_once("\"%dp0%\\")?;
+    if target.contains(['"', '%']) {
+        return None;
+    }
+    let target = dir.join(target);
+    let before = before.trim();
+    if before.is_empty() || before == "@" {
+        return Some(std::process::Command::new(target));
+    }
+    if !before.ends_with("\"%_prog%\"") {
+        return None;
+    }
+    let prog = shim.lines().find_map(|line| {
+        line.trim()
+            .strip_prefix("SET \"_prog=")?
+            .strip_suffix('"')
+            .filter(|prog| !prog.contains(['%', '\\', '/']))
+    })?;
+    let local = dir.join(format!("{prog}.exe"));
+    let mut cmd = if local.is_file() {
+        std::process::Command::new(local)
+    } else {
+        std::process::Command::new(prog)
+    };
+    cmd.arg(target);
+    Some(cmd)
+}
+
+/// Check if a CLI tool is available, first natively on the Windows PATH (an
+/// `.exe`, or an npm install: see `native_command_in`), then inside WSL, using
+/// `bash -lic`.
 ///
 /// Both flags are required, and each was measured from the running launcher:
 /// `-i` sources `.bashrc`, where nvm puts Codex (plain `-lc` made Codex
@@ -304,7 +382,7 @@ fn version_script(name: &str) -> String {
 /// first. See `WSL_SENTINEL` for how the interactive shell's banner output is
 /// kept out of the model stream.
 pub(crate) fn detect_cli(name: &str) -> CliMode {
-    let native = silent(std::process::Command::new(name).arg("--version"))
+    let native = silent(native_command(name).arg("--version"))
         .status()
         .is_ok_and(|status| status.success());
     if native {
@@ -767,7 +845,7 @@ where
     let mut cmd = if cfg.claude == CliMode::Wsl {
         Command::from(wsl_bash(&claude_wsl_script(model, system_prompt)))
     } else {
-        let mut c = Command::new("claude");
+        let mut c = Command::from(native_command("claude"));
         c.args(claude_args(model, system_prompt));
         c
     };
@@ -811,7 +889,7 @@ where
     let mut cmd = if cfg.codex == CliMode::Wsl {
         Command::from(wsl_bash(&codex_wsl_script(work_dir, image.as_deref())))
     } else {
-        let mut c = Command::new("codex");
+        let mut c = Command::from(native_command("codex"));
         c.args(codex_args(work_dir, image.as_deref()));
         c
     };
@@ -1099,6 +1177,119 @@ mod tests {
             println!("input  {input:?}\nresult {result:?}");
             assert_eq!(result, input);
         }
+    }
+
+    // ---------------- npm installs on Windows ----------------
+
+    /// The `.cmd` file npm writes for a CLI whose entry point is a script,
+    /// with an invented package.
+    #[cfg(windows)]
+    const NPM_SHIM: &str = "@ECHO off\r\nGOTO start\r\n:find_dp0\r\nSET dp0=%~dp0\r\nEXIT /b\r\n\
+        :start\r\nSETLOCAL\r\nCALL :find_dp0\r\n\r\nIF EXIST \"%dp0%\\node.exe\" (\r\n  \
+        SET \"_prog=%dp0%\\node.exe\"\r\n) ELSE (\r\n  SET \"_prog=node\"\r\n  \
+        SET PATHEXT=%PATHEXT:;.JS;=;%\r\n)\r\n\r\nendLocal & goto #_undefined_# 2>NUL || \
+        title %COMSPEC% & \"%_prog%\"  \"%dp0%\\node_modules\\@example\\fakecli\\bin\\fakecli.js\" %*\r\n";
+
+    /// Arguments `cmd.exe` would act on, and an empty one (`--tools ''`).
+    /// Claude's system prompt is one argument and spans many lines.
+    #[cfg(windows)]
+    fn hostile_args(marker: &std::path::Path) -> Vec<String> {
+        let marker = marker.display();
+        vec![
+            format!("a & echo INJECTED > \"{marker}\""),
+            format!("b | echo INJECTED > \"{marker}\""),
+            format!("c ^& echo INJECTED > \"{marker}\""),
+            "%PATH% %COMSPEC% !bang!".to_owned(),
+            String::new(),
+            r#"say "hi" \" and \\"#.to_owned(),
+            format!("line one\nline two & echo INJECTED > \"{marker}\""),
+            format!("line one\r\n\"& echo INJECTED > \"{marker}\""),
+        ]
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn an_npm_installed_cli_is_found_and_runs_without_cmd_exe() {
+        let dir = fresh_dir("npm-shim");
+        let bin = dir.join(r"node_modules\@example\fakecli\bin");
+        std::fs::create_dir_all(&bin).unwrap();
+        std::fs::write(
+            bin.join("fakecli.js"),
+            "process.stdout.write(JSON.stringify(process.argv.slice(2)));",
+        )
+        .unwrap();
+        std::fs::write(dir.join("fakecli.cmd"), NPM_SHIM).unwrap();
+        let marker = dir.join("INJECTED");
+        let args = hostile_args(&marker);
+
+        let mut cmd = native_command_in("fakecli", dir.as_os_str());
+        let program = std::path::Path::new(cmd.get_program()).to_owned();
+        let out = cmd.args(&args).output();
+        println!("program {program:?}, output {out:?}");
+        let out = out.expect("the npm-installed CLI runs");
+        let seen: Vec<String> = serde_json::from_slice(&out.stdout).unwrap();
+        let injected = marker.exists();
+        std::fs::remove_dir_all(&dir).unwrap();
+        assert_eq!(seen, args, "every argument arrives as written");
+        assert!(!injected, "an argument ran a command");
+        assert!(
+            !program
+                .file_name()
+                .is_some_and(|name| name.eq_ignore_ascii_case("cmd.exe")),
+            "the CLI ran through cmd.exe"
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn npm_shims_resolve_like_the_batch_file() {
+        let dir = fresh_dir("npm-forms");
+        let path = |dirs: &[&std::path::Path]| std::env::join_paths(dirs).unwrap();
+        let program = |cmd: &std::process::Command| std::path::PathBuf::from(cmd.get_program());
+        let args = |cmd: &std::process::Command| {
+            cmd.get_args()
+                .map(std::path::PathBuf::from)
+                .collect::<Vec<_>>()
+        };
+
+        // A script run by `node`: the one beside the batch file comes first.
+        let script = dir.join(r"node_modules\@example\fakecli\bin\fakecli.js");
+        std::fs::write(dir.join("fakecli.cmd"), NPM_SHIM).unwrap();
+        let cmd = native_command_in("fakecli", &path(&[&dir]));
+        assert_eq!(
+            (program(&cmd), args(&cmd)),
+            ("node".into(), vec![script.clone()])
+        );
+        std::fs::write(dir.join("node.exe"), b"").unwrap();
+        let cmd = native_command_in("fakecli", &path(&[&dir]));
+        assert_eq!(
+            (program(&cmd), args(&cmd)),
+            (dir.join("node.exe"), vec![script])
+        );
+
+        // A program the batch file runs itself.
+        let exe = dir.join(r"node_modules\@example\exetool\bin\exetool.exe");
+        std::fs::write(
+            dir.join("exetool.cmd"),
+            "@ECHO off\r\nGOTO start\r\n:find_dp0\r\nSET dp0=%~dp0\r\nEXIT /b\r\n:start\r\n\
+             SETLOCAL\r\nCALL :find_dp0\r\n\"%dp0%\\node_modules\\@example\\exetool\\bin\\exetool.exe\"   %*\r\n",
+        )
+        .unwrap();
+        let cmd = native_command_in("exetool", &path(&[&dir]));
+        assert_eq!((program(&cmd), args(&cmd)), (exe, vec![]));
+
+        // PATH order decides: an `.exe` in an earlier folder wins.
+        let first = dir.join("first");
+        std::fs::create_dir_all(&first).unwrap();
+        std::fs::write(first.join("fakecli.exe"), b"").unwrap();
+        let cmd = native_command_in("fakecli", &path(&[&first, &dir]));
+        assert_eq!((program(&cmd), args(&cmd)), ("fakecli".into(), vec![]));
+
+        // A batch file in another shape is not run.
+        std::fs::write(dir.join("other.cmd"), "@echo off\r\nsomething.exe %*\r\n").unwrap();
+        let cmd = native_command_in("other", &path(&[&dir]));
+        assert_eq!((program(&cmd), args(&cmd)), ("other".into(), vec![]));
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     // ---------------- shell_escape ----------------

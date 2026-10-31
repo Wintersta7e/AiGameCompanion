@@ -1,3 +1,4 @@
+ai::cli::tests::an_npm_installed_cli_is_found_and_runs_without_cmd_exe run
 ai::cli::tests::claude_children_are_locked_down run
 ai::cli::tests::claude_input_appends_image_part_when_screenshot_present run
 ai::cli::tests::claude_input_concatenates_history_as_single_user_turn run
@@ -14,6 +15,7 @@ ai::cli::tests::codex_shot_failure_is_an_error run
 ai::cli::tests::codex_wsl_script_hands_the_image_over run
 ai::cli::tests::every_wsl_spawn_uses_the_builder run
 ai::cli::tests::no_generic_claude_error_text run
+ai::cli::tests::npm_shims_resolve_like_the_batch_file run
 ai::cli::tests::parse_claude_line_extracts_text_delta run
 ai::cli::tests::parse_claude_line_ignores_non_text_deltas run
 ai::cli::tests::parse_claude_line_ignores_system_and_assistant_frames run

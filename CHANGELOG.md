@@ -58,6 +58,9 @@ All notable changes to this project are documented here. The format is based on
 - **Quitting while Claude or Codex answers now stops the answer.** The CLI kept
   running on your account after the launcher closed, and a Codex screenshot
   stayed on disk until the next start.
+- **Claude and Codex installed with npm on Windows are found.** Only a
+  standalone install was detected, so an npm install showed the provider as
+  unavailable even though the CLI worked in a terminal.
 
 ## 2.1.0 - 2026-10-07
 
