@@ -232,9 +232,14 @@ impl AiState {
 }
 
 /// Spawn a chat request, cancelling and replacing any request already running.
-/// The screenshot it names is claimed first: a refused claim ends the request
-/// with its one error, and a running answer is left alone.
-pub(crate) fn spawn_request(app: &AppHandle, params: RequestParams, channel: Channel<SageEvent>) {
+/// The screenshot it names is claimed first: a refused claim returns its
+/// error, starts nothing and leaves a running answer alone. `Ok` means the
+/// screenshot, if any, went with the request, whatever the answer does next.
+pub(crate) fn spawn_request(
+    app: &AppHandle,
+    params: RequestParams,
+    channel: Channel<SageEvent>,
+) -> Result<(), String> {
     let request_id = params.request_id;
     let target = crate::overlay::linked_game(app);
     let claimed = app.state::<crate::shots::ShotStore>().claim_for_request(
@@ -244,18 +249,13 @@ pub(crate) fn spawn_request(app: &AppHandle, params: RequestParams, channel: Cha
         None,
         params.provider.takes_screenshot(),
     );
-    let screenshot = match claimed {
-        Ok(screenshot) => screenshot,
-        Err(refusal) => {
-            tracing::info!("Request {request_id}: refused: screenshot unavailable");
-            let message = refusal.message(params.provider.label());
-            let event = SageEvent::error(request_id, params.conversation_id, message);
-            crate::util::log_if_err("send the refused request's error", channel.send(event));
-            return;
-        }
-    };
+    let screenshot = claimed.map_err(|refusal| {
+        tracing::info!("Request {request_id}: refused: screenshot unavailable");
+        refusal.message(params.provider.label())
+    })?;
     let handle = tauri::async_runtime::spawn(run(app.clone(), params, target, screenshot, channel));
     app.state::<AiState>().replace_active(request_id, handle);
+    Ok(())
 }
 
 /// Drive one request end to end: build the system prompt, stream the provider

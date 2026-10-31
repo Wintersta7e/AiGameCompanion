@@ -16,7 +16,9 @@ pub(crate) const SHOT_TIMEOUT: Duration = Duration::from_secs(5);
 
 const TIMED_OUT: &str = "Taking the screenshot timed out.";
 const CLOSED: &str = "The overlay was closed before the screenshot was ready.";
-const GONE: &str = "The screenshot is no longer available. Take it again or remove it.";
+const GONE: &str = "The screenshot is no longer available; nothing was sent.";
+const NOT_HELD: &str = "The screenshot is no longer available.";
+const WINDOW_CLOSED: &str = "The linked window is no longer open.";
 const OTHER_WINDOW: &str = "This command is only available in the Sage overlay.";
 const CHAT_HAS_NO_REGION: &str = "A chat screenshot has no region.";
 const REGION_UNUSABLE: &str = "The saved region cannot be applied -- edit or clear it.";
@@ -328,6 +330,16 @@ pub(crate) fn capture_target(target: Option<&GameInfo>) -> Option<(i64, u32)> {
         .map(|game| (game.hwnd, game.pid))
 }
 
+/// Why a take found no window to capture, given the target `stored` before
+/// it was checked to be alive.
+fn missing_target(stored: Option<&GameInfo>) -> &'static str {
+    if capture_target(stored).is_some() {
+        WINDOW_CLOSED
+    } else {
+        crate::overlay::NO_LINKED_GAME
+    }
+}
+
 /// Refuse `command` unless the overlay window called it.
 pub(crate) fn overlay_only(window: &WebviewWindow, command: &str) -> Result<(), String> {
     if window.label() == "overlay" {
@@ -412,9 +424,10 @@ async fn take(
     if slot == ShotSlot::Chat && edit_region {
         return Err(CHAT_HAS_NO_REGION.to_owned());
     }
+    let stored = crate::overlay::stored_game(app);
     let linked = crate::overlay::linked_game(app);
-    let target =
-        capture_target(linked.as_ref()).ok_or_else(|| crate::overlay::NO_LINKED_GAME.to_owned())?;
+    let target = capture_target(linked.as_ref())
+        .ok_or_else(|| missing_target(stored.as_ref()).to_owned())?;
     // A translate screenshot is cut to the game's stored region; one taken to
     // edit the region shows the whole frame.
     let region = if slot == ShotSlot::Translate && !edit_region {
@@ -558,7 +571,7 @@ pub(crate) fn shot_png(
     store
         .png(id)
         .map(tauri::ipc::Response::new)
-        .ok_or_else(|| GONE.to_owned())
+        .ok_or_else(|| NOT_HELD.to_owned())
 }
 
 /// Drop the held screenshot `id` (Remove, New chat, a preview that failed).
@@ -834,6 +847,7 @@ fn fitted_size(w: u32, h: u32, max_w: u32, max_h: u32) -> (u32, u32) {
 mod tests {
     use super::{capture_target, claim_shot, HeldShot, HotkeyAction, Prepared, ShotHeld};
     use super::{client_box, fit_within, prepare, source, Frame, ShotSlot, ShotStore};
+    use super::{missing_target, NOT_HELD, WINDOW_CLOSED};
     use super::{ShotInfo, ShotRefusal, Take};
     use super::{SHOT_MAX_BYTES, SHOT_MAX_H, SHOT_MAX_W, SOURCE_MAX_H, SOURCE_MAX_W};
     use crate::overlay::GameInfo;
@@ -1573,6 +1587,56 @@ mod tests {
             println!("{case}: {got:?}");
             assert_eq!(got, expected, "{case}");
         }
+    }
+
+    #[test]
+    fn missing_target_tells_a_closed_window_from_no_link() {
+        let game = |linked: bool| GameInfo {
+            hwnd: 42,
+            pid: 7,
+            exe: r"C:\Games\Foo\foo.exe".to_owned(),
+            linked,
+            ..GameInfo::default()
+        };
+        let cases = [
+            ("nothing stored", None, crate::overlay::NO_LINKED_GAME),
+            (
+                "stored, never linked",
+                Some(game(false)),
+                crate::overlay::NO_LINKED_GAME,
+            ),
+            ("linked window gone", Some(game(true)), WINDOW_CLOSED),
+        ];
+        for (case, stored, expected) in cases {
+            let got = missing_target(stored.as_ref());
+            println!("{case}: {got}");
+            assert_eq!(got, expected, "{case}");
+        }
+        assert_ne!(WINDOW_CLOSED, crate::overlay::NO_LINKED_GAME);
+    }
+
+    #[test]
+    fn unavailable_screenshot_copy_offers_no_impossible_step() {
+        use ShotRefusal::{Gone, OtherTarget, RegionChanged};
+        for refusal in [Gone, OtherTarget, RegionChanged] {
+            let message = refusal.message("Gemini");
+            println!("{refusal:?}: {message}");
+            assert!(
+                message.ends_with("nothing was sent."),
+                "{refusal:?}: {message}"
+            );
+            assert!(
+                !message.to_lowercase().contains("remove"),
+                "{refusal:?}: {message}"
+            );
+            assert!(
+                !message.to_lowercase().contains("take it"),
+                "{refusal:?}: {message}"
+            );
+        }
+        println!("not held: {NOT_HELD}");
+        assert!(!NOT_HELD.to_lowercase().contains("remove"), "{NOT_HELD}");
+        assert!(!NOT_HELD.to_lowercase().contains("take it"), "{NOT_HELD}");
     }
 
     #[test]

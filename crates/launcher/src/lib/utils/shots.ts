@@ -113,6 +113,14 @@ export function sendableShot(state: ShotState): number | null {
   return state.kind === 'shown' ? state.info.id : null;
 }
 
+/**
+ * The translate preview is on screen: while it is drawn and after it is sent.
+ * The empty text above it shows only without one.
+ */
+export function translatePreview(state: ShotState): boolean {
+  return state.kind === 'fetched' || state.kind === 'shown' || state.kind === 'sent';
+}
+
 /** A take or a draw in progress: Send and Enter wait for it. */
 export function sendBlocked(state: ShotState): boolean {
   return state.kind === 'taking' || state.kind === 'fetched';

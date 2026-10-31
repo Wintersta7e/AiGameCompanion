@@ -27,7 +27,8 @@ pub(crate) fn available_providers(
 }
 
 /// Start a streaming chat request. Tokens arrive on `channel`; issuing a newer
-/// request cancels this one.
+/// request cancels this one. A refused screenshot is the command's error, so
+/// the overlay knows on return whether the screenshot went.
 #[tauri::command]
 #[expect(
     clippy::needless_pass_by_value,
@@ -46,7 +47,7 @@ pub(crate) fn ask_sage(
     shot_id: Option<u64>,
     hints: bool,
     channel: Channel<SageEvent>,
-) {
+) -> Result<(), String> {
     crate::ai::spawn_request(
         &app,
         RequestParams {
@@ -58,7 +59,7 @@ pub(crate) fn ask_sage(
             hints,
         },
         channel,
-    );
+    )
 }
 
 /// Cancel the in-flight request if it matches `request_id` (Stop button).

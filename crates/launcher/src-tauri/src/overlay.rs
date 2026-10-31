@@ -197,13 +197,21 @@ pub(crate) fn trigger(app: &AppHandle, slot: crate::shots::ShotSlot) {
 /// or show the hidden one, then send `slot`'s action event with the number of
 /// the take it started, if any. Returns `false`, dropping every held
 /// screenshot, when the overlay could not be shown.
+///
+/// Visibility is read here, not at the key press: an earlier hotkey's finish
+/// may have shown the overlay since, and showing it again would reset the
+/// screenshot that hotkey is still taking. `game` was detected at the press
+/// only when the overlay was hidden then.
 fn finish(
     app: &AppHandle,
-    visible: bool,
+    pressed_visible: bool,
     game: Option<GameInfo>,
     slot: crate::shots::ShotSlot,
     take: Option<u64>,
 ) -> bool {
+    let visible = app
+        .get_webview_window("overlay")
+        .is_some_and(|overlay| overlay.is_visible().unwrap_or(false));
     if visible {
         // Already visible does not mean focused: the overlay is always-on-top,
         // so it stays on screen after the user clicks back into the game.
@@ -212,11 +220,15 @@ fn finish(
         if let Some(overlay) = app.get_webview_window("overlay") {
             crate::util::log_if_err("focus overlay", overlay.set_focus());
         }
-    } else if !present(app, game) {
-        if let Some(shots) = app.try_state::<crate::shots::ShotStore>() {
-            shots.clear();
+    } else {
+        // Hidden since the press: detect now, as a plain show does.
+        let game = if pressed_visible { detect(app) } else { game };
+        if !present(app, game) {
+            if let Some(shots) = app.try_state::<crate::shots::ShotStore>() {
+                shots.clear();
+            }
+            return false;
         }
-        return false;
     }
     let action = crate::shots::HotkeyAction { take };
     crate::util::log_if_err(
@@ -712,6 +724,12 @@ pub(crate) fn live_game(app: &AppHandle) -> Option<GameInfo> {
     tracing::info!("Stored target window {} is gone; clearing", game.hwnd);
     *slot = None;
     None
+}
+
+/// The stored target as it is, not checked to be alive: only to tell why a
+/// checked read found none.
+pub(crate) fn stored_game(app: &AppHandle) -> Option<GameInfo> {
+    app.try_state::<OverlayState>()?.game.lock().clone()
 }
 
 /// The stored target, revalidated, when requests may use it. Every provider

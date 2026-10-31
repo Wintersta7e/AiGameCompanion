@@ -36,3 +36,4 @@ toNodes: headings, tables, quotes and rules run
 toNodes: inline marks convert in order run
 toNodes: lists keep their order, start and task boxes run
 toNodes: raw HTML and images stay literal text run
+translatePreview: a fetched, shown or sent screenshot is on screen run

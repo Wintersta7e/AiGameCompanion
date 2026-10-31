@@ -19,6 +19,7 @@
     sendableShot,
     takeFailed,
     taking,
+    translatePreview,
     type HotkeyAction,
     type HotkeyTake,
     type ShotHeld,
@@ -155,6 +156,9 @@
   const THUMB_W = 48;
   const THUMB_H = 32;
 
+  // How far above the bottom of the chat list still counts as at the bottom.
+  const FOLLOW_SLACK = 50;
+
   // Follow a streaming answer, but only while the user is already at the bottom
   // -- scrolling up to re-read history must not be yanked back down. The check
   // has to happen before the DOM grows, hence $effect.pre.
@@ -172,11 +176,29 @@
       (hintChips ? 1 : 0);
     const el = msglistEl;
     if (!el || growth === 0) return;
-    if (el.scrollHeight - el.scrollTop - el.clientHeight > 50) return;
+    if (el.scrollHeight - el.scrollTop - el.clientHeight > FOLLOW_SLACK) return;
     void tick().then(() => {
       el.scrollTop = el.scrollHeight;
     });
   });
+
+  // Svelte action: when the chat list gets shorter (a screenshot preview shows
+  // under it), its scroll position stays fixed from the top, which would leave
+  // a list that was at its bottom scrolled up and unfollowed. Keep it there.
+  function keepBottom(el: HTMLDivElement) {
+    let height = el.clientHeight;
+    const observer = new ResizeObserver(() => {
+      const wasAtBottom = el.scrollHeight - el.scrollTop - height <= FOLLOW_SLACK;
+      if (wasAtBottom && el.clientHeight < height) el.scrollTop = el.scrollHeight;
+      height = el.clientHeight;
+    });
+    observer.observe(el);
+    return {
+      destroy() {
+        observer.disconnect();
+      },
+    };
+  }
 
   // Re-query availability (CLI detection can lag startup). A saved provider
   // stays selected even while it is unavailable: only the user switches. With
@@ -337,8 +359,11 @@
       bitmap.close();
       return;
     }
+    // A tab switch unmounts the other tab's canvas; showBitmap paints the
+    // preview when that tab shows again, so only a canvas that cannot paint
+    // fails the shot.
     const canvas = slot === 'chat' ? chatCanvas : translateCanvas;
-    if (!canvas || !paint(canvas, bitmap)) {
+    if (canvas && !paint(canvas, bitmap)) {
       bitmap.close();
       dropShot(id);
       setShot(slot, drawFailed(shotOf(slot), id, 'the preview could not be drawn'));
@@ -457,16 +482,15 @@
     prompt = '';
     asking = true;
 
-    // The chip shows once the answer starts: a refused screenshot ends the
-    // request with only an error, and then no chip says it was sent.
+    // The chip says whether the screenshot went: `ask_sage` returns once the
+    // screenshot is claimed for the request and rejects when it is refused,
+    // so a failed or stopped answer still shows the chip. A thumbnail that
+    // arrives after New chat is freed.
     const asked = messages[idx - 1];
-    let shotPending = thumb !== null;
     const settleShot = (sent: boolean) => {
-      if (!shotPending) return;
-      shotPending = false;
-      if (sent && asked) asked.screenshot = true;
+      if (sent && asked && thumb) asked.screenshot = true;
       void thumb?.then((bitmap) => {
-        if (sent && asked && bitmap) asked.thumb = bitmap;
+        if (sent && asked && bitmap && convo === conversationId) asked.thumb = bitmap;
         else bitmap?.close();
       });
     };
@@ -477,7 +501,6 @@
       if (event.requestId !== activeRequestId || event.conversationId !== convo) return;
       const bubble = messages[idx];
       if (!bubble) return;
-      settleShot(event.kind !== 'error');
       if (event.kind === 'chunk') {
         bubble.content += event.text ?? '';
       } else if (event.kind === 'done') {
@@ -501,6 +524,7 @@
         hints: hintsFirst,
         channel,
       });
+      settleShot(true);
     } catch (err) {
       settleShot(false);
       // Same guard as the channel handler: a rejection that lands after New chat
@@ -874,7 +898,7 @@
     {#if tab === 'chat'}
       <!-- chat body -->
       <div class="body">
-        <div bind:this={msglistEl} class="msglist">
+        <div bind:this={msglistEl} class="msglist" use:keepBottom>
           {#if available.length === 0}
             <div class="msg sage">
               <span class="avatar"></span>
@@ -1110,22 +1134,22 @@
             <div style="color: var(--color-err);" class="te-title">{translateError}</div>
           {:else if translateText}
             <div class="translate-text">{translateText}</div>
-          {:else}
+          {:else if !availability.gemini}
             <div class="translate-empty">
-              {#if !availability.gemini}
-                <div class="te-title">Translation needs a Gemini key.</div>
-                <div class="te-sub">Add a Gemini key in Settings.</div>
-              {:else}
-                <div class="te-title">No foreign text captured yet.</div>
-                <div class="te-sub">
-                  Ctrl+Shift+T takes a screenshot of the linked game and shows it here; press Enter
-                  or Translate to send it.
-                </div>
-              {/if}
+              <div class="te-title">Translation needs a Gemini key.</div>
+              <div class="te-sub">Add a Gemini key in Settings.</div>
+            </div>
+          {:else if !translatePreview(translateShot)}
+            <div class="translate-empty">
+              <div class="te-title">No foreign text captured yet.</div>
+              <div class="te-sub">
+                Ctrl+Shift+T takes a screenshot of the linked game and shows it here; press Enter or
+                Translate to send it.
+              </div>
             </div>
           {/if}
         </div>
-        {#if translateShot.kind === 'fetched' || translateShot.kind === 'shown' || translateShot.kind === 'sent'}
+        {#if translatePreview(translateShot)}
           <div class="shot-preview wide">
             <div aria-label="Screenshot of {shotName} that will be sent" role="img">
               <canvas

@@ -12,6 +12,7 @@ import {
   sendableShot,
   takeFailed,
   taking,
+  translatePreview,
   type ShotHeld,
   type ShotInfo,
   type ShotState,
@@ -49,6 +50,13 @@ void test('drawn: a stale id changes nothing', () => {
   assert.equal(drawn(fetched, info.id + 1), fetched);
   for (const [kind, state] of EVERY_STATE) {
     if (kind !== 'fetched') assert.equal(drawn(state, info.id), state, kind);
+  }
+});
+
+void test('translatePreview: a fetched, shown or sent screenshot is on screen', () => {
+  for (const [kind, state] of EVERY_STATE) {
+    const onScreen = kind === 'fetched' || kind === 'shown' || kind === 'sent';
+    assert.equal(translatePreview(state), onScreen, kind);
   }
 });
 

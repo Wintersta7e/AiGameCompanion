@@ -124,6 +124,7 @@ shots::tests::fit_within_keeps_the_aspect_of_odd_sizes run
 shots::tests::fit_within_leaves_small_frames_alone run
 shots::tests::fit_within_scales_large_frames run
 shots::tests::hotkey_events_name_their_slot run
+shots::tests::missing_target_tells_a_closed_window_from_no_link run
 shots::tests::newest_take_into_a_slot_wins run
 shots::tests::no_dispatch_from_hotkey_or_editing run
 shots::tests::one_capture_producer run
@@ -131,6 +132,7 @@ shots::tests::prepare_bounds_every_sent_image run
 shots::tests::shot_store_ids_slots_epoch run
 shots::tests::shot_types_mirror_typescript run
 shots::tests::source_is_capped run
+shots::tests::unavailable_screenshot_copy_offers_no_impossible_step run
 state::tests::backup_never_replaces_an_existing_one run
 state::tests::corrupt_state_falls_back_to_default_and_backs_up run
 state::tests::corrupt_state_without_backup_is_read_only run
