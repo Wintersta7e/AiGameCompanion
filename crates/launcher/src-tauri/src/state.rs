@@ -9,8 +9,8 @@ use crate::models::{GamePrefs, LauncherSettings, LauncherState};
 
 /// Reads of the state file, in total, before it counts as unreadable: about a
 /// second, for a scanner that holds the file open without read sharing.
-const READ_ATTEMPTS: u32 = 5;
-const READ_RETRY_DELAY: Duration = Duration::from_millis(200);
+pub(crate) const READ_ATTEMPTS: u32 = 5;
+pub(crate) const READ_RETRY_DELAY: Duration = Duration::from_millis(200);
 /// Backups go to `.json.bak`, then `.json.bak.1` ... `.json.bak.<this>`.
 const MAX_BACKUP_SUFFIX: u32 = 99;
 
@@ -169,9 +169,7 @@ impl AppState {
 /// unreadable with its bytes now in a backup. Read-only: unreadable after every
 /// retry, or corrupt / partly unreadable with no backup written.
 fn read_state(state_path: &Path) -> Loaded {
-    let contents = match read_with_retry(state_path, READ_ATTEMPTS, READ_RETRY_DELAY, |path| {
-        std::fs::read_to_string(path)
-    }) {
+    let contents = match read_state_file(state_path) {
         Ok(contents) => contents,
         Err(e) if e.kind() == ErrorKind::NotFound => {
             return Loaded {
@@ -212,14 +210,17 @@ fn read_state(state_path: &Path) -> Loaded {
             }
             tracing::warn!("{dropped} unreadable entries in {}", state_path.display());
             let (load_error, notice) = match back_up(state_path, contents.as_bytes()) {
-                Ok(kept) => (
-                    None,
-                    Some(format!(
-                        "Part of your game library file could not be read and was left out. \
-                         A copy of the file was kept at {}.",
-                        kept.display()
-                    )),
-                ),
+                Ok(kept) => {
+                    log_kept_state(&kept);
+                    (
+                        None,
+                        Some(format!(
+                            "Part of your game library file could not be read and was left out. \
+                             A copy of the file was kept at {}.",
+                            kept.path.display()
+                        )),
+                    )
+                }
                 Err(e) => (
                     Some(format!(
                         "{dropped} entries in {} could not be read, and it could not be backed up: {e}",
@@ -241,14 +242,17 @@ fn read_state(state_path: &Path) -> Loaded {
                 state_path.display()
             );
             let (load_error, notice) = match back_up(state_path, contents.as_bytes()) {
-                Ok(kept) => (
-                    None,
-                    Some(format!(
-                        "Your game library file could not be read, so the launcher started \
-                         with an empty library. A copy of the file was kept at {}.",
-                        kept.display()
-                    )),
-                ),
+                Ok(kept) => {
+                    log_kept_state(&kept);
+                    (
+                        None,
+                        Some(format!(
+                            "Your game library file could not be read, so the launcher started \
+                             with an empty library. A copy of the file was kept at {}.",
+                            kept.path.display()
+                        )),
+                    )
+                }
                 Err(e) => (
                     Some(format!(
                         "{} is not valid ({parse_error}), and it could not be backed up: {e}",
@@ -267,23 +271,39 @@ fn read_state(state_path: &Path) -> Loaded {
     }
 }
 
+/// The state file's text, read with retries, each retry logged.
+fn read_state_file(state_path: &Path) -> std::io::Result<String> {
+    read_with_retry(
+        state_path,
+        READ_ATTEMPTS,
+        READ_RETRY_DELAY,
+        |path| std::fs::read_to_string(path),
+        |attempt, e| {
+            tracing::warn!(
+                "Reading {} failed (attempt {attempt} of {READ_ATTEMPTS}): {e}",
+                state_path.display()
+            );
+        },
+    )
+}
+
 /// Call `read` up to `attempts` times, `delay` apart, until it succeeds or
 /// fails with `NotFound` -- an absent file will not appear by waiting, but a
-/// lock held by another process usually goes away.
-fn read_with_retry(
+/// lock held by another process usually goes away. `on_retry` hears each
+/// failed attempt that will be tried again, with its number; logging is the
+/// caller's, so each store words its own lines.
+pub(crate) fn read_with_retry(
     path: &Path,
     attempts: u32,
     delay: Duration,
     mut read: impl FnMut(&Path) -> std::io::Result<String>,
+    mut on_retry: impl FnMut(u32, &std::io::Error),
 ) -> std::io::Result<String> {
     let mut attempt = 1;
     loop {
         match read(path) {
             Err(e) if e.kind() != ErrorKind::NotFound && attempt < attempts => {
-                tracing::warn!(
-                    "Reading {} failed (attempt {attempt} of {attempts}): {e}",
-                    path.display()
-                );
+                on_retry(attempt, &e);
                 std::thread::sleep(delay);
                 attempt += 1;
             }
@@ -295,7 +315,7 @@ fn read_with_retry(
 /// Whether a leftover `.tmp` may become the state file: only when probing the
 /// state file said it does not exist. Any other probe error means a file may be
 /// there that could not be read.
-const fn should_promote_tmp(state_error: Option<ErrorKind>, tmp_exists: bool) -> bool {
+pub(crate) const fn should_promote_tmp(state_error: Option<ErrorKind>, tmp_exists: bool) -> bool {
     tmp_exists && matches!(state_error, Some(ErrorKind::NotFound))
 }
 
@@ -342,8 +362,9 @@ fn dropped_settings(raw: &serde_json::Value, settings: &LauncherSettings) -> usi
 /// replaces an existing file, which may be the only copy of an older library.
 /// A backup that already holds these bytes is reused: a file nothing has saved
 /// since is met again on every start, and a copy per start would use up every
-/// name and leave the next start read-only.
-fn back_up(state_path: &Path, bytes: &[u8]) -> std::io::Result<PathBuf> {
+/// name and leave the next start read-only. Logs nothing: the caller words the
+/// line for its own store.
+pub(crate) fn back_up(state_path: &Path, bytes: &[u8]) -> std::io::Result<Backup> {
     let backup_name = |n: u32| {
         if n == 0 {
             state_path.with_extension("json.bak")
@@ -355,8 +376,10 @@ fn back_up(state_path: &Path, bytes: &[u8]) -> std::io::Result<PathBuf> {
         .map(backup_name)
         .find(|candidate| std::fs::read(candidate).is_ok_and(|kept| kept == bytes))
     {
-        tracing::info!("The launcher state is already kept at {}", kept.display());
-        return Ok(kept);
+        return Ok(Backup {
+            path: kept,
+            reused: true,
+        });
     }
     let mut last_error = None;
     for n in 0..=MAX_BACKUP_SUFFIX {
@@ -380,13 +403,34 @@ fn back_up(state_path: &Path, bytes: &[u8]) -> std::io::Result<PathBuf> {
             );
             return Err(e);
         }
-        tracing::warn!(
-            "Kept a copy of the launcher state at {}",
-            candidate.display()
-        );
-        return Ok(candidate);
+        return Ok(Backup {
+            path: candidate,
+            reused: false,
+        });
     }
     Err(last_error.unwrap_or_else(|| std::io::Error::other("no backup name was tried")))
+}
+
+/// A copy `back_up` holds: its path, and whether an earlier copy with the same
+/// bytes was found there instead of a new one being written.
+pub(crate) struct Backup {
+    pub(crate) path: PathBuf,
+    pub(crate) reused: bool,
+}
+
+/// The launcher state's line for a copy `back_up` holds.
+fn log_kept_state(kept: &Backup) {
+    if kept.reused {
+        tracing::info!(
+            "The launcher state is already kept at {}",
+            kept.path.display()
+        );
+    } else {
+        tracing::warn!(
+            "Kept a copy of the launcher state at {}",
+            kept.path.display()
+        );
+    }
 }
 
 #[cfg(test)]
@@ -720,32 +764,53 @@ mod tests {
         let path = Path::new("unused");
 
         let mut calls = 0;
-        let read = read_with_retry(path, READ_ATTEMPTS, Duration::ZERO, |_| {
-            calls += 1;
-            if calls <= 2 {
-                Err(Error::from(ErrorKind::PermissionDenied))
-            } else {
-                Ok("content".to_owned())
-            }
-        });
+        let read = read_with_retry(
+            path,
+            READ_ATTEMPTS,
+            Duration::ZERO,
+            |_| {
+                calls += 1;
+                if calls <= 2 {
+                    Err(Error::from(ErrorKind::PermissionDenied))
+                } else {
+                    Ok("content".to_owned())
+                }
+            },
+            |_, _| {},
+        );
         assert_eq!(read.unwrap(), "content");
         assert_eq!(calls, 3);
 
         let mut calls = 0;
-        let read = read_with_retry(path, READ_ATTEMPTS, Duration::ZERO, |_| {
-            calls += 1;
-            Err(Error::from(ErrorKind::NotFound))
-        });
+        let read = read_with_retry(
+            path,
+            READ_ATTEMPTS,
+            Duration::ZERO,
+            |_| {
+                calls += 1;
+                Err(Error::from(ErrorKind::NotFound))
+            },
+            |_, _| {},
+        );
         assert_eq!(read.unwrap_err().kind(), ErrorKind::NotFound);
         assert_eq!(calls, 1);
 
         let mut calls = 0;
-        let read = read_with_retry(path, READ_ATTEMPTS, Duration::ZERO, |_| {
-            calls += 1;
-            Err(Error::other(format!("failure {calls}")))
-        });
+        let mut retried = Vec::new();
+        let read = read_with_retry(
+            path,
+            READ_ATTEMPTS,
+            Duration::ZERO,
+            |_| {
+                calls += 1;
+                Err(Error::other(format!("failure {calls}")))
+            },
+            |attempt, _| retried.push(attempt),
+        );
         assert_eq!(read.unwrap_err().to_string(), "failure 5");
         assert_eq!(calls, 5);
+        assert_eq!(retried.len(), READ_ATTEMPTS as usize - 1);
+        assert_eq!(retried, [1, 2, 3, 4]);
     }
 
     #[test]
@@ -755,6 +820,31 @@ mod tests {
         assert!(!should_promote_tmp(Some(ErrorKind::PermissionDenied), true));
         assert!(!should_promote_tmp(None, true));
         assert!(!should_promote_tmp(Some(ErrorKind::NotFound), false));
+    }
+
+    #[test]
+    fn shared_file_helpers_do_not_log() {
+        // Another store reads and backs up its files with these helpers, so
+        // they must leave every log line -- with its path and wording -- to
+        // their callers.
+        let source = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/state.rs"));
+        let mut logging = Vec::new();
+        for needle in [
+            "fn read_with_retry(",
+            "fn should_promote_tmp(",
+            "fn back_up(",
+        ] {
+            let (_, rest) = source
+                .split_once(needle)
+                .unwrap_or_else(|| panic!("{needle} is not in state.rs"));
+            let body: Vec<&str> = rest.lines().take_while(|line| *line != "}").collect();
+            println!("{needle} {} lines", body.len());
+            assert!(!body.is_empty(), "{needle} has no body");
+            if body.iter().any(|line| line.contains("tracing::")) {
+                logging.push(needle);
+            }
+        }
+        assert!(logging.is_empty(), "these helpers still log: {logging:?}");
     }
 
     #[test]
