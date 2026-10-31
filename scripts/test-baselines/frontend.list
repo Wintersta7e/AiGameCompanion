@@ -14,10 +14,14 @@ formatLastPlayed: never played and unreadable dates run
 formatPlayTime: hours, with minutes only when verbose run
 formatPlayTime: no play time reads 0h run
 formatPlayTime: under an hour shows minutes run
+heldShot: a hotkey take reported by shot-held lands like a button take run
+heldShot: a report after a newer take is stale and changes nothing run
+heldShot: a report of an older hotkey take never lands on a newer one run
 isActionableLink: only a complete https link opens run
 received: a stale seq or a slot not taking returns the same object run
 renderAnswer: plain past the size cap, markdown below it run
 renderMode: long, slow or failed renders stay plain run
+replaced: a take a newer one replaced leaves the slot empty, with no message run
 sendBlocked: a take or a fetch in progress blocks a send run
 sendableShot: an id only once the preview is shown run
 shot states: one of each kind is reachable run

@@ -2,10 +2,7 @@
 // translate) moves through these states; only a shot the page has drawn can
 // go with a request.
 
-/**
- * Which held screenshot a take fills (Rust `ShotSlot`).
- * @internal
- */
+/** Which held screenshot a take fills (Rust `ShotSlot`). */
 export type ShotSlot = 'chat' | 'translate';
 
 /** A held screenshot as `take_shot` reports it (Rust `ShotInfo`); never its bytes. */
@@ -15,6 +12,31 @@ export interface ShotInfo {
   width: number;
   height: number;
   region: boolean;
+}
+
+/** The payload of `quick-ask` and `translate-request` (Rust `HotkeyAction`). */
+export interface HotkeyAction {
+  // The number of the take the hotkey started, if any; its result arrives as
+  // `shot-held` with the same number.
+  take: number | null;
+}
+
+/**
+ * The result of a hotkey's take, as `shot-held` reports it (Rust `ShotHeld`):
+ * `shot` when held, `error` when it failed, neither when a newer take into the
+ * slot replaced it.
+ */
+export interface ShotHeld {
+  slot: ShotSlot;
+  take: number;
+  shot: ShotInfo | null;
+  error: string | null;
+}
+
+/** The hotkey take a slot waits for: shown as `seq`, numbered `take` by Rust. */
+export interface HotkeyTake {
+  seq: number;
+  take: number;
 }
 
 /** Where one slot's screenshot is, as the page sees it. */
@@ -40,6 +62,28 @@ export function taking(seq: number): ShotState {
  */
 export function received(state: ShotState, info: ShotInfo, seq: number): ShotState {
   return state.kind === 'taking' && state.seq === seq ? { kind: 'fetched', info } : state;
+}
+
+/**
+ * A newer take replaced the take `seq` before anything was held for it: the
+ * slot shows nothing, and no message. Anything but that take in progress is
+ * unchanged.
+ */
+export function replaced(state: ShotState, seq: number): ShotState {
+  return state.kind === 'taking' && state.seq === seq ? NO_SHOT : state;
+}
+
+/**
+ * `held` reports a hotkey's take: `received`, `takeFailed` or `replaced` for
+ * the take the slot waits for. A report of any other take returns `state`
+ * itself, as does a stale one; the caller then drops the shot.
+ */
+export function heldShot(state: ShotState, held: ShotHeld, hotkey: HotkeyTake): ShotState {
+  if (held.take !== hotkey.take) return state;
+  if (held.shot) return received(state, held.shot, hotkey.seq);
+  return held.error === null
+    ? replaced(state, hotkey.seq)
+    : takeFailed(state, hotkey.seq, held.error);
 }
 
 /** The fetched shot `id` is drawn; any other state or id is unchanged. */

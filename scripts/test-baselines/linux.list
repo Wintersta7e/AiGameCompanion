@@ -69,6 +69,7 @@ ai::tests::identity_never_in_system_prompt_or_argv run
 ai::tests::prompt_kind_selects_by_flags run
 ai::tests::provider_labels_match_the_overlay run
 ai::tests::request_log_line_names_no_game run
+ai::tests::translate_gate_order run
 ai::tests::unlinked_target_contributes_nothing run
 commands::games::tests::complete_scan_carries_playtime_across run
 commands::games::tests::complete_scan_drops_uninstalled_games run
@@ -117,10 +118,14 @@ region::tests::translate_region_has_one_reader_file run
 shots::tests::capture_target_needs_a_linked_identified_window run
 shots::tests::claim_table run
 shots::tests::client_box_is_client_minus_frame_origin run
+shots::tests::every_sent_image_is_claimed run
 shots::tests::fit_within_averages_each_block run
 shots::tests::fit_within_keeps_the_aspect_of_odd_sizes run
 shots::tests::fit_within_leaves_small_frames_alone run
 shots::tests::fit_within_scales_large_frames run
+shots::tests::hotkey_events_name_their_slot run
+shots::tests::newest_take_into_a_slot_wins run
+shots::tests::no_dispatch_from_hotkey_or_editing run
 shots::tests::one_capture_producer run
 shots::tests::prepare_bounds_every_sent_image run
 shots::tests::shot_store_ids_slots_epoch run

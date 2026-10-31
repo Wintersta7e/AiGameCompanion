@@ -170,36 +170,94 @@ fn record_placement(state: &AppState, record: OverlayPlacement) -> bool {
     true
 }
 
-/// Show the overlay (if hidden) and fire an action event to the overlay UI, e.g.
-/// `translate-request` or `quick-ask` from a global hotkey.
-pub(crate) fn trigger(app: &AppHandle, event: &str) {
+/// A capture hotkey for `slot`: take the linked game's screenshot while it
+/// still has focus, then show (or focus) the overlay and send the slot's
+/// action event. Only the link decides whether a screenshot is taken.
+pub(crate) fn trigger(app: &AppHandle, slot: crate::shots::ShotSlot) {
     let Some(overlay) = app.get_webview_window("overlay") else {
         return;
     };
-    if overlay.is_visible().unwrap_or(false) {
+    let visible = overlay.is_visible().unwrap_or(false);
+    let game = if visible { None } else { detect(app) };
+    let linked = linked_game(app);
+    let Some(target) = crate::shots::capture_target(linked.as_ref()) else {
+        finish(app, visible, game, slot, None);
+        return;
+    };
+    let region = match slot {
+        crate::shots::ShotSlot::Translate => crate::region::linked_region(app, linked.as_ref()),
+        crate::shots::ShotSlot::Chat => None,
+    };
+    crate::shots::take_for_hotkey(app.clone(), slot, target, region, move |app, take| {
+        finish(app, visible, game, slot, Some(take))
+    });
+}
+
+/// The end of a capture hotkey, on the main thread: focus the visible overlay
+/// or show the hidden one, then send `slot`'s action event with the number of
+/// the take it started, if any. Returns `false`, dropping every held
+/// screenshot, when the overlay could not be shown.
+fn finish(
+    app: &AppHandle,
+    visible: bool,
+    game: Option<GameInfo>,
+    slot: crate::shots::ShotSlot,
+    take: Option<u64>,
+) -> bool {
+    if visible {
         // Already visible does not mean focused: the overlay is always-on-top,
         // so it stays on screen after the user clicks back into the game.
         // Without this the quick-ask input appears while keystrokes still go to
         // the game as movement keys.
-        crate::util::log_if_err("focus overlay", overlay.set_focus());
-    } else {
-        show_overlay(app);
+        if let Some(overlay) = app.get_webview_window("overlay") {
+            crate::util::log_if_err("focus overlay", overlay.set_focus());
+        }
+    } else if !present(app, game) {
+        if let Some(shots) = app.try_state::<crate::shots::ShotStore>() {
+            shots.clear();
+        }
+        return false;
     }
-    crate::util::log_if_err("emit overlay action", app.emit_to("overlay", event, ()));
+    let action = crate::shots::HotkeyAction { take };
+    crate::util::log_if_err(
+        "emit overlay action",
+        app.emit_to("overlay", slot.hotkey_event(), action),
+    );
+    true
 }
 
-/// Capture the current foreground window (the game) BEFORE the overlay steals
-/// focus, store it, then show + focus the overlay and report detection to the UI.
+/// Detect the foreground game BEFORE the overlay steals focus, then show and
+/// focus the overlay and report detection to the UI.
 fn show_overlay(app: &AppHandle) {
+    present(app, detect(app));
+}
+
+/// Show and focus the overlay, then report `game` to the UI. Returns `false`,
+/// reporting nothing, when the overlay could not be shown.
+fn present(app: &AppHandle, game: Option<GameInfo>) -> bool {
     let Some(overlay) = app.get_webview_window("overlay") else {
-        return;
+        return false;
     };
+    if !show_placed(app, &overlay, game.as_ref()) {
+        return false;
+    }
+    // A null payload tells the overlay UI "no game detected".
+    crate::util::log_if_err(
+        "emit overlay-status",
+        app.emit_to("overlay", "overlay-status", game),
+    );
+    true
+}
+
+/// The current foreground window (the game), classified and stored as the
+/// target; the game to report.
+fn detect(app: &AppHandle) -> Option<GameInfo> {
     let detected = foreground_game(std::process::id());
     // A detection miss must not erase what we already had -- alt-tabbing to the
     // launcher itself returns None, and clobbering on that left the user unable
     // to translate a game still running on another monitor. Keep the previous
     // target when it is still alive, drop it when it is not.
-    let game = match detected {
+    match detected {
         Some(mut game) => {
             if let Some(state) = app.try_state::<OverlayState>() {
                 // One lock at a time: the linked pairs are copied out before
@@ -230,25 +288,22 @@ fn show_overlay(app: &AppHandle) {
             Some(game)
         }
         None => live_game(app),
-    };
-    show_placed(app, &overlay, game.as_ref());
-    // A null payload tells the overlay UI "no game detected".
-    crate::util::log_if_err(
-        "emit overlay-status",
-        app.emit_to("overlay", "overlay-status", game),
-    );
+    }
 }
 
 /// Show and focus the overlay, first placed for `game` when a reference rect
 /// is found. Position before size: a move onto a monitor of another DPI keeps
 /// the logical size, which the size then overrides. A read-back that differs
-/// from the target is applied once more, never in a loop.
-fn show_placed(app: &AppHandle, overlay: &tauri::WebviewWindow, game: Option<&GameInfo>) {
+/// from the target is applied once more, never in a loop. Returns `false`
+/// when the window could not be shown.
+fn show_placed(app: &AppHandle, overlay: &tauri::WebviewWindow, game: Option<&GameInfo>) -> bool {
     let target = placement_target(app, game);
     if let Some((_, _, placed)) = &target {
         apply_rect(overlay, placed.rect);
     }
-    crate::util::log_if_err("show overlay", overlay.show());
+    let showed = overlay.show();
+    let visible = showed.is_ok();
+    crate::util::log_if_err("show overlay", showed);
     crate::util::log_if_err("focus overlay", overlay.set_focus());
     raise_topmost(overlay);
     let shown = target.map(|(reference, scale, placed)| {
@@ -275,6 +330,7 @@ fn show_placed(app: &AppHandle, overlay: &tauri::WebviewWindow, game: Option<&Ga
     if let Some(state) = app.try_state::<OverlayState>() {
         *state.shown.lock() = shown;
     }
+    visible
 }
 
 fn apply_rect(overlay: &tauri::WebviewWindow, rect: Rect) {

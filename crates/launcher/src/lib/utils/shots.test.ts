@@ -5,11 +5,14 @@ import {
   afterSend,
   drawFailed,
   drawn,
+  heldShot,
   received,
+  replaced,
   sendBlocked,
   sendableShot,
   takeFailed,
   taking,
+  type ShotHeld,
   type ShotInfo,
   type ShotState,
 } from './shots.ts';
@@ -87,5 +90,53 @@ void test('afterSend: a shown shot becomes sent, anything else stays', () => {
   assert.deepEqual(afterSend(shown), { kind: 'sent', info });
   for (const [kind, state] of EVERY_STATE) {
     if (kind !== 'shown') assert.equal(afterSend(state), state, kind);
+  }
+});
+
+void test('heldShot: a hotkey take reported by shot-held lands like a button take', () => {
+  const hotkey = { seq: 4, take: 1 };
+  const held: ShotHeld = { slot: 'chat', take: 1, shot: info, error: null };
+  assert.deepEqual(heldShot(taking(4), held, hotkey), { kind: 'fetched', info });
+  const failure: ShotHeld = { slot: 'chat', take: 1, shot: null, error: 'timed out' };
+  assert.deepEqual(heldShot(taking(4), failure, hotkey), {
+    kind: 'failed',
+    message: 'timed out',
+  });
+});
+
+void test('heldShot: a report after a newer take is stale and changes nothing', () => {
+  // The hotkey took seq 4; a Retake since then is seq 5.
+  const hotkey = { seq: 4, take: 1 };
+  const retake = taking(5);
+  const held: ShotHeld = { slot: 'chat', take: 1, shot: info, error: null };
+  assert.equal(heldShot(retake, held, hotkey), retake);
+  const failure: ShotHeld = { slot: 'chat', take: 1, shot: null, error: 'timed out' };
+  assert.equal(heldShot(retake, failure, hotkey), retake);
+  for (const [kind, state] of EVERY_STATE) {
+    if (kind !== 'taking') assert.equal(heldShot(state, held, { seq: 1, take: 1 }), state, kind);
+  }
+});
+
+void test('heldShot: a report of an older hotkey take never lands on a newer one', () => {
+  // Hotkey take 1 was shown as seq 4, take 2 is shown as seq 5 and waited for.
+  const newer = { seq: 5, take: 2 };
+  const state = taking(5);
+  const older: ShotHeld = { slot: 'chat', take: 1, shot: info, error: null };
+  assert.equal(heldShot(state, older, newer), state);
+  const olderFailure: ShotHeld = { slot: 'chat', take: 1, shot: null, error: 'timed out' };
+  assert.equal(heldShot(state, olderFailure, newer), state);
+});
+
+void test('replaced: a take a newer one replaced leaves the slot empty, with no message', () => {
+  const hotkey = { seq: 5, take: 2 };
+  const gone: ShotHeld = { slot: 'chat', take: 2, shot: null, error: null };
+  assert.equal(heldShot(taking(5), gone, hotkey), NO_SHOT);
+  assert.equal(replaced(taking(5), 5), NO_SHOT);
+  assert.equal(replaced(taking(6), 5).kind, 'taking', 'a newer take is untouched');
+  for (const [kind, state] of EVERY_STATE) {
+    if (kind !== 'taking') {
+      assert.equal(replaced(state, 1), state, kind);
+      assert.equal(heldShot(state, gone, { seq: 1, take: 2 }), state, kind);
+    }
   }
 });

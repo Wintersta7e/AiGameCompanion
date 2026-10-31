@@ -589,22 +589,90 @@ pub(crate) fn validate_gemini_model(model: &str) -> Result<(), String> {
     gemini::validate_model(model)
 }
 
-/// Capture the linked game window and translate any foreign text in it to
+/// Why a translation is refused before its screenshot is claimed.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum TranslateBlock {
+    /// No linked game to translate.
+    NotLinked,
+    /// The translating provider cannot be used.
+    Unavailable,
+    /// The translating provider takes no screenshots.
+    NoScreenshots,
+}
+
+impl TranslateBlock {
+    /// The name its log line gives the refusal.
+    pub(crate) const fn code(self) -> &'static str {
+        match self {
+            Self::NotLinked => "no linked game",
+            Self::Unavailable => "unavailable",
+            Self::NoScreenshots => "no screenshots",
+        }
+    }
+}
+
+/// Whether a translation may go ahead: the first failing check, in order.
+pub(crate) const fn translate_gate(
+    linked: bool,
+    available: bool,
+    takes_screenshot: bool,
+) -> Result<(), TranslateBlock> {
+    if !linked {
+        Err(TranslateBlock::NotLinked)
+    } else if !available {
+        Err(TranslateBlock::Unavailable)
+    } else if !takes_screenshot {
+        Err(TranslateBlock::NoScreenshots)
+    } else {
+        Ok(())
+    }
+}
+
+/// Translate any foreign text in the held translate screenshot `shot_id` to
 /// English via Gemini. A one-shot call, independent of the chat request slot.
-/// `settings_model` is the Gemini model chosen in Settings (empty for none).
-pub(crate) async fn translate_capture(
-    hwnd: i64,
-    pid: u32,
-    settings_model: String,
-) -> Result<String, String> {
-    let (prepared, _) = tokio::task::spawn_blocking(move || {
-        crate::shots::grab_frame(hwnd, pid)
-            .and_then(|frame| crate::shots::finish_frame(frame, None))
-    })
-    .await
-    .map_err(|error| format!("capture task failed: {error}"))??;
-    let screenshot = base64::engine::general_purpose::STANDARD.encode(prepared.png);
-    let cfg = gemini::load_config()?;
+/// The screenshot is claimed first: a refusal sends nothing and keeps it held.
+pub(crate) async fn translate_held(app: &AppHandle, shot_id: u64) -> Result<String, String> {
+    let provider = Provider::Gemini;
+    let game = crate::overlay::linked_game(app);
+    let target = crate::shots::capture_target(game.as_ref());
+    let key = gemini::load_config();
+    if let Err(block) = translate_gate(target.is_some(), key.is_ok(), provider.takes_screenshot()) {
+        tracing::info!("Translate: refused: {}", block.code());
+        return Err(match block {
+            TranslateBlock::NotLinked => crate::overlay::NO_LINKED_GAME.to_owned(),
+            TranslateBlock::Unavailable => key.err().unwrap_or_default(),
+            TranslateBlock::NoScreenshots => format!(
+                "{} can't receive screenshots, so it can't translate.",
+                provider.label()
+            ),
+        });
+    }
+    let cfg = key?;
+    let region = crate::region::linked_region(app, game.as_ref());
+    let png = app
+        .state::<crate::shots::ShotStore>()
+        .claim_for_request(
+            crate::shots::ShotSlot::Translate,
+            Some(shot_id),
+            target,
+            region.as_ref(),
+            provider.takes_screenshot(),
+        )
+        // A named screenshot is claimed or refused, never skipped: treat no
+        // bytes as gone.
+        .and_then(|png| png.ok_or(crate::shots::ShotRefusal::Gone))
+        .map_err(|refusal| {
+            tracing::info!("Translate: refused: screenshot unavailable");
+            refusal.message(provider.label())
+        })?;
+    let screenshot = encode_png(&png);
+    let settings_model = app
+        .state::<AppState>()
+        .launcher
+        .lock()
+        .settings
+        .gemini_model
+        .clone();
     let model = gemini::resolve_model(&settings_model, &gemini::file_model());
     let (system, messages) = payload(
         PayloadKind::Translate,
@@ -959,6 +1027,35 @@ mod tests {
             println!("{entry}");
             assert!(source.contains(&entry), "PROVIDERS lacks {entry}");
         }
+    }
+
+    #[test]
+    fn translate_gate_order() {
+        for bits in 0..8_u8 {
+            let (linked, available, takes) = (bits & 4 != 0, bits & 2 != 0, bits & 1 != 0);
+            let expected = if !linked {
+                Err(TranslateBlock::NotLinked)
+            } else if !available {
+                Err(TranslateBlock::Unavailable)
+            } else if !takes {
+                Err(TranslateBlock::NoScreenshots)
+            } else {
+                Ok(())
+            };
+            let got = translate_gate(linked, available, takes);
+            println!(
+                "linked {linked}, available {available}, takes {takes}: {:?}",
+                got.map_err(TranslateBlock::code)
+            );
+            assert_eq!(got, expected);
+        }
+        let codes = [
+            TranslateBlock::NotLinked,
+            TranslateBlock::Unavailable,
+            TranslateBlock::NoScreenshots,
+        ]
+        .map(TranslateBlock::code);
+        assert_eq!(codes, ["no linked game", "unavailable", "no screenshots"]);
     }
 
     #[test]

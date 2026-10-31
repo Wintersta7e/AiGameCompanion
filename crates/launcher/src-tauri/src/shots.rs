@@ -36,6 +36,33 @@ impl ShotSlot {
             Self::Translate => "translate",
         }
     }
+
+    /// The event the slot's capture hotkey sends the overlay.
+    pub(crate) const fn hotkey_event(self) -> &'static str {
+        match self {
+            Self::Chat => "quick-ask",
+            Self::Translate => "translate-request",
+        }
+    }
+}
+
+/// What a capture hotkey tells the overlay with its action event.
+#[derive(Clone, Copy, Debug, Serialize)]
+pub(crate) struct HotkeyAction {
+    /// The number of the take the hotkey started, if it started one; its
+    /// result follows as `shot-held` with the same number.
+    pub(crate) take: Option<u64>,
+}
+
+/// The result of a hotkey's take, sent to the overlay as `shot-held`: `shot`
+/// when it is held, `error` when it failed, neither when a newer take into
+/// the slot replaced it (the overlay then shows nothing for it).
+#[derive(Clone, Debug, Serialize)]
+pub(crate) struct ShotHeld {
+    slot: ShotSlot,
+    take: u64,
+    shot: Option<ShotInfo>,
+    error: Option<String>,
 }
 
 /// What the overlay learns about a held screenshot: never its bytes.
@@ -72,6 +99,10 @@ struct Held {
     last_id: u64,
     /// Bumped by every clear, so a take that outlives it is dropped.
     epoch: u64,
+    /// Per slot, the number of the newest take begun into it; numbers start
+    /// at 1.
+    chat_take: u64,
+    translate_take: u64,
     chat: Option<HeldShot>,
     translate: Option<HeldShot>,
 }
@@ -83,6 +114,24 @@ impl Held {
             ShotSlot::Translate => &mut self.translate,
         }
     }
+
+    const fn newest_take(&mut self, slot: ShotSlot) -> &mut u64 {
+        match slot {
+            ShotSlot::Chat => &mut self.chat_take,
+            ShotSlot::Translate => &mut self.translate_take,
+        }
+    }
+}
+
+/// A take in progress: what its completion must still match.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct Take {
+    slot: ShotSlot,
+    /// The clear epoch when it began.
+    epoch: u64,
+    /// Its number among the takes into `slot`; the overlay matches the
+    /// hotkey's events by it.
+    number: u64,
 }
 
 /// The screenshots the overlay shows, held in memory only. The lock is never
@@ -93,31 +142,51 @@ pub(crate) struct ShotStore {
 }
 
 impl ShotStore {
-    /// Start a take: returns the epoch its completion must still match.
-    pub(crate) fn begin(&self) -> u64 {
-        self.held.lock().epoch
+    /// Start a take into `slot`. It is the newest take into the slot until
+    /// the next `begin` for it.
+    pub(crate) fn begin(&self, slot: ShotSlot) -> Take {
+        let mut held = self.held.lock();
+        let newest = held.newest_take(slot);
+        *newest += 1;
+        let number = *newest;
+        let epoch = held.epoch;
+        drop(held);
+        Take {
+            slot,
+            epoch,
+            number,
+        }
     }
 
-    /// Hold `prepared` in `slot` under a new id, replacing what the slot held,
-    /// unless a clear happened since `begin` returned `epoch`. `region` is the
-    /// stored region it was cropped to.
+    /// Whether `take` is still the newest take begun into its slot.
+    pub(crate) fn is_newest(&self, take: Take) -> bool {
+        *self.held.lock().newest_take(take.slot) == take.number
+    }
+
+    /// Hold `prepared` in the take's slot under a new id, replacing what the
+    /// slot held. `Ok(None)`, dropping `prepared`, when a newer take into the
+    /// slot began since: the overlay shows that one. An error when a clear
+    /// happened since `take` began. `region` is the stored region it was
+    /// cropped to.
     pub(crate) fn complete(
         &self,
-        epoch: u64,
-        slot: ShotSlot,
+        take: Take,
         target: (i64, u32),
         region: Option<TranslateRegion>,
         prepared: Prepared,
-    ) -> Result<ShotInfo, String> {
+    ) -> Result<Option<ShotInfo>, String> {
         let mut held = self.held.lock();
-        if held.epoch != epoch {
+        if held.epoch != take.epoch {
             return Err(CLOSED.to_owned());
+        }
+        if *held.newest_take(take.slot) != take.number {
+            return Ok(None);
         }
         held.last_id += 1;
         let id = held.last_id;
-        let stored = held.slot(slot).insert(HeldShot {
+        let stored = held.slot(take.slot).insert(HeldShot {
             id,
-            slot,
+            slot: take.slot,
             target,
             png: prepared.png,
             width: prepared.width,
@@ -132,7 +201,7 @@ impl ShotStore {
             region: stored.region.is_some(),
         };
         drop(held);
-        Ok(info)
+        Ok(Some(info))
     }
 
     /// Drop every held screenshot and end every take in progress. Returns how
@@ -272,12 +341,14 @@ pub(crate) fn overlay_only(window: &WebviewWindow, command: &str) -> Result<(), 
 #[derive(Clone, Copy, Debug)]
 pub(crate) enum Via {
     Overlay,
+    Hotkey,
 }
 
 impl Via {
     const fn as_str(self) -> &'static str {
         match self {
             Self::Overlay => "overlay",
+            Self::Hotkey => "hotkey",
         }
     }
 }
@@ -304,15 +375,26 @@ pub(crate) fn shot_log_line(
     )
 }
 
+/// The log line of a take a newer take into its slot replaced: its frame is
+/// dropped and the overlay shows nothing for it.
+fn log_replaced(slot: ShotSlot, via: Via) {
+    tracing::debug!(
+        "Shot replaced: {} via {}, a newer take began",
+        slot.as_str(),
+        via.as_str()
+    );
+}
+
 /// Capture the linked game into `slot` and hold it for the overlay to show.
-/// Nothing is sent: a request claims the screenshot later, by its id.
+/// Nothing is sent: a request claims the screenshot later, by its id. `None`
+/// when a newer take into the slot replaced this one.
 #[tauri::command]
 pub(crate) async fn take_shot(
     app: AppHandle,
     window: WebviewWindow,
     slot: ShotSlot,
     edit_region: bool,
-) -> Result<ShotInfo, String> {
+) -> Result<Option<ShotInfo>, String> {
     overlay_only(&window, "take_shot")?;
     let taken = take(&app, slot, edit_region).await;
     if let Err(error) = &taken {
@@ -322,7 +404,11 @@ pub(crate) async fn take_shot(
 }
 
 /// `take_shot` once the calling window is checked.
-async fn take(app: &AppHandle, slot: ShotSlot, edit_region: bool) -> Result<ShotInfo, String> {
+async fn take(
+    app: &AppHandle,
+    slot: ShotSlot,
+    edit_region: bool,
+) -> Result<Option<ShotInfo>, String> {
     if slot == ShotSlot::Chat && edit_region {
         return Err(CHAT_HAS_NO_REGION.to_owned());
     }
@@ -337,7 +423,7 @@ async fn take(app: &AppHandle, slot: ShotSlot, edit_region: bool) -> Result<Shot
         None
     };
     let store = app.state::<ShotStore>();
-    let epoch = store.begin();
+    let take = store.begin(slot);
     let started = Instant::now();
     let (hwnd, pid) = target;
     let job = tokio::task::spawn_blocking(move || {
@@ -345,17 +431,116 @@ async fn take(app: &AppHandle, slot: ShotSlot, edit_region: bool) -> Result<Shot
         let frame_ms = started.elapsed().as_millis();
         finish_frame(frame, region.as_ref()).map(|(prepared, from)| (prepared, from, frame_ms))
     });
-    // On a timeout the task runs on; its late result is dropped with it.
-    let (prepared, from, frame_ms) = tokio::time::timeout(SHOT_TIMEOUT, job)
-        .await
-        .map_err(|_elapsed| TIMED_OUT.to_owned())?
-        .map_err(|error| format!("capture task failed: {error}"))??;
+    let (prepared, from, frame_ms) = settle(tokio::time::timeout(SHOT_TIMEOUT, job).await)?;
     let bytes = prepared.png.len();
-    let info = store.complete(epoch, slot, target, region, prepared)?;
+    let Some(info) = store.complete(take, target, region, prepared)? else {
+        log_replaced(slot, Via::Overlay);
+        return Ok(None);
+    };
     let total_ms = started.elapsed().as_millis();
     let line = shot_log_line(&info, Via::Overlay, bytes, from, frame_ms, total_ms);
     tracing::info!("{line}");
-    Ok(info)
+    Ok(Some(info))
+}
+
+/// The result of a capture job run under a timeout. On a timeout the job runs
+/// on; its late result is dropped with it.
+fn settle<T>(
+    outcome: Result<Result<Result<T, String>, tokio::task::JoinError>, tokio::time::error::Elapsed>,
+) -> Result<T, String> {
+    outcome
+        .map_err(|_elapsed| TIMED_OUT.to_owned())?
+        .map_err(|error| format!("capture task failed: {error}"))?
+}
+
+/// Take the linked game `target` into `slot` for a capture hotkey. The frame
+/// is grabbed while the game still has focus; then `shown`, on the main
+/// thread, shows the overlay and sends the hotkey's action event carrying the
+/// take's number. Only when it returns `true` is the frame sized, held and
+/// reported as `shot-held`. A take that a newer one into the slot replaced
+/// during its grab sends no action event: the overlay then sees the takes in
+/// the order the store holds them.
+pub(crate) fn take_for_hotkey<F>(
+    app: AppHandle,
+    slot: ShotSlot,
+    target: (i64, u32),
+    region: Option<TranslateRegion>,
+    shown: F,
+) where
+    F: FnOnce(&AppHandle, u64) -> bool + Send + 'static,
+{
+    use tauri::Emitter;
+
+    let take = app.state::<ShotStore>().begin(slot);
+    tauri::async_runtime::spawn(async move {
+        let started = Instant::now();
+        let (hwnd, pid) = target;
+        let grab = tokio::task::spawn_blocking(move || grab_frame(hwnd, pid));
+        let frame = settle(tokio::time::timeout(SHOT_TIMEOUT, grab).await);
+        let frame_ms = started.elapsed().as_millis();
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        let handle = app.clone();
+        let dispatched = app.run_on_main_thread(move || {
+            let newest = handle.state::<ShotStore>().is_newest(take);
+            if !newest {
+                log_replaced(slot, Via::Hotkey);
+            }
+            if tx.send(newest && shown(&handle, take.number)).is_err() {
+                tracing::debug!("Hotkey take ended before the overlay was shown");
+            }
+        });
+        if let Err(error) = dispatched {
+            tracing::warn!("Shot failed: {} via hotkey: {error}", slot.as_str());
+            app.state::<ShotStore>().clear();
+            return;
+        }
+        if !rx.await.unwrap_or(false) {
+            return;
+        }
+        let finished = match frame {
+            Ok(frame) => {
+                let rest = SHOT_TIMEOUT.saturating_sub(started.elapsed());
+                let job = tokio::task::spawn_blocking(move || finish_frame(frame, region.as_ref()));
+                settle(tokio::time::timeout(rest, job).await)
+            }
+            Err(error) => Err(error),
+        };
+        let held = finished.and_then(|(prepared, from)| {
+            let bytes = prepared.png.len();
+            let Some(info) = app
+                .state::<ShotStore>()
+                .complete(take, target, region, prepared)?
+            else {
+                log_replaced(slot, Via::Hotkey);
+                return Ok(None);
+            };
+            let total_ms = started.elapsed().as_millis();
+            let line = shot_log_line(&info, Via::Hotkey, bytes, from, frame_ms, total_ms);
+            tracing::info!("{line}");
+            Ok(Some(info))
+        });
+        let report = match held {
+            Ok(info) => ShotHeld {
+                slot,
+                take: take.number,
+                shot: info,
+                error: None,
+            },
+            Err(error) => {
+                tracing::warn!("Shot failed: {} via hotkey: {error}", slot.as_str());
+                ShotHeld {
+                    slot,
+                    take: take.number,
+                    shot: None,
+                    error: Some(error),
+                }
+            }
+        };
+        crate::util::log_if_err(
+            "emit shot-held",
+            app.emit_to("overlay", "shot-held", report),
+        );
+    });
 }
 
 /// The held screenshot `id` as PNG bytes, sent raw (an `ArrayBuffer` in JS).
@@ -647,12 +832,14 @@ fn fitted_size(w: u32, h: u32, max_w: u32, max_h: u32) -> (u32, u32) {
 
 #[cfg(test)]
 mod tests {
-    use super::{capture_target, claim_shot, HeldShot, Prepared, ShotInfo, ShotRefusal};
+    use super::{capture_target, claim_shot, HeldShot, HotkeyAction, Prepared, ShotHeld};
     use super::{client_box, fit_within, prepare, source, Frame, ShotSlot, ShotStore};
+    use super::{ShotInfo, ShotRefusal, Take};
     use super::{SHOT_MAX_BYTES, SHOT_MAX_H, SHOT_MAX_W, SOURCE_MAX_H, SOURCE_MAX_W};
     use crate::overlay::GameInfo;
     use crate::placement::Rect;
     use crate::region::PixelRect;
+    use std::path::Path;
 
     /// A frame of `w` x `h` pixels, every one of them `pixel`.
     fn flat_frame(w: u32, h: u32, pixel: [u8; 4]) -> Vec<u8> {
@@ -939,6 +1126,113 @@ mod tests {
             raw.is_empty(),
             "the raw capture is private to overlay_capture.rs"
         );
+        let grab = concat!("grab", "_frame(");
+        let grabs: Vec<(String, usize)> = crate::util::count_in_sources_by_file(grab)
+            .into_iter()
+            .filter(|(file, count)| *count > 0 && file != Path::new("shots.rs"))
+            .map(|(file, count)| (file.display().to_string(), count))
+            .collect();
+        println!("{grab} outside shots.rs: {grabs:?}");
+        assert!(grabs.is_empty(), "only a take captures a frame");
+    }
+
+    #[test]
+    fn every_sent_image_is_claimed() {
+        let claim = concat!("claim_for", "_request(");
+        let rows = crate::util::count_in_sources_by_file(claim);
+        println!("scanned {} files", rows.len());
+        let claims: Vec<(&Path, usize)> = rows
+            .iter()
+            .filter(|(file, count)| *count > 0 && file != Path::new("shots.rs"))
+            .map(|(file, count)| (file.as_path(), *count))
+            .collect();
+        println!("{claim} outside shots.rs: {claims:?}");
+        assert_eq!(
+            claims.iter().map(|(_, count)| count).sum::<usize>(),
+            2,
+            "a chat claim and a translate claim"
+        );
+        assert!(
+            claims.iter().all(|(file, _)| file.starts_with("ai")),
+            "every claim is in the request code"
+        );
+        assert!(
+            claims
+                .iter()
+                .any(|(file, _)| *file == Path::new("ai").join("mod.rs")),
+            "a claim in ai/mod.rs"
+        );
+        for needle in [
+            concat!("capture", "_png("),
+            concat!("attach", "_screenshot"),
+        ] {
+            let found: Vec<_> = crate::util::count_in_sources_by_file(needle)
+                .into_iter()
+                .filter(|(_, count)| *count > 0)
+                .collect();
+            println!("{needle}: {found:?}");
+            assert!(found.is_empty(), "{needle} sends an unseen screenshot");
+        }
+        let flag = concat!("attach", "Screenshot");
+        let scan = crate::util::count_in_frontend(&[flag]);
+        println!("{} frontend files scanned", scan.files.len());
+        println!("{flag}: {:?}", scan.hits[0]);
+        assert!(scan.hits[0].is_empty(), "{flag} sends an unseen screenshot");
+    }
+
+    #[test]
+    fn no_dispatch_from_hotkey_or_editing() {
+        let hotkey = ["overlay.rs", "shots.rs", "region.rs"];
+        let request_kind = concat!("Request", "Kind");
+        let ai_path = concat!("ai", "::");
+        let checks: [(&str, &[&str]); 6] = [
+            (request_kind, &hotkey),
+            (ai_path, &["shots.rs", "region.rs"]),
+            (concat!("spawn", "_request("), &["overlay.rs"]),
+            (concat!("translate", "::start"), &["overlay.rs"]),
+            (concat!("ask", "_sage"), &["overlay.rs"]),
+            (concat!("translate", "_screen"), &["overlay.rs"]),
+        ];
+        for (needle, files) in checks {
+            let rows = crate::util::count_in_sources_by_file(needle);
+            for file in hotkey {
+                assert!(
+                    rows.iter().any(|(path, _)| path == Path::new(file)),
+                    "{file} was not scanned"
+                );
+            }
+            for file in files {
+                let count = rows
+                    .iter()
+                    .find(|(path, _)| path == Path::new(file))
+                    .map_or(0, |(_, count)| *count);
+                println!("{needle} in {file}: {count}");
+                assert_eq!(count, 0, "{needle} in {file} starts a request");
+            }
+        }
+    }
+
+    #[test]
+    fn hotkey_events_name_their_slot() {
+        let cases = [
+            (ShotSlot::Chat, "quick-ask"),
+            (ShotSlot::Translate, "translate-request"),
+        ];
+        let listened: Vec<String> = cases
+            .iter()
+            .map(|(_, event)| format!("listen<HotkeyAction>('{event}'"))
+            .collect();
+        let needles: Vec<&str> = listened.iter().map(String::as_str).collect();
+        let scan = crate::util::count_in_frontend(&needles);
+        println!("{} frontend files scanned", scan.files.len());
+        for ((slot, event), hits) in cases.into_iter().zip(&scan.hits) {
+            println!(
+                "{slot:?}: {} (page listeners: {hits:?})",
+                slot.hotkey_event()
+            );
+            assert_eq!(slot.hotkey_event(), event, "{slot:?}");
+            assert_eq!(hits.len(), 1, "one page listener for {event}");
+        }
     }
 
     const TARGET: (i64, u32) = (42, 7);
@@ -955,13 +1249,14 @@ mod tests {
     #[test]
     fn shot_store_ids_slots_epoch() {
         let store = ShotStore::default();
-        let epoch = store.begin();
-        let first = store
-            .complete(epoch, ShotSlot::Chat, TARGET, None, prepared(1))
-            .unwrap();
-        let second = store
-            .complete(epoch, ShotSlot::Chat, TARGET, None, prepared(2))
-            .unwrap();
+        let hold = |take: Take, fill: u8| {
+            store
+                .complete(take, TARGET, None, prepared(fill))
+                .unwrap()
+                .expect("the newest take into its slot is held")
+        };
+        let first = hold(store.begin(ShotSlot::Chat), 1);
+        let second = hold(store.begin(ShotSlot::Chat), 2);
         println!("chat: {first:?} then {second:?}");
         assert_eq!(first.id, 1, "ids start at 1");
         assert!(second.id > first.id, "every completion gets a new id");
@@ -978,9 +1273,8 @@ mod tests {
             }
         );
 
-        let third = store
-            .complete(epoch, ShotSlot::Translate, TARGET, None, prepared(3))
-            .unwrap();
+        let before_clear = store.begin(ShotSlot::Chat);
+        let third = hold(store.begin(ShotSlot::Translate), 3);
         assert!(third.id > second.id);
         store.drop_id(999);
         assert_eq!(store.png(999), None);
@@ -991,16 +1285,45 @@ mod tests {
 
         assert_eq!(store.clear(), 2, "both slots were full");
         assert_eq!((store.png(second.id), store.png(third.id)), (None, None));
-        let stale = store.complete(epoch, ShotSlot::Chat, TARGET, None, prepared(4));
+        let stale = store.complete(before_clear, TARGET, None, prepared(4));
         println!("completion with the epoch before the clear: {stale:?}");
         assert!(stale.is_err(), "a take that outlived a clear is dropped");
-        let fresh = store.begin();
-        assert_ne!(fresh, epoch, "a clear starts a new epoch");
-        let next = store
-            .complete(fresh, ShotSlot::Chat, TARGET, None, prepared(5))
-            .unwrap();
+        let fresh = store.begin(ShotSlot::Chat);
+        assert_ne!(
+            fresh.epoch, before_clear.epoch,
+            "a clear starts a new epoch"
+        );
+        let next = hold(fresh, 5);
         assert_eq!(next.id, third.id + 1, "the stale completion took no id");
         assert_eq!(store.clear(), 1, "the stale completion held nothing");
+    }
+
+    #[test]
+    fn newest_take_into_a_slot_wins() {
+        let store = ShotStore::default();
+        let older = store.begin(ShotSlot::Chat);
+        let newer = store.begin(ShotSlot::Chat);
+        // A take into the other slot replaces nothing here.
+        let other = store.begin(ShotSlot::Translate);
+        assert!(!store.is_newest(older) && store.is_newest(newer));
+        let held = store
+            .complete(newer, TARGET, None, prepared(2))
+            .unwrap()
+            .expect("the newer take is held");
+        let late = store.complete(older, TARGET, None, prepared(1));
+        println!("newer take held {held:?}; the older one finishing last: {late:?}");
+        assert_eq!(
+            store.png(held.id),
+            Some(vec![2; 4]),
+            "the newer take is still held"
+        );
+        assert_eq!(late, Ok(None), "the older take is refused without an error");
+        let translate = store
+            .complete(other, TARGET, None, prepared(3))
+            .unwrap()
+            .expect("the translate take is the newest in its slot");
+        assert_eq!(translate.id, held.id + 1, "the refused take took no id");
+        assert_eq!(store.clear(), 2, "the refused take held nothing");
     }
 
     fn held(id: u64) -> HeldShot {
@@ -1177,7 +1500,8 @@ mod tests {
         ] {
             let store = ShotStore::default();
             let info = store
-                .complete(store.begin(), ShotSlot::Chat, TARGET, None, prepared(7))
+                .complete(store.begin(ShotSlot::Chat), TARGET, None, prepared(7))
+                .unwrap()
                 .unwrap();
             assert_eq!(info.id, 1);
             let claimed =
@@ -1196,7 +1520,8 @@ mod tests {
         // A claim reads only its own slot.
         let store = ShotStore::default();
         let info = store
-            .complete(store.begin(), ShotSlot::Chat, TARGET, None, prepared(7))
+            .complete(store.begin(ShotSlot::Chat), TARGET, None, prepared(7))
+            .unwrap()
             .unwrap();
         let wrong_slot =
             store.claim_for_request(ShotSlot::Translate, Some(info.id), Some(TARGET), None, true);
@@ -1206,12 +1531,12 @@ mod tests {
         // A cropped translate screenshot goes with the region it was cut to.
         let info = store
             .complete(
-                store.begin(),
-                ShotSlot::Translate,
+                store.begin(ShotSlot::Translate),
                 TARGET,
                 Some(band),
                 prepared(8),
             )
+            .unwrap()
             .unwrap();
         assert!(info.region, "the overlay learns the screenshot is a crop");
         let claimed = store.claim_for_request(
@@ -1274,6 +1599,42 @@ mod tests {
         assert!(!rust.is_empty() && !typescript.is_empty());
         // ShotInfo has no Option field, so the same list stands for both.
         let mismatches = crate::util::mirror_mismatches(&typescript, &rust, &rust, source);
+        assert!(mismatches.is_empty(), "{mismatches:#?}");
+
+        let full = serde_json::to_value(HotkeyAction { take: Some(3) }).unwrap();
+        let empty = serde_json::to_value(HotkeyAction { take: None }).unwrap();
+        let (full, empty) = (
+            crate::util::json_fields(&full),
+            crate::util::json_fields(&empty),
+        );
+        let typescript = crate::util::ts_fields(source, "interface HotkeyAction {");
+        println!("HotkeyAction: full {full:?}, empty {empty:?}, TypeScript {typescript:?}");
+        assert!(!full.is_empty() && !typescript.is_empty());
+        let mismatches = crate::util::mirror_mismatches(&typescript, &full, &empty, source);
+        assert!(mismatches.is_empty(), "{mismatches:#?}");
+
+        let full = ShotHeld {
+            slot: ShotSlot::Chat,
+            take: 3,
+            shot: Some(info),
+            error: Some("Taking the screenshot timed out.".to_owned()),
+        };
+        let empty = ShotHeld {
+            slot: ShotSlot::Translate,
+            take: 3,
+            shot: None,
+            error: None,
+        };
+        let full = serde_json::to_value(&full).unwrap();
+        let empty = serde_json::to_value(&empty).unwrap();
+        let (full, empty) = (
+            crate::util::json_fields(&full),
+            crate::util::json_fields(&empty),
+        );
+        let typescript = crate::util::ts_fields(source, "interface ShotHeld {");
+        println!("ShotHeld: full {full:?}, empty {empty:?}, TypeScript {typescript:?}");
+        assert!(!full.is_empty() && !typescript.is_empty());
+        let mismatches = crate::util::mirror_mismatches(&typescript, &full, &empty, source);
         assert!(mismatches.is_empty(), "{mismatches:#?}");
 
         let slots: Vec<String> = [ShotSlot::Chat, ShotSlot::Translate]

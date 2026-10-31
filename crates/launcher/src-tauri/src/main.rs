@@ -107,9 +107,9 @@ fn main() {
                     if shortcut == &toggle {
                         overlay::toggle(app);
                     } else if shortcut == &translate {
-                        overlay::trigger(app, "translate-request");
+                        overlay::trigger(app, shots::ShotSlot::Translate);
                     } else if shortcut == &quick_ask {
-                        overlay::trigger(app, "quick-ask");
+                        overlay::trigger(app, shots::ShotSlot::Chat);
                     }
                 })
                 .build(),
