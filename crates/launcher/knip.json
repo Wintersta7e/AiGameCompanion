@@ -1,5 +1,7 @@
 {
   "entry": [
+    "scripts/cache-prune.selftest.ts!",
+    "scripts/cache-prune.ts!",
     "scripts/commit-check.selftest.ts!",
     "scripts/commit-check.ts!",
     "scripts/eslint-count-formatter.ts!",

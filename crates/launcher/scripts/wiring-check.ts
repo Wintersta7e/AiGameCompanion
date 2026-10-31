@@ -2,8 +2,8 @@
 // expects: one runner call per job, every table tag called by one job, an
 // aggregate job that fails on any result but success, the triggers, colour
 // settings, the required job names, --locked on every cargo call that reads
-// the dependency graph, read-only token permissions, and text that must not
-// come back (a fetching front door, a retired tool, a claim of equal checks).
+// the dependency graph, read-only token permissions (one named job may delete
+// caches), and text that must not come back (a fetching front door, a retired tool, a claim of equal checks).
 //
 //   node crates/launcher/scripts/wiring-check.ts
 //
@@ -78,8 +78,14 @@ export const NON_BLOCKING_JOBS: readonly string[] = [
   'canary-windows',
   'freshness',
   'coverage',
+  'cache-prune',
 ];
 export const AGGREGATE_JOB = 'aggregate';
+// The one job with a write scope: it deletes the main branch's superseded
+// caches after the jobs that save them, even when one of those failed.
+export const CACHE_PRUNE_JOB = 'cache-prune';
+export const CACHE_PRUNE_IF =
+  "always() && github.ref == 'refs/heads/main' && github.event_name != 'pull_request'";
 export interface RequiredJob {
   readonly file: string;
   readonly job: string;
@@ -479,13 +485,19 @@ const WEEKLY_IF =
 
 // Only the canaries and the freshness job carry a job-level if:, and each
 // does: the dispatch-or-schedule form naming one line of on.schedule whose
-// day-of-week field is a single day, the same line for all of them.
+// day-of-week field is a single day, the same line for all of them. The cache
+// prune job carries exactly CACHE_PRUNE_IF.
 const checkJobIfs = (input: WiringInput): Failure[] => {
   const schedule = crons(ciWorkflow(input));
   const named = new Set<string>();
   const failures = allJobs(input).flatMap(({ workflow, job }): Failure[] => {
     const condition = asText(job.map.get('if'));
     const where = `${baseName(workflow.file)} job ${job.id}`;
+    if (baseName(workflow.file) === 'ci.yml' && job.id === CACHE_PRUNE_JOB) {
+      return bare(condition ?? '') === CACHE_PRUNE_IF
+        ? []
+        : [{ condition: 'job if', message: `${where}: its if: is not ${CACHE_PRUNE_IF}` }];
+    }
     if (!WEEKLY_JOBS.includes(job.id)) {
       return condition === null || job.id === AGGREGATE_JOB
         ? []
@@ -893,13 +905,14 @@ const checkLocked = (
 };
 
 // Permissions: {} at the top, contents: read for a job with a checkout and {}
-// for one without, no write scope, persist-credentials: false on every
+// for one without, no write scope (the cache prune job adds exactly
+// actions: write), persist-credentials: false on every
 // checkout, no secrets. expression, and the job token only in the env of the
 // runner call of the workflow-lint or freshness job. The freshness job's call
 // always has it: its report reads GitHub's release API, which limits
 // unauthenticated requests per address.
-const TOKEN_JOBS = ['workflows', 'freshness'];
-const TOKEN_REQUIRED_JOBS = ['freshness'];
+const TOKEN_JOBS = ['workflows', 'freshness', CACHE_PRUNE_JOB];
+const TOKEN_REQUIRED_JOBS = ['freshness', CACHE_PRUNE_JOB];
 const JOB_TOKEN = `\${{ github.token }}`;
 
 const permissionText = (value: YamlValue | undefined): string => {
@@ -913,7 +926,15 @@ const permissionText = (value: YamlValue | undefined): string => {
 const checkJobPermissions = (workflow: Workflow, job: Job): Failure[] => {
   const where = `${baseName(workflow.file)} job ${job.id}`;
   const value = job.map.get('permissions');
-  const wanted = job.steps.some(isCheckout) ? '{contents: read}' : '{}';
+  const prune = baseName(workflow.file) === 'ci.yml' && job.id === CACHE_PRUNE_JOB;
+  const checkout = job.steps.some(isCheckout);
+  const wanted = prune
+    ? checkout
+      ? '{contents: read, actions: write}'
+      : '{actions: write}'
+    : checkout
+      ? '{contents: read}'
+      : '{}';
   const failures: Failure[] = [];
   const text = permissionText(value);
   if (text !== wanted)
@@ -921,7 +942,7 @@ const checkJobPermissions = (workflow: Workflow, job: Job): Failure[] => {
       condition: 'permissions',
       message: `${where} permissions are ${text}, not ${wanted}`,
     });
-  if (/write|read-all/u.test(text))
+  if (/write|read-all/u.test(text) && !(prune && text === wanted))
     failures.push({ condition: 'permissions', message: `${where} permissions grant ${text}` });
   const kept = job.steps.filter(
     (step) =>
