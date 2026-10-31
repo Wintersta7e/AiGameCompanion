@@ -64,6 +64,8 @@ All notable changes to this project are documented here. The format is based on
 - **A provider you pick stays picked when the launcher cannot save it.** When
   the library file could not be read, the pick jumped back to the saved
   provider at once, and the next question went to that one.
+- **A translation cut short keeps the text that arrived.** The translate tab
+  showed only the stop reason; it now shows the text with the reason under it.
 
 ## 2.1.0 - 2026-10-07
 

@@ -42,6 +42,7 @@ ai::cli::tests::version_probe_escapes_the_name run
 ai::cli::tests::windows_tree::stopping_a_request_ends_the_process_its_cli_started run
 ai::cli::tests::wsl_bash_passes_script_without_a_second_shell run
 ai::cli::tests::wsl_round_trips_hostile_text ignored
+ai::gemini::tests::a_translation_cut_short_keeps_its_text run
 ai::gemini::tests::an_answer_cut_short_ends_with_its_stop_reason run
 ai::gemini::tests::buffers_split_utf8_and_emits_complete_text_chunks run
 ai::gemini::tests::detects_streamed_api_errors run

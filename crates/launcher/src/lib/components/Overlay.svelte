@@ -604,8 +604,12 @@
     translateBusy = true;
     translateError = '';
     try {
-      const res = await invoke<{ text: string }>('translate_screen', { shotId });
+      const res = await invoke<{ text: string; cut_short: string | null }>('translate_screen', {
+        shotId,
+      });
       translateText = res.text;
+      // A translation cut short keeps its text with the reason under it.
+      translateError = res.cut_short ?? '';
     } catch (err) {
       translateError = String(err);
       translateText = '';
@@ -1134,10 +1138,13 @@
         <div class="translate-result">
           {#if translateBusy}
             <div class="thinking"><i></i><i></i><i></i></div>
-          {:else if translateError}
-            <div style="color: var(--color-err);" class="te-title">{translateError}</div>
-          {:else if translateText}
-            <div class="translate-text">{translateText}</div>
+          {:else if translateText || translateError}
+            {#if translateText}
+              <div class="translate-text">{translateText}</div>
+            {/if}
+            {#if translateError}
+              <div style="color: var(--color-err);" class="te-title">{translateError}</div>
+            {/if}
           {:else if !availability.gemini}
             <div class="translate-empty">
               <div class="te-title">Translation needs a Gemini key.</div>

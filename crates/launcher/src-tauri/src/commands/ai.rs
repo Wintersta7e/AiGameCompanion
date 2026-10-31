@@ -90,11 +90,6 @@ pub(crate) fn set_active_provider<R: tauri::Runtime>(
     Ok(())
 }
 
-#[derive(serde::Serialize)]
-pub(crate) struct TranslateResult {
-    pub text: String,
-}
-
 /// Translate the on-screen foreign text of the translate screenshot `shot_id`,
 /// the one the overlay shows, to English. One-shot (not part of the streaming
 /// chat slot).
@@ -102,9 +97,8 @@ pub(crate) struct TranslateResult {
 pub(crate) async fn translate_screen(
     app: AppHandle,
     shot_id: u64,
-) -> Result<TranslateResult, String> {
-    let text = crate::ai::translate_held(&app, shot_id).await?;
-    Ok(TranslateResult { text })
+) -> Result<crate::ai::Translation, String> {
+    crate::ai::translate_held(&app, shot_id).await
 }
 
 /// Store (or clear, when empty) the Gemini API key in OS secret storage. Returns

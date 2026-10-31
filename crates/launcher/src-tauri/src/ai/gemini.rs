@@ -705,6 +705,56 @@ mod tests {
         assert!(received_text);
     }
 
+    /// A translation streams the same frames: one cut short keeps the text
+    /// that arrived beside its stop reason; one that failed before any text
+    /// is only the error; a complete one has no reason.
+    #[test]
+    fn a_translation_cut_short_keeps_its_text() {
+        let translate = |frames: &[Vec<u8>]| {
+            let mut out = String::new();
+            let mut received_text = false;
+            let mut streamed = Ok(());
+            for bytes in frames {
+                let mut buffer = bytes.clone();
+                streamed = process_sse_lines(&mut buffer, &mut received_text, &mut |chunk| {
+                    out.push_str(&chunk);
+                    Ok(())
+                });
+                if streamed.is_err() {
+                    break;
+                }
+            }
+            crate::ai::translation_outcome(&out, streamed)
+        };
+        for reason in ["MAX_TOKENS", "SAFETY", "RECITATION"] {
+            let result = translate(&[frame(" Open the ", None), frame("gate ", Some(reason))]);
+            println!("{reason}: {result:?}");
+            assert_eq!(
+                result,
+                Ok(crate::ai::Translation {
+                    text: "Open the gate".to_owned(),
+                    cut_short: Some(format!("Gemini stopped early ({reason}).")),
+                }),
+                "{reason}"
+            );
+        }
+        assert_eq!(
+            translate(&[frame("", Some("MAX_TOKENS"))]),
+            Err("Gemini hit its output limit before writing anything.".to_owned())
+        );
+        assert_eq!(
+            translate(&[frame("", Some("SAFETY"))]),
+            Err("Gemini stopped early (SAFETY).".to_owned())
+        );
+        assert_eq!(
+            translate(&[frame("Open the gate", Some("STOP"))]),
+            Ok(crate::ai::Translation {
+                text: "Open the gate".to_owned(),
+                cut_short: None,
+            })
+        );
+    }
+
     #[test]
     fn rejects_unsafe_model_names() {
         validate_model("gemini-2.5-flash").unwrap();

@@ -665,7 +665,7 @@ pub(crate) const fn translate_gate(
 /// Translate any foreign text in the held translate screenshot `shot_id` to
 /// English via Gemini. A one-shot call, independent of the chat request slot.
 /// The screenshot is claimed first: a refusal sends nothing and keeps it held.
-pub(crate) async fn translate_held(app: &AppHandle, shot_id: u64) -> Result<String, String> {
+pub(crate) async fn translate_held(app: &AppHandle, shot_id: u64) -> Result<Translation, String> {
     let provider = Provider::Gemini;
     let game = crate::overlay::linked_game(app);
     let target = crate::shots::capture_target(game.as_ref());
@@ -718,7 +718,7 @@ pub(crate) async fn translate_held(app: &AppHandle, shot_id: u64) -> Result<Stri
         None,
     );
     let mut out = String::new();
-    gemini::stream(
+    let streamed = gemini::stream(
         &messages,
         &system,
         Some(screenshot),
@@ -729,8 +729,34 @@ pub(crate) async fn translate_held(app: &AppHandle, shot_id: u64) -> Result<Stri
             Ok(())
         },
     )
-    .await?;
-    Ok(out.trim().to_owned())
+    .await;
+    translation_outcome(&out, streamed)
+}
+
+/// A translation as the overlay shows it: the text, and why it ended early
+/// when it did.
+#[derive(Debug, PartialEq, Eq, Serialize)]
+pub(crate) struct Translation {
+    pub text: String,
+    pub cut_short: Option<String>,
+}
+
+/// What a translation stream leaves the user: `text` is what arrived. A
+/// stream that fails after some text keeps it with the reason; one that
+/// failed before any text is only the error.
+fn translation_outcome(text: &str, streamed: Result<(), String>) -> Result<Translation, String> {
+    let text = text.trim().to_owned();
+    match streamed {
+        Ok(()) => Ok(Translation {
+            text,
+            cut_short: None,
+        }),
+        Err(error) if !text.is_empty() => Ok(Translation {
+            text,
+            cut_short: Some(error),
+        }),
+        Err(error) => Err(error),
+    }
 }
 
 #[cfg(test)]
