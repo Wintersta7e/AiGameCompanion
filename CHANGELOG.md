@@ -23,6 +23,26 @@ All notable changes to this project are documented here. The format is based on
 - **Large screenshots stay under provider size limits.**
 - **A Codex question whose screenshot cannot be written now stops with an
   error** instead of being answered without the screenshot.
+- **A Steam game keeps its playtime when a scan cannot read its details.** A
+  game whose Steam manifest was being rewritten, was cut short by a crash or had
+  no name yet was dropped by the scan, and came back with zero playtime.
+- **A library file with an unreadable entry is backed up once, not on every
+  start.** With scan on startup off, each start kept another copy until the
+  launcher ran out of backup names and refused to save anything.
+- **One unreadable setting no longer empties your game library.** A setting of
+  the wrong type, a settings or game list set to null, or a byte order mark at
+  the start of the library file made the launcher start over with an empty
+  library, turn off launch on startup and save over the file. It now keeps
+  every value it can read, keeps a copy of the file when it skips one, and
+  leaves launch on startup as it was when a setting could not be read.
+- **Going back to an older version no longer erases what a newer one saved.**
+  Settings, game details, per-game preferences and game sources that a newer
+  version stored were dropped or rewritten the first time an older version saved
+  the library; they are now kept as they were.
+- **The launcher says where it kept a library file it could not read.** A
+  damaged library file, or one with entries it could not read, left an empty or
+  shorter library with no word of the copy it had kept. The main window now
+  names that copy once per start.
 
 ## 2.1.0 - 2026-10-07
 

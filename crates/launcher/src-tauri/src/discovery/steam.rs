@@ -64,7 +64,11 @@ pub(crate) fn discover_steam_games() -> ScanOutcome {
     };
 
     tracing::info!("Steam located at {}", steam_dir.path().display());
+    scan_steam_dir(&steam_dir)
+}
 
+/// Scan every library of the Steam install at `steam_dir`.
+pub(crate) fn scan_steam_dir(steam_dir: &SteamDir) -> ScanOutcome {
     let libraries = match steam_dir.libraries() {
         Ok(iter) => iter,
         Err(e) => {
@@ -93,12 +97,26 @@ pub(crate) fn discover_steam_games() -> ScanOutcome {
 
         tracing::info!("Scanning library: {}", library.path().display());
 
+        // A manifest that cannot be read (Steam rewriting it, or truncated by
+        // a crash) or has no name yet still belongs to an installed game, so
+        // skipping it makes the scan partial too.
         for app_result in library.apps() {
-            let Ok(app) = app_result else { continue };
+            let app = match app_result {
+                Ok(app) => app,
+                Err(e) => {
+                    tracing::warn!("Failed to read a Steam app manifest: {e}");
+                    complete = false;
+                    continue;
+                }
+            };
 
             let name = match &app.name {
                 Some(n) if !n.is_empty() => n.clone(),
-                _ => continue,
+                _ => {
+                    tracing::warn!("Steam app {} has no name yet", app.app_id);
+                    complete = false;
+                    continue;
+                }
             };
 
             let install_dir = library.resolve_app_dir(&app);
@@ -123,6 +141,7 @@ pub(crate) fn discover_steam_games() -> ScanOutcome {
                 cover_art_path,
                 last_played: None,
                 play_time_minutes: 0,
+                unknown: crate::models::UnknownFields::new(),
             });
         }
     }
