@@ -69,6 +69,8 @@ All notable changes to this project are documented here. The format is based on
 - **Enter that confirms Japanese, Chinese or Korean input no longer sends the
   question.** The half-converted question went to the provider, and the
   converted text was left behind in the input.
+- **Screenshots leave out the mouse pointer.** Taking one from the panel drew
+  the pointer into the game screenshot, where it could cover text.
 
 ## 2.1.0 - 2026-10-07
 
