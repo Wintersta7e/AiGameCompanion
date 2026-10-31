@@ -1,27 +1,27 @@
-// Module-wide because serde's generated code for `LauncherState` names the
-// map type too, outside any item an attribute here could cover.
-#![expect(
-    clippy::zero_sized_map_values,
-    reason = "GamePrefs has no field until the first per-game setting joins it"
-)]
-
 use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 
 use crate::placement::OverlayPlacement;
 
+/// Fields a newer build wrote that this one does not know, kept as read so the
+/// next save writes them back: going back to an older release must not erase
+/// what a newer one stored.
+pub(crate) type UnknownFields = serde_json::Map<String, serde_json::Value>;
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
-// Deserialize via String so an unrecognised source (a state file written by a
-// newer build, then opened by an older one) degrades to `Manual` instead of
-// failing the whole file and resetting the user's library.
-#[serde(rename_all = "snake_case", from = "String")]
+// Read and written as a string so an unrecognised source (a state file written
+// by a newer build, then opened by an older one) neither fails the whole file
+// nor is lost: it is kept as `Other`, which this build treats like `Manual`,
+// and written back as stored.
+#[serde(from = "String", into = "String")]
 pub(crate) enum GameSource {
     Steam,
     Epic,
     Gog,
     #[default]
     Manual,
+    Other(String),
 }
 
 impl From<String> for GameSource {
@@ -30,12 +30,23 @@ impl From<String> for GameSource {
             "steam" => Self::Steam,
             "epic" => Self::Epic,
             "gog" => Self::Gog,
+            "manual" => Self::Manual,
             other => {
-                if other != "manual" {
-                    tracing::warn!("Unknown game source {other:?}, treating as manual");
-                }
-                Self::Manual
+                tracing::warn!("Unknown game source {other:?}, treating as manual");
+                Self::Other(value)
             }
+        }
+    }
+}
+
+impl From<GameSource> for String {
+    fn from(source: GameSource) -> Self {
+        match source {
+            GameSource::Steam => "steam".to_owned(),
+            GameSource::Epic => "epic".to_owned(),
+            GameSource::Gog => "gog".to_owned(),
+            GameSource::Manual => "manual".to_owned(),
+            GameSource::Other(stored) => stored,
         }
     }
 }
@@ -53,6 +64,8 @@ pub(crate) struct Game {
     pub cover_art_path: Option<String>,
     pub last_played: Option<String>,
     pub play_time_minutes: u64,
+    #[serde(flatten)]
+    pub unknown: UnknownFields,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -73,6 +86,8 @@ pub(crate) struct LauncherSettings {
     /// Answers start as hints; written only by `set_hints_first`. On by
     /// default, also for a file saved before the field existed.
     pub hints_first: bool,
+    #[serde(flatten)]
+    pub unknown: UnknownFields,
 }
 
 impl Default for LauncherSettings {
@@ -84,18 +99,23 @@ impl Default for LauncherSettings {
             active_provider: String::new(),
             gemini_model: String::new(),
             hints_first: true,
+            unknown: UnknownFields::new(),
         }
     }
 }
 
 /// Drop individual unreadable game entries rather than failing the whole file.
 /// Without this, one bad field value (a hand edit, a type change between
-/// versions) costs the user their entire library.
+/// versions) costs the user their entire library. A `games` that is not a list
+/// (a null, say) loads as an empty one.
 fn games_lenient<'de, D>(deserializer: D) -> Result<Vec<Game>, D::Error>
 where
     D: serde::Deserializer<'de>,
 {
-    let raw = Vec::<serde_json::Value>::deserialize(deserializer)?;
+    let serde_json::Value::Array(raw) = serde_json::Value::deserialize(deserializer)? else {
+        tracing::warn!("Dropping unreadable game list: not a list");
+        return Ok(Vec::new());
+    };
     Ok(raw
         .into_iter()
         .filter_map(|value| match serde_json::from_value::<Game>(value) {
@@ -108,11 +128,40 @@ where
         .collect())
 }
 
+/// Load `settings` one value at a time: a value of the wrong type falls back to
+/// its default and every readable one is kept, and a `settings` that is not an
+/// object (a null, say) loads as the defaults. Failing the parse would send the
+/// whole library down the corrupt-file path.
+fn settings_lenient<'de, D>(deserializer: D) -> Result<LauncherSettings, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    use serde::de::Error as _;
+
+    let serde_json::Value::Object(raw) = serde_json::Value::deserialize(deserializer)? else {
+        tracing::warn!("Dropping unreadable settings: not an object");
+        return Ok(LauncherSettings::default());
+    };
+    let readable: serde_json::Map<String, serde_json::Value> = raw
+        .into_iter()
+        .filter(|(key, value)| {
+            let alone = serde_json::Map::from_iter([(key.clone(), value.clone())]);
+            serde_json::from_value::<LauncherSettings>(serde_json::Value::Object(alone))
+                .inspect_err(|e| tracing::warn!("Dropping unreadable setting {key}: {e}"))
+                .is_ok()
+        })
+        .collect();
+    serde_json::from_value(serde_json::Value::Object(readable)).map_err(D::Error::custom)
+}
+
 /// Per-game values the user sets, keyed by a game key. Never sent to the page:
 /// each value reaches it only through its own command.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
-pub(crate) struct GamePrefs {}
+pub(crate) struct GamePrefs {
+    #[serde(flatten)]
+    pub unknown: UnknownFields,
+}
 
 /// Load `game_prefs` one entry at a time, like `games`: an unreadable entry is
 /// dropped, and a value that is not an object loads as empty. The warning never
@@ -164,6 +213,7 @@ where
 pub(crate) struct LauncherState {
     #[serde(deserialize_with = "games_lenient")]
     pub games: Vec<Game>,
+    #[serde(deserialize_with = "settings_lenient")]
     pub settings: LauncherSettings,
     /// Kept beside the library rather than on `Game`: a scan rebuilds Steam
     /// games and would erase a value stored on one.
@@ -173,6 +223,8 @@ pub(crate) struct LauncherState {
     /// the panel is hidden after a move, never by Settings.
     #[serde(deserialize_with = "placement_lenient")]
     pub overlay_placement: Option<OverlayPlacement>,
+    #[serde(flatten)]
+    pub unknown: UnknownFields,
 }
 
 #[cfg(test)]

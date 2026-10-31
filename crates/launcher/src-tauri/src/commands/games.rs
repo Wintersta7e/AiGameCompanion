@@ -19,7 +19,7 @@ pub(crate) fn get_games(state: State<'_, AppState>) -> Vec<Game> {
 }
 
 /// Fold a Steam scan result into the stored library, always carrying
-/// `play_time` and `last_played` across.
+/// `play_time`, `last_played` and the fields this build does not know across.
 ///
 /// The scan speaks only for Steam games, so entries from any other source are
 /// always kept. For Steam games a COMPLETE scan is authoritative: entries it
@@ -37,6 +37,7 @@ fn merge_scan(existing: &[Game], outcome: ScanOutcome) -> Vec<Game> {
         if let Some(prev) = existing.iter().find(|g| g.id == new_game.id) {
             new_game.last_played.clone_from(&prev.last_played);
             new_game.play_time_minutes = prev.play_time_minutes;
+            new_game.unknown.clone_from(&prev.unknown);
         }
     }
 
@@ -237,6 +238,8 @@ pub(crate) fn open_game_logs(app: tauri::AppHandle) -> Result<(), String> {
 
 #[cfg(test)]
 mod tests {
+    #![allow(let_underscore_drop, reason = "test cleanup is best-effort")]
+
     use super::{merge_scan, ScanOutcome};
     use crate::models::{Game, GameSource};
 
@@ -351,5 +354,94 @@ mod tests {
             },
         );
         assert!(merged.is_empty(), "a clean scan finding nothing is truth");
+    }
+
+    /// A Steam install under the temp dir with one library holding a readable
+    /// manifest for app 10 and `second_manifest` as app 20's manifest.
+    fn fake_steam_dir(label: &str, second_manifest: &str) -> std::path::PathBuf {
+        let steam =
+            std::env::temp_dir().join(format!("aigc_fake_steam_{}_{label}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&steam);
+        let apps = steam.join("steamapps");
+        std::fs::create_dir_all(&apps).unwrap();
+        let library = steam.display().to_string().replace('\\', "\\\\");
+        std::fs::write(
+            apps.join("libraryfolders.vdf"),
+            format!(
+                "\"libraryfolders\"\n{{\n\t\"0\"\n\t{{\n\t\t\"path\"\t\t\"{library}\"\n\t}}\n}}\n"
+            ),
+        )
+        .unwrap();
+        std::fs::write(
+            apps.join("appmanifest_10.acf"),
+            "\"AppState\"\n{\n\t\"appid\"\t\t\"10\"\n\t\"installdir\"\t\t\"Ten\"\n\t\"name\"\t\t\"Ten\"\n}\n",
+        )
+        .unwrap();
+        std::fs::write(apps.join("appmanifest_20.acf"), second_manifest).unwrap();
+        steam
+    }
+
+    /// Scan the fake install and fold the result into a library where both
+    /// games already have playtime.
+    fn scan_over_stored(steam: &std::path::Path) -> Vec<Game> {
+        let outcome = crate::discovery::steam::scan_steam_dir(
+            &steamlocate::SteamDir::from_dir(steam).unwrap(),
+        );
+        let stored = vec![
+            game("steam_10", "Ten", 300),
+            game("steam_20", "Twenty", 5000),
+        ];
+        let merged = merge_scan(&stored, outcome);
+        let _ = std::fs::remove_dir_all(steam);
+        merged
+    }
+
+    /// A manifest Steam is rewriting, or one truncated by a crash, cannot be
+    /// read: that game is still installed, so its playtime must survive.
+    #[test]
+    fn unreadable_manifest_keeps_the_stored_game() {
+        let merged = scan_over_stored(&fake_steam_dir("unreadable", ""));
+        let twenty = merged.iter().find(|g| g.id == "steam_20");
+        assert_eq!(
+            twenty.map(|g| g.play_time_minutes),
+            Some(5000),
+            "a game with an unreadable manifest lost its playtime: {merged:?}"
+        );
+    }
+
+    /// Steam writes a manifest without a name for a queued install.
+    #[test]
+    fn nameless_manifest_keeps_the_stored_game() {
+        let nameless =
+            "\"AppState\"\n{\n\t\"appid\"\t\t\"20\"\n\t\"installdir\"\t\t\"Twenty\"\n}\n";
+        let merged = scan_over_stored(&fake_steam_dir("nameless", nameless));
+        let twenty = merged.iter().find(|g| g.id == "steam_20");
+        assert_eq!(
+            twenty.map(|g| g.play_time_minutes),
+            Some(5000),
+            "a game with a nameless manifest lost its playtime: {merged:?}"
+        );
+    }
+
+    /// A scan rebuilds each Steam game it finds; a field a newer build stored
+    /// on that game must come through the rebuild.
+    #[test]
+    fn scan_keeps_fields_this_build_does_not_know() {
+        let twenty = "\"AppState\"\n{\n\t\"appid\"\t\t\"20\"\n\t\"installdir\"\t\t\"Twenty\"\n\t\"name\"\t\t\"Twenty\"\n}\n";
+        let steam = fake_steam_dir("unknown_fields", twenty);
+        let outcome = crate::discovery::steam::scan_steam_dir(
+            &steamlocate::SteamDir::from_dir(&steam).unwrap(),
+        );
+        let _ = std::fs::remove_dir_all(&steam);
+        let stored: Vec<Game> = serde_json::from_str(
+            r#"[{"id":"steam_10","name":"Ten","source":"steam","source_id":"10","play_time_minutes":300,"notes":"my notes"}]"#,
+        )
+        .unwrap();
+        let merged = merge_scan(&stored, outcome);
+        let ten = merged.iter().find(|g| g.id == "steam_10").unwrap();
+        let saved = serde_json::to_value(ten).unwrap();
+        println!("after the scan: {saved}");
+        assert_eq!(saved["notes"], "my notes", "lost in the scan: {saved}");
+        assert_eq!(saved["play_time_minutes"], 300);
     }
 }

@@ -26,6 +26,34 @@ pub(crate) struct AppState {
     /// Why this run must not write the state file: set when the file found at
     /// load was neither fully loaded nor preserved. `None` means writable.
     load_error: Option<String>,
+    /// Whether the settings in memory are the user's: the file was absent, or
+    /// every value in its `settings` was read.
+    settings_read: bool,
+    /// What the main window tells the user once about a library file that was
+    /// not fully read but kept in a backup; taken by the first `health()`.
+    notice: Mutex<Option<String>>,
+}
+
+/// What the main window learns about the library file at start, as sent over
+/// IPC.
+#[derive(Debug, serde::Serialize)]
+pub(crate) struct StateHealth {
+    /// Why nothing is saved this run, or `None` when the state is writable.
+    pub read_only: Option<String>,
+    /// A notice that part or all of the file could not be read and where its
+    /// copy was kept; given once per run.
+    pub notice: Option<String>,
+}
+
+/// The result of reading the state file at start.
+struct Loaded {
+    state: LauncherState,
+    /// See `AppState::load_error`.
+    load_error: Option<String>,
+    /// See `AppState::settings_read`.
+    settings_read: bool,
+    /// See `AppState::notice`.
+    notice: Option<String>,
 }
 
 impl AppState {
@@ -43,22 +71,43 @@ impl AppState {
             );
         }
 
-        let (launcher, load_error) = read_state(&state_path);
-        if let Some(reason) = &load_error {
+        let loaded = read_state(&state_path);
+        if let Some(reason) = &loaded.load_error {
             tracing::error!("Launcher state is read-only this run: {reason}");
         }
         Self {
-            launcher: Mutex::new(launcher),
+            launcher: Mutex::new(loaded.state),
             state_path,
             active_sessions: Mutex::new(HashSet::new()),
             save_lock: Mutex::new(()),
-            load_error,
+            load_error: loaded.load_error,
+            settings_read: loaded.settings_read,
+            notice: Mutex::new(loaded.notice),
         }
     }
 
     /// Why saving is refused this run, or `None` when the state is writable.
     pub(crate) fn load_error(&self) -> Option<&str> {
         self.load_error.as_deref()
+    }
+
+    /// The state file's health for the main window. The notice is handed out
+    /// once, so it is shown once per run.
+    pub(crate) fn health(&self) -> StateHealth {
+        StateHealth {
+            read_only: self.load_error.clone(),
+            notice: self.notice.lock().take(),
+        }
+    }
+
+    /// The launch-on-startup value to apply to the OS at start, or `None` to
+    /// leave the autostart entry alone: the settings in memory are then not
+    /// the user's, and applying them would delete an entry the user asked for.
+    pub(crate) fn autostart_setting(&self) -> Option<bool> {
+        if self.load_error.is_some() || !self.settings_read {
+            return None;
+        }
+        Some(self.launcher.lock().settings.launch_on_startup)
     }
 
     pub(crate) fn save(&self) -> Result<(), String> {
@@ -101,53 +150,108 @@ impl AppState {
     }
 }
 
-/// Read the state file and decide whether this run may write it. Returns the
-/// state to run on and, when the file must be left alone, the reason.
+/// Read the state file and decide whether this run may write it: the state to
+/// run on, the reason when the file must be left alone, whether every setting
+/// was read, and the notice for a file kept in a backup.
 ///
 /// Writable: parsed with nothing dropped; absent; or corrupt / partly
 /// unreadable with its bytes now in a backup. Read-only: unreadable after every
 /// retry, or corrupt / partly unreadable with no backup written.
-fn read_state(state_path: &Path) -> (LauncherState, Option<String>) {
+fn read_state(state_path: &Path) -> Loaded {
     let contents = match read_with_retry(state_path, READ_ATTEMPTS, READ_RETRY_DELAY, |path| {
         std::fs::read_to_string(path)
     }) {
         Ok(contents) => contents,
-        Err(e) if e.kind() == ErrorKind::NotFound => return (LauncherState::default(), None),
+        Err(e) if e.kind() == ErrorKind::NotFound => {
+            return Loaded {
+                state: LauncherState::default(),
+                load_error: None,
+                settings_read: true,
+                notice: None,
+            };
+        }
         Err(e) => {
-            let reason = format!("could not read {}: {e}", state_path.display());
-            return (LauncherState::default(), Some(reason));
+            return Loaded {
+                state: LauncherState::default(),
+                load_error: Some(format!("could not read {}: {e}", state_path.display())),
+                settings_read: false,
+                notice: None,
+            };
         }
     };
+    // A UTF-8 byte order mark, as some Windows editors write, is not JSON. The
+    // backup below still keeps the file's own bytes.
+    let text = contents.strip_prefix('\u{feff}').unwrap_or(&contents);
 
-    match serde_json::from_str::<LauncherState>(&contents) {
+    match serde_json::from_str::<LauncherState>(text) {
         Ok(state) => {
-            // One malformed game or per-game entry is dropped rather than
-            // failing the whole file, so a parse can succeed and still lose data.
-            let dropped = dropped_entries(&contents, &state);
+            // One malformed game, per-game entry or setting is dropped rather
+            // than failing the whole file, so a parse can succeed and still
+            // lose data.
+            let dropped = dropped_entries(text, &state);
+            let settings_read = serde_json::from_str(text)
+                .is_ok_and(|raw| dropped_settings(&raw, &state.settings) == 0);
             if dropped == 0 {
-                return (state, None);
+                return Loaded {
+                    state,
+                    load_error: None,
+                    settings_read,
+                    notice: None,
+                };
             }
             tracing::warn!("{dropped} unreadable entries in {}", state_path.display());
-            let reason = back_up(state_path, contents.as_bytes()).err().map(|e| {
-                format!(
-                    "{dropped} entries in {} could not be read, and it could not be backed up: {e}",
-                    state_path.display()
-                )
-            });
-            (state, reason)
+            let (load_error, notice) = match back_up(state_path, contents.as_bytes()) {
+                Ok(kept) => (
+                    None,
+                    Some(format!(
+                        "Part of your game library file could not be read and was left out. \
+                         A copy of the file was kept at {}.",
+                        kept.display()
+                    )),
+                ),
+                Err(e) => (
+                    Some(format!(
+                        "{dropped} entries in {} could not be read, and it could not be backed up: {e}",
+                        state_path.display()
+                    )),
+                    None,
+                ),
+            };
+            Loaded {
+                state,
+                load_error,
+                settings_read,
+                notice,
+            }
         }
         Err(parse_error) => {
             tracing::error!(
                 "Corrupt launcher state at {}: {parse_error}",
                 state_path.display()
             );
-            let reason = back_up(state_path, contents.as_bytes()).err().map(|e| {
-                format!(
-                    "{} is not valid ({parse_error}), and it could not be backed up: {e}",
-                    state_path.display()
-                )
-            });
-            (LauncherState::default(), reason)
+            let (load_error, notice) = match back_up(state_path, contents.as_bytes()) {
+                Ok(kept) => (
+                    None,
+                    Some(format!(
+                        "Your game library file could not be read, so the launcher started \
+                         with an empty library. A copy of the file was kept at {}.",
+                        kept.display()
+                    )),
+                ),
+                Err(e) => (
+                    Some(format!(
+                        "{} is not valid ({parse_error}), and it could not be backed up: {e}",
+                        state_path.display()
+                    )),
+                    None,
+                ),
+            };
+            Loaded {
+                state: LauncherState::default(),
+                load_error,
+                settings_read: false,
+                notice,
+            }
         }
     }
 }
@@ -185,37 +289,67 @@ const fn should_promote_tmp(state_error: Option<ErrorKind>, tmp_exists: bool) ->
 }
 
 /// Entries the load dropped as unreadable: the file's `games` beyond the loaded
-/// games, plus its `game_prefs` entries beyond the loaded ones, where a
-/// `game_prefs` that is not an object counts as one.
+/// games, plus its `game_prefs` entries beyond the loaded ones, plus its
+/// unreadable settings, where a `games`, `game_prefs` or `settings` of the
+/// wrong kind counts as one.
 fn dropped_entries(contents: &str, state: &LauncherState) -> usize {
     let Ok(raw) = serde_json::from_str::<serde_json::Value>(contents) else {
         return 0;
     };
-    let games = raw
-        .get("games")
-        .and_then(serde_json::Value::as_array)
-        .map_or(0, Vec::len)
-        .saturating_sub(state.games.len());
+    let games = raw.get("games").map_or(0, |value| {
+        value
+            .as_array()
+            .map_or(1, |entries| entries.len().saturating_sub(state.games.len()))
+    });
     let prefs = raw.get("game_prefs").map_or(0, |value| {
         value.as_object().map_or(1, |entries| {
             entries.len().saturating_sub(state.game_prefs.len())
         })
     });
-    games + prefs
+    games + prefs + dropped_settings(&raw, &state.settings)
+}
+
+/// Values in the file's `settings` that did not load: each one whose loaded
+/// value differs from the file's, or one for a `settings` that is not an object.
+fn dropped_settings(raw: &serde_json::Value, settings: &LauncherSettings) -> usize {
+    let Some(stored) = raw.get("settings") else {
+        return 0;
+    };
+    let Some(stored) = stored.as_object() else {
+        return 1;
+    };
+    let loaded = serde_json::to_value(settings).unwrap_or_default();
+    stored
+        .iter()
+        .filter(|&(key, value)| loaded.get(key) != Some(value))
+        .count()
 }
 
 /// Write `bytes` -- what the load already read, never a second read of a file
 /// that may not be readable -- to a backup name that does not exist yet:
 /// `.json.bak`, else the first free `.json.bak.1` ... `.json.bak.99`. Never
 /// replaces an existing file, which may be the only copy of an older library.
+/// A backup that already holds these bytes is reused: a file nothing has saved
+/// since is met again on every start, and a copy per start would use up every
+/// name and leave the next start read-only.
 fn back_up(state_path: &Path, bytes: &[u8]) -> std::io::Result<PathBuf> {
-    let mut last_error = None;
-    for n in 0..=MAX_BACKUP_SUFFIX {
-        let candidate = if n == 0 {
+    let backup_name = |n: u32| {
+        if n == 0 {
             state_path.with_extension("json.bak")
         } else {
             state_path.with_extension(format!("json.bak.{n}"))
-        };
+        }
+    };
+    if let Some(kept) = (0..=MAX_BACKUP_SUFFIX)
+        .map(backup_name)
+        .find(|candidate| std::fs::read(candidate).is_ok_and(|kept| kept == bytes))
+    {
+        tracing::info!("The launcher state is already kept at {}", kept.display());
+        return Ok(kept);
+    }
+    let mut last_error = None;
+    for n in 0..=MAX_BACKUP_SUFFIX {
+        let candidate = backup_name(n);
         let mut file = match std::fs::OpenOptions::new()
             .write(true)
             .create_new(true)
@@ -382,7 +516,7 @@ mod tests {
             1,
             "a newer source must not wipe the library"
         );
-        assert_eq!(st.games[0].source, GameSource::Manual);
+        assert_eq!(st.games[0].source, GameSource::Other("xbox".to_owned()));
         drop(st);
         cleanup(&path);
     }
@@ -425,6 +559,50 @@ mod tests {
             "{ this is not valid json"
         );
         cleanup(&path);
+    }
+
+    /// A file that was not fully read but kept in a backup used to go
+    /// unannounced: the user saw an empty or shorter library and nothing said
+    /// where the old one was. The main window now gets the copy's path, once.
+    #[test]
+    fn a_kept_copy_is_named_to_the_main_window_once() {
+        let corrupt = temp_state_path("notice_corrupt");
+        std::fs::write(&corrupt, "{ this is not valid json").unwrap();
+        // `.json.bak` holds an older library, so the copy goes to `.json.bak.1`.
+        std::fs::write(corrupt.with_extension("json.bak"), ONE_GAME).unwrap();
+        let partial = temp_state_path("notice_partial");
+        std::fs::write(
+            &partial,
+            r#"{"games":[{"id":"ok","name":"Good"},{"id":"bad","play_time_minutes":"lots"}],"settings":{}}"#,
+        )
+        .unwrap();
+        let clean = temp_state_path("notice_clean");
+        std::fs::write(&clean, ONE_GAME).unwrap();
+
+        let mut wrong = Vec::new();
+        for (path, kept, empty) in [
+            (&corrupt, Some(corrupt.with_extension("json.bak.1")), true),
+            (&partial, Some(partial.with_extension("json.bak")), false),
+            (&clean, None, false),
+        ] {
+            let app = AppState::load(path.clone());
+            let first = serde_json::to_value(app.health()).unwrap();
+            let second = serde_json::to_value(app.health()).unwrap();
+            println!("{}: {first}", path.display());
+            let names_kept = match (first["notice"].as_str(), &kept) {
+                (Some(notice), Some(kept)) => {
+                    notice.contains(&kept.display().to_string())
+                        && notice.contains("empty library") == empty
+                }
+                (None, None) => true,
+                _ => false,
+            };
+            if !names_kept || !first["read_only"].is_null() || !second["notice"].is_null() {
+                wrong.push(format!("{}: {first} then {second}", path.display()));
+            }
+            cleanup(path);
+        }
+        assert!(wrong.is_empty(), "{wrong:#?}");
     }
 
     #[test]
@@ -836,6 +1014,52 @@ mod tests {
         cleanup(&path);
     }
 
+    /// With nothing saving the cleaned file (scan on startup off), every start
+    /// meets the same bytes. One copy is enough; a new one per start used up
+    /// every backup name and made a readable file read-only.
+    #[test]
+    fn same_bytes_are_backed_up_once_across_starts() {
+        let dropped = r#"{"games":[{"id":"ok","name":"Good"},{"id":"bad","play_time_minutes":"lots"}],"settings":{"scan_on_startup":false}}"#;
+        for (label, text) in [("dropped_once", dropped), ("corrupt_once", "{ not json")] {
+            let path = temp_state_path(label);
+            std::fs::write(&path, text).unwrap();
+            for start in 1..=3 {
+                let app = AppState::load(path.clone());
+                assert_eq!(
+                    app.load_error(),
+                    None,
+                    "{label}: start {start} is read-only"
+                );
+            }
+            let kept: Vec<_> = backup_names(&path)
+                .into_iter()
+                .filter(|p| p.exists())
+                .collect();
+            assert_eq!(
+                kept,
+                [path.with_extension("json.bak")],
+                "{label}: the same bytes were backed up again"
+            );
+            cleanup(&path);
+        }
+    }
+
+    /// A copy already kept under any backup name counts, even past a gap
+    /// left by a deleted one.
+    #[test]
+    fn backup_reuses_an_identical_copy_past_a_gap() {
+        let path = temp_state_path("backup_gap");
+        std::fs::write(path.with_extension("json.bak"), "older backup").unwrap();
+        std::fs::write(path.with_extension("json.bak.2"), "{ not json").unwrap();
+        std::fs::write(&path, "{ not json").unwrap();
+
+        let app = AppState::load(path.clone());
+
+        assert_eq!(app.load_error(), None);
+        assert!(!path.with_extension("json.bak.1").exists());
+        cleanup(&path);
+    }
+
     /// The antivirus case: another handle holds the file with no read sharing
     /// for the whole load.
     #[cfg(windows)]
@@ -975,5 +1199,221 @@ mod tests {
         let contents = std::fs::read_to_string(&path).unwrap();
         serde_json::from_str::<serde_json::Value>(&contents).unwrap();
         cleanup(&path);
+    }
+
+    const TWO_GAMES: &str = r#""games":[{"id":"steam_1","name":"Foo","source":"steam","source_id":"1","play_time_minutes":900},{"id":"steam_2","name":"Bar","source":"steam","source_id":"2","play_time_minutes":4000}]"#;
+
+    /// One value outside `games[]` that this build cannot read -- a setting of
+    /// the wrong type, a null `settings` or `games` -- used to fail the whole
+    /// file, load an empty library and let the next save write it over.
+    #[test]
+    fn one_unreadable_value_keeps_the_library_and_every_readable_setting() {
+        let cases = [
+            (
+                "bad_setting",
+                format!(
+                    r#"{{{TWO_GAMES},"settings":{{"scan_on_startup":"yes","launch_on_startup":true,"gemini_model":"gemini-x"}}}}"#
+                ),
+            ),
+            (
+                "null_settings",
+                format!(r#"{{{TWO_GAMES},"settings":null}}"#),
+            ),
+            (
+                "null_games",
+                r#"{"games":null,"settings":{"launch_on_startup":true,"gemini_model":"gemini-x"}}"#
+                    .to_owned(),
+            ),
+        ];
+        for (label, text) in cases {
+            let path = temp_state_path(&format!("one_unreadable_{label}"));
+            std::fs::write(&path, &text).unwrap();
+            let app = AppState::load(path.clone());
+            let st = app.launcher.lock().clone();
+            let minutes: Vec<u64> = st.games.iter().map(|g| g.play_time_minutes).collect();
+            println!(
+                "{label}: minutes={minutes:?} launch_on_startup={} gemini_model={:?} load_error={:?} autostart={:?}",
+                st.settings.launch_on_startup,
+                st.settings.gemini_model,
+                app.load_error(),
+                app.autostart_setting()
+            );
+            assert_eq!(app.load_error(), None, "{label}");
+            let backup = std::fs::read_to_string(path.with_extension("json.bak"));
+            assert_eq!(
+                backup.ok().as_deref(),
+                Some(text.as_str()),
+                "{label}: the file is kept as it was"
+            );
+            match label {
+                "bad_setting" => {
+                    assert_eq!(minutes, [900, 4000]);
+                    assert!(st.settings.launch_on_startup, "a readable setting is kept");
+                    assert_eq!(st.settings.gemini_model, "gemini-x");
+                    assert!(
+                        st.settings.scan_on_startup,
+                        "the unreadable one is the default"
+                    );
+                    assert_eq!(
+                        app.autostart_setting(),
+                        None,
+                        "settings that were not all read leave autostart alone"
+                    );
+                }
+                "null_settings" => {
+                    assert_eq!(minutes, [900, 4000]);
+                    assert_eq!(app.autostart_setting(), None);
+                }
+                _ => {
+                    assert_eq!(minutes, Vec::<u64>::new());
+                    assert_eq!(st.settings.gemini_model, "gemini-x");
+                    assert_eq!(app.autostart_setting(), Some(true));
+                }
+            }
+            cleanup(&path);
+        }
+    }
+
+    /// A leading UTF-8 byte order mark, as some Windows editors and shells
+    /// write, is not part of the JSON and must not make the file unreadable.
+    #[test]
+    fn a_leading_bom_loads_the_same_file() {
+        let path = temp_state_path("leading_bom");
+        let text = format!("\u{feff}{{{TWO_GAMES},\"settings\":{{\"launch_on_startup\":true}}}}");
+        std::fs::write(&path, &text).unwrap();
+        let app = AppState::load(path.clone());
+        let minutes: Vec<u64> = app
+            .launcher
+            .lock()
+            .games
+            .iter()
+            .map(|g| g.play_time_minutes)
+            .collect();
+        println!(
+            "bom: minutes={minutes:?} load_error={:?} autostart={:?}",
+            app.load_error(),
+            app.autostart_setting()
+        );
+        assert_eq!(minutes, [900, 4000]);
+        assert_eq!(app.autostart_setting(), Some(true));
+        assert!(
+            backup_names(&path).iter().all(|name| !name.exists()),
+            "nothing was dropped, so nothing is backed up"
+        );
+        cleanup(&path);
+    }
+
+    /// The autostart entry follows only a setting read from the user's file
+    /// (or a new install's default), never a default that stands in for one.
+    #[test]
+    fn autostart_follows_only_settings_that_were_read() {
+        let absent = temp_state_path("autostart_absent");
+        let read = temp_state_path("autostart_read");
+        std::fs::write(&read, r#"{"settings":{"launch_on_startup":true}}"#).unwrap();
+        let corrupt = temp_state_path("autostart_corrupt");
+        std::fs::write(&corrupt, r#"{"settings":{"launch_on_startup":true}"#).unwrap();
+        for (path, expected) in [(absent, Some(false)), (read, Some(true)), (corrupt, None)] {
+            let app = AppState::load(path.clone());
+            println!("{}: {:?}", path.display(), app.autostart_setting());
+            assert_eq!(app.autostart_setting(), expected, "{}", path.display());
+            cleanup(&path);
+        }
+    }
+
+    /// A file written by a newer build, then opened by this one: fields this
+    /// build does not know -- at the top level, in `settings`, on a game and in
+    /// a game's preferences -- come back unchanged from a load and a save, and
+    /// the fields it knows are written once.
+    #[test]
+    fn unknown_fields_survive_a_load_and_a_save() {
+        let newer = r#"{"games":[{"id":"steam_1","name":"Foo","source":"steam","source_id":"1","play_time_minutes":900,"notes":"my notes"}],"settings":{"launch_on_startup":true,"voice_input":{"key":"F8"}},"game_prefs":{"library:steam_1":{"future_pref":7}},"journals":[{"text":"entry"}]}"#;
+        let path = temp_state_path("unknown_fields");
+        std::fs::write(&path, newer).unwrap();
+        let app = AppState::load(path.clone());
+        assert_eq!(app.load_error(), None);
+        assert_eq!(
+            app.autostart_setting(),
+            Some(true),
+            "an unknown setting is not an unreadable one"
+        );
+        app.save().unwrap();
+        let text = std::fs::read_to_string(&path).unwrap();
+        let saved: serde_json::Value = serde_json::from_str(&text).unwrap();
+        let original: serde_json::Value = serde_json::from_str(newer).unwrap();
+        let mut lost = Vec::new();
+        for pointer in [
+            "/journals",
+            "/settings/voice_input",
+            "/games/0/notes",
+            "/game_prefs/library:steam_1/future_pref",
+        ] {
+            println!("{pointer}: {:?}", saved.pointer(pointer));
+            if saved.pointer(pointer) != original.pointer(pointer) {
+                lost.push(pointer);
+            }
+        }
+        let backups: Vec<PathBuf> = backup_names(&path)
+            .into_iter()
+            .filter(|name| name.exists())
+            .collect();
+        cleanup(&path);
+        assert!(lost.is_empty(), "lost on save: {lost:?}");
+        assert_eq!(backups, Vec::<PathBuf>::new(), "nothing was dropped");
+        for key in [
+            "\"games\"",
+            "\"settings\"",
+            "\"launch_on_startup\"",
+            "\"play_time_minutes\"",
+            "\"notes\"",
+            "\"journals\"",
+        ] {
+            assert_eq!(text.matches(key).count(), 1, "{key} in {text}");
+        }
+
+        // A known setting that could not be read is dropped, never kept
+        // beside its default as an unknown one.
+        let path = temp_state_path("unreadable_known_field");
+        std::fs::write(&path, r#"{"settings":{"scan_on_startup":"yes"}}"#).unwrap();
+        let app = AppState::load(path.clone());
+        app.save().unwrap();
+        let text = std::fs::read_to_string(&path).unwrap();
+        cleanup(&path);
+        assert_eq!(text.matches("\"scan_on_startup\"").count(), 1, "{text}");
+    }
+
+    /// A game source a newer build added was rewritten as "manual" on the
+    /// next save. It is now written back as stored, and this build still
+    /// treats the game as one it did not scan.
+    #[test]
+    fn a_source_this_build_does_not_know_is_saved_back_unchanged() {
+        let path = temp_state_path("unknown_source_saved");
+        std::fs::write(
+            &path,
+            r#"{"games":[{"id":"a","source":"elsewhere"},{"id":"b","source":"steam"},{"id":"c","source":"manual"}]}"#,
+        )
+        .unwrap();
+        let app = AppState::load(path.clone());
+        let steam = app
+            .launcher
+            .lock()
+            .games
+            .iter()
+            .map(|game| game.source == GameSource::Steam)
+            .collect::<Vec<_>>();
+        app.save().unwrap();
+        let saved: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        let backups = backup_names(&path).iter().any(|name| name.exists());
+        cleanup(&path);
+        let sources = saved["games"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|game| game["source"].clone())
+            .collect::<Vec<_>>();
+        println!("saved sources {sources:?}, steam {steam:?}");
+        assert_eq!(sources, ["elsewhere", "steam", "manual"]);
+        assert_eq!(steam, [false, true, false]);
+        assert!(!backups, "nothing was dropped");
     }
 }
