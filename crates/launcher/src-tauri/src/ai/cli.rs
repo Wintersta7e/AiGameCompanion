@@ -145,20 +145,123 @@ fn windowless(cmd: &mut std::process::Command) -> &mut std::process::Command {
     cmd
 }
 
-/// Apply the Windows no-window flag to a tokio `Command`. No-op on non-Windows
-/// so the launcher crate compiles for the Linux test runner.
-#[cfg_attr(
-    not(windows),
-    expect(
-        unused_variables,
-        clippy::needless_pass_by_ref_mut,
-        clippy::missing_const_for_fn,
-        reason = "off Windows the command is left untouched, and the Windows build calls creation_flags, which is not const"
-    )
-)]
-fn no_window(cmd: &mut Command) {
-    #[cfg(windows)]
-    cmd.creation_flags(CREATE_NO_WINDOW);
+/// Windows `CREATE_SUSPENDED`: a CLI child starts paused, so it is in its job
+/// before it can start a process of its own.
+#[cfg(windows)]
+const CREATE_SUSPENDED: u32 = 0x0000_0004;
+
+/// The Job Object a CLI child runs in on Windows. Every process the child
+/// starts joins it, and closing it ends them all: dropping it when a request
+/// ends (answer, error, Stop, a newer request, a timeout), or the launcher
+/// exiting by any path. An npm-installed CLI is `node` plus the CLI's own
+/// binary, which `node` starts, and `kill_on_drop` ends only the first.
+#[cfg(windows)]
+mod tree {
+    #![expect(
+        unsafe_code,
+        reason = "this module wraps the Win32 job object and thread calls"
+    )]
+
+    use std::os::windows::io::{AsRawHandle as _, FromRawHandle as _, OwnedHandle};
+
+    use windows::Win32::Foundation::{CloseHandle, HANDLE};
+    use windows::Win32::System::Diagnostics::ToolHelp::{
+        CreateToolhelp32Snapshot, Thread32First, Thread32Next, TH32CS_SNAPTHREAD, THREADENTRY32,
+    };
+    use windows::Win32::System::JobObjects::{
+        AssignProcessToJobObject, CreateJobObjectW, JobObjectExtendedLimitInformation,
+        SetInformationJobObject, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
+        JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
+    };
+    use windows::Win32::System::Threading::{OpenThread, ResumeThread, THREAD_SUSPEND_RESUME};
+
+    /// A kill-on-close job. Dropping it closes the handle, which ends every
+    /// process in it.
+    pub(super) struct ChildTree(OwnedHandle);
+
+    /// Put the suspended `child` in a new kill-on-close job, then let it run.
+    /// A child that cannot be put in a job still runs, as before the job
+    /// existed; one that cannot be resumed is an error, and dropping it kills it.
+    pub(super) fn start(
+        child: &tokio::process::Child,
+        label: &str,
+    ) -> Result<Option<ChildTree>, String> {
+        let job = child.raw_handle().map(|raw| adopt(HANDLE(raw)));
+        let tree = match job {
+            Some(Ok(tree)) => Some(tree),
+            Some(Err(e)) => {
+                tracing::warn!(
+                    "{label} CLI runs outside a job; Stop ends only its first process: {e}"
+                );
+                None
+            }
+            None => None,
+        };
+        let pid = child
+            .id()
+            .ok_or_else(|| format!("{label} CLI exited before it started."))?;
+        resume(pid).map_err(|e| format!("Failed to start {label} CLI: {e}"))?;
+        Ok(tree)
+    }
+
+    fn adopt(process: HANDLE) -> windows::core::Result<ChildTree> {
+        // SAFETY: no security attributes and no name: plain values only.
+        let raw = unsafe { CreateJobObjectW(None, windows::core::PCWSTR::null()) }?;
+        // SAFETY: `raw` is a new handle nothing else owns or closes.
+        let tree = ChildTree(unsafe { OwnedHandle::from_raw_handle(raw.0) });
+        let job = HANDLE(tree.0.as_raw_handle());
+        let mut limits = JOBOBJECT_EXTENDED_LIMIT_INFORMATION::default();
+        limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+        // SAFETY: `job` is open, and `limits` is a live local of the size passed.
+        unsafe {
+            SetInformationJobObject(
+                job,
+                JobObjectExtendedLimitInformation,
+                (&raw const limits).cast(),
+                u32::try_from(size_of_val(&limits)).unwrap_or(0),
+            )
+        }?;
+        // SAFETY: both handles are open: `job` above, `process` owned by the child.
+        unsafe { AssignProcessToJobObject(job, process) }?;
+        Ok(tree)
+    }
+
+    /// Resume the threads of the suspended process `pid`: its one main thread.
+    fn resume(pid: u32) -> Result<(), String> {
+        // SAFETY: plain values; the snapshot handle is closed below.
+        let snapshot =
+            unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0) }.map_err(|e| e.to_string())?;
+        let mut entry = THREADENTRY32 {
+            dwSize: u32::try_from(size_of::<THREADENTRY32>()).unwrap_or(0),
+            ..Default::default()
+        };
+        let mut resumed = 0usize;
+        // SAFETY: `snapshot` is open, and `entry` is a live, `dwSize`-initialised local.
+        let mut more = unsafe { Thread32First(snapshot, &raw mut entry) }.is_ok();
+        while more {
+            if entry.th32OwnerProcessID == pid {
+                // SAFETY: plain values; the thread handle is closed below.
+                let opened =
+                    unsafe { OpenThread(THREAD_SUSPEND_RESUME, false, entry.th32ThreadID) };
+                if let Ok(thread) = opened {
+                    // SAFETY: `thread` is the open handle from above.
+                    if unsafe { ResumeThread(thread) } != u32::MAX {
+                        resumed += 1;
+                    }
+                    // SAFETY: `thread` is not used again.
+                    crate::util::log_if_err("CloseHandle(thread)", unsafe { CloseHandle(thread) });
+                }
+            }
+            // SAFETY: as for Thread32First above.
+            more = unsafe { Thread32Next(snapshot, &raw mut entry) }.is_ok();
+        }
+        // SAFETY: `snapshot` is not used again.
+        crate::util::log_if_err("CloseHandle(snapshot)", unsafe { CloseHandle(snapshot) });
+        if resumed == 0 {
+            return Err(format!("no thread of process {pid} could be resumed"));
+        }
+        Ok(())
+    }
 }
 
 /// Escape a string for use inside a `bash -c` / `bash -lic` command.
@@ -732,8 +835,9 @@ where
 /// Spawn a CLI child, write `input` to stdin, and stream parsed stdout lines to
 /// `on_chunk`. stdin/stdout/stderr are driven concurrently in this one future so
 /// that aborting the owning task drops the child; `kill_on_drop` then terminates
-/// it. Note: in WSL mode the direct child is `wsl.exe`, so this ends the relay
-/// but may orphan the in-distro CLI process (a known limitation, same as before).
+/// it, and on Windows its job ends every process it started. Note: in WSL mode
+/// the direct child is `wsl.exe`, so this ends the relay but may orphan the
+/// in-distro CLI process (a known limitation, same as before).
 async fn run_cli<F, P>(
     cmd: &mut Command,
     input: String,
@@ -750,11 +854,15 @@ where
     cmd.stdout(std::process::Stdio::piped());
     cmd.stderr(std::process::Stdio::piped());
     cmd.kill_on_drop(true);
-    no_window(cmd);
+    #[cfg(windows)]
+    cmd.creation_flags(CREATE_NO_WINDOW | CREATE_SUSPENDED);
 
     let mut child = cmd
         .spawn()
         .map_err(|e| format!("Failed to spawn {label} CLI: {e}"))?;
+    // Held until this future ends, however it ends.
+    #[cfg(windows)]
+    let _tree = tree::start(&child, label)?;
 
     let mut stdin = child
         .stdin
@@ -1746,5 +1854,144 @@ mod tests {
         println!("{result:?}\n{joined}");
         assert_eq!(result, Ok(()));
         assert_eq!(joined, JSON_ANSWER);
+    }
+
+    // ---------------- quitting and stopping ----------------
+
+    /// Whether `pid` still runs. A killed process its parent has not reaped
+    /// yet is a zombie (`Z`), which no longer runs.
+    #[cfg(unix)]
+    fn runs(pid: &str) -> bool {
+        std::fs::read_to_string(format!("/proc/{pid}/stat")).is_ok_and(|stat| {
+            stat.rsplit_once(") ")
+                .is_some_and(|(_, rest)| !rest.starts_with('Z') && !rest.starts_with('X'))
+        })
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn quitting_ends_the_cli_and_deletes_its_screenshot() {
+        let dir = fresh_dir("quit");
+        // One file a crash left behind, and the one the running request holds.
+        std::fs::write(dir.join("aigc-shot-left-behind.png"), b"OLD").unwrap();
+        let shot = TempShot::create(shot_path(&dir), b"PNGDATA").unwrap();
+        let (pid_tx, pid_rx) = std::sync::mpsc::channel();
+        let handle = tauri::async_runtime::spawn(async move {
+            let _shot = shot;
+            let mut cmd = Command::new("sh");
+            cmd.args(["-c", "echo $$; exec sleep 60"]);
+            let ended = run_cli(
+                &mut cmd,
+                String::new(),
+                |pid| pid_tx.send(pid).map_err(|e| e.to_string()),
+                parse_codex_line,
+                "Quit",
+                None,
+            )
+            .await;
+            println!("the request ended: {ended:?}");
+        });
+        let ai = super::super::AiState::default();
+        ai.replace_active(1, handle);
+        let pid = pid_rx
+            .recv_timeout(std::time::Duration::from_secs(10))
+            .expect("the CLI started");
+        let pid = pid.trim().to_owned();
+        assert!(runs(&pid), "the CLI {pid} is not running");
+
+        ai.stop_for_exit(Some(&dir));
+
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while runs(&pid) && std::time::Instant::now() < deadline {
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+        let still_runs = runs(&pid);
+        if still_runs {
+            std::process::Command::new("kill")
+                .args(["-9", &pid])
+                .status()
+                .unwrap();
+        }
+        let left: Vec<_> = std::fs::read_dir(&dir)
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name())
+            .collect();
+        std::fs::remove_dir_all(&dir).unwrap();
+        println!("after quit: CLI running {still_runs}, files {left:?}");
+        assert!(!still_runs, "the CLI kept running after quit");
+        assert!(left.is_empty(), "files left after quit: {left:?}");
+    }
+
+    /// The processes a CLI starts on Windows, and how a test watches them.
+    #[cfg(windows)]
+    mod windows_tree {
+        #![expect(
+            unsafe_code,
+            reason = "the test opens, waits on and ends a process by its pid"
+        )]
+
+        use super::*;
+        use windows::Win32::Foundation::{CloseHandle, WAIT_OBJECT_0};
+        use windows::Win32::System::Threading::{
+            OpenProcess, TerminateProcess, WaitForSingleObject, PROCESS_SYNCHRONIZE,
+            PROCESS_TERMINATE,
+        };
+
+        const START_A_CHILD: &str = "$i = New-Object System.Diagnostics.ProcessStartInfo \
+            'ping.exe', '-n 60 127.0.0.1'; $i.UseShellExecute = $false; \
+            $i.RedirectStandardOutput = $true; $p = [System.Diagnostics.Process]::Start($i); \
+            [Console]::Out.WriteLine($p.Id); [Console]::Out.Flush(); Start-Sleep -Seconds 60";
+
+        /// An npm-installed CLI is `node` plus the CLI's own binary, which
+        /// `node` starts. Stop must end that second process too.
+        #[tokio::test]
+        async fn stopping_a_request_ends_the_process_its_cli_started() {
+            let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+            let request = tokio::spawn(async move {
+                let mut cmd = Command::new("powershell.exe");
+                cmd.args(["-NoProfile", "-NonInteractive", "-Command", START_A_CHILD]);
+                let ended = run_cli(
+                    &mut cmd,
+                    String::new(),
+                    |line| tx.send(line).map_err(|e| e.to_string()),
+                    parse_codex_line,
+                    "Tree",
+                    None,
+                )
+                .await;
+                println!("the request ended: {ended:?}");
+            });
+            let pid: u32 = loop {
+                let line = tokio::time::timeout(std::time::Duration::from_secs(30), rx.recv())
+                    .await
+                    .expect("the CLI printed its child's pid")
+                    .expect("the CLI is still running");
+                if let Ok(pid) = line.trim().parse() {
+                    break pid;
+                }
+            };
+            // SAFETY: OpenProcess takes plain values; the handle is closed below.
+            let started =
+                unsafe { OpenProcess(PROCESS_SYNCHRONIZE | PROCESS_TERMINATE, false, pid) }
+                    .unwrap();
+
+            request.abort();
+            println!("stopped: {:?}", request.await);
+
+            // SAFETY: `started` is the open handle from above.
+            let wait = unsafe { WaitForSingleObject(started, 5000) };
+            if wait != WAIT_OBJECT_0 {
+                // SAFETY: as above; ends what the test started when Stop did not.
+                crate::util::log_if_err("end the test's process", unsafe {
+                    TerminateProcess(started, 1)
+                });
+            }
+            // SAFETY: `started` is not used again.
+            crate::util::log_if_err("CloseHandle(process)", unsafe { CloseHandle(started) });
+            assert_eq!(
+                wait, WAIT_OBJECT_0,
+                "process {pid}, started by the CLI, outlived the request"
+            );
+        }
     }
 }

@@ -55,6 +55,9 @@ All notable changes to this project are documented here. The format is based on
   ended as a complete answer and went back to Gemini as one; the text that
   arrived now stays with the reason under it, and it is left out of the next
   question.
+- **Quitting while Claude or Codex answers now stops the answer.** The CLI kept
+  running on your account after the launcher closed, and a Codex screenshot
+  stayed on disk until the next start.
 
 ## 2.1.0 - 2026-10-07
 

@@ -28,6 +28,7 @@ ai::cli::tests::parse_claude_line_treats_successful_result_as_stream_end run
 ai::cli::tests::parse_claude_line_uses_fallback_when_error_result_has_no_message run
 ai::cli::tests::parse_codex_line_emits_json_answer_lines_verbatim run
 ai::cli::tests::parse_codex_line_emits_plain_text_verbatim run
+ai::cli::tests::quitting_ends_the_cli_and_deletes_its_screenshot run
 ai::cli::tests::shell_escape_escapes_inner_single_quote run
 ai::cli::tests::shell_escape_handles_empty_string run
 ai::cli::tests::shell_escape_preserves_spaces_and_special_chars run

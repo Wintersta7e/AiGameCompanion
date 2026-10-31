@@ -35,6 +35,9 @@ pub(crate) fn notify_providers_changed(app: &AppHandle) {
 /// Backstop timeout for a single request, covering a hung CLI that never closes
 /// stdout. Gemini has its own (shorter) HTTP timeout, so this is the CLI ceiling.
 const REQUEST_TIMEOUT: std::time::Duration = std::time::Duration::from_mins(3);
+/// How long quitting waits for a running request to end before it deletes the
+/// screenshot files and exits anyway.
+const EXIT_WAIT: std::time::Duration = std::time::Duration::from_secs(2);
 
 /// The provider a request targets. Serialized lowercase to match the overlay UI
 /// (`"gemini"` / `"claude"` / `"openai"`).
@@ -228,6 +231,37 @@ impl AiState {
     fn clear_if(&self, request_id: u64) {
         let mut guard = self.active.lock();
         guard.take_if(|active| active.request_id == request_id);
+    }
+
+    /// End the running request, then delete every Codex screenshot file, before
+    /// the launcher exits. `std::process::exit` runs no destructors: without
+    /// this, quitting while an answer streamed left the CLI answering on the
+    /// user's account and its screenshot on disk until the next start.
+    pub(crate) fn stop_for_exit(&self, shots_dir: Option<&std::path::Path>) {
+        let active = self.active.lock().take();
+        if let Some(active) = active {
+            active.handle.abort();
+            // The request's future is dropped on a runtime thread; waiting for
+            // that is what kills the CLI and deletes its screenshot.
+            let handle = active.handle;
+            let ended = tauri::async_runtime::block_on(async move {
+                tokio::time::timeout(EXIT_WAIT, handle).await
+            });
+            if ended.is_ok() {
+                tracing::info!("Stopped the running request before exit");
+            } else {
+                tracing::warn!(
+                    "The running request did not stop within {} s of exit",
+                    EXIT_WAIT.as_secs()
+                );
+            }
+        }
+        if let Some(dir) = shots_dir {
+            let removed = sweep_shots(dir);
+            if removed > 0 {
+                tracing::info!("Removed {removed} screenshot file(s) before exit");
+            }
+        }
     }
 }
 
