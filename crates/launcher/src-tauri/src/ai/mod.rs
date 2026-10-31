@@ -25,7 +25,7 @@ pub(crate) use cli::{detect_all, sweep_shots, CliConfig};
 /// chosen. Each window keeps its own copy; without this, CLI detection that
 /// finishes after startup, or a choice made in the other window, left a stale
 /// provider switch on screen.
-pub(crate) fn notify_providers_changed(app: &AppHandle) {
+pub(crate) fn notify_providers_changed<R: tauri::Runtime>(app: &AppHandle<R>) {
     crate::util::log_if_err(
         "announce a provider change",
         app.emit("providers-changed", ()),
@@ -1021,13 +1021,14 @@ mod tests {
 
     #[test]
     fn every_provider_change_is_announced() {
-        // One definition plus its five callers: CLI detection at startup,
-        // set_active_provider, set_gemini_key, recheck_clis, update_settings.
+        // Its five callers: CLI detection at startup, set_active_provider,
+        // set_gemini_key, recheck_clis, update_settings. The definition is
+        // generic, so its name is followed by `<`, not `(`.
         let needle = concat!("notify_providers", "_changed(");
         let (files, count) = crate::util::count_in_sources(needle, None);
         println!("scanned {files} files, found {count} occurrence(s) of {needle}");
         assert!(files > 0, "the source scan found no files");
-        assert_eq!(count, 6, "a provider change that no window hears about");
+        assert_eq!(count, 5, "a provider change that no window hears about");
     }
 
     /// Every provider. A new variant fails to compile in the match; add it to

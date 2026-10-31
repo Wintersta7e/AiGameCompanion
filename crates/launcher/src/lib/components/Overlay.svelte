@@ -4,6 +4,7 @@
   import { listen } from '@tauri-apps/api/event';
   import { hashHue } from '../utils/accent';
   import { ANOTHER_HINT_TURN, FULL_ANSWER_TURN, showHintChips } from '../utils/hints';
+  import { unsavedPick } from '../utils/pick';
   import { PROVIDERS, modelName, type ModelNames, type Provider } from '../stores/companion.svelte';
   import type { LauncherSettings } from '../settings';
   import Markdown from './Markdown.svelte';
@@ -83,6 +84,7 @@
   });
   let provider = $state<Provider>('gemini');
   let savedProvider: Provider | null = null;
+  const pick = unsavedPick<Provider>();
   let dropdownOpen = $state(false);
   let tab = $state<'chat' | 'translate'>('chat');
   // The chat screenshot: taken by the image button, shown above the input, and
@@ -217,9 +219,11 @@
   async function selectProvider(p: Provider) {
     provider = p;
     savedProvider = p;
+    pick.picked(p);
     dropdownOpen = false;
     try {
       await invoke('set_active_provider', { provider: p });
+      pick.saved();
     } catch {
       /* selection still applies for this session */
     }
@@ -655,7 +659,7 @@
       // new install, nothing picked yet) or an unknown one (a hand-edited
       // state file) is no saved provider, so the first available one is used.
       const saved = settings.active_provider;
-      savedProvider = saved && saved in PROVIDERS ? (saved as Provider) : null;
+      savedProvider = pick.after(saved && saved in PROVIDERS ? (saved as Provider) : null);
     } catch {
       /* defaults apply */
     }

@@ -37,3 +37,5 @@ toNodes: inline marks convert in order run
 toNodes: lists keep their order, start and task boxes run
 toNodes: raw HTML and images stay literal text run
 translatePreview: a fetched, shown or sent screenshot is on screen run
+unsavedPick: a pick the launcher could not save holds when the stored one is read again run
+unsavedPick: a saved pick gives way to the stored provider run

@@ -61,6 +61,9 @@ All notable changes to this project are documented here. The format is based on
 - **Claude and Codex installed with npm on Windows are found.** Only a
   standalone install was detected, so an npm install showed the provider as
   unavailable even though the CLI worked in a terminal.
+- **A provider you pick stays picked when the launcher cannot save it.** When
+  the library file could not be read, the pick jumped back to the saved
+  provider at once, and the next question went to that one.
 
 ## 2.1.0 - 2026-10-07
 

@@ -71,6 +71,7 @@ ai::tests::provider_labels_match_the_overlay run
 ai::tests::request_log_line_names_no_game run
 ai::tests::translate_gate_order run
 ai::tests::unlinked_target_contributes_nothing run
+commands::ai::tests::a_refused_provider_pick_announces_no_change run
 commands::games::tests::complete_scan_carries_playtime_across run
 commands::games::tests::complete_scan_drops_uninstalled_games run
 commands::games::tests::complete_scan_keeps_other_sources run

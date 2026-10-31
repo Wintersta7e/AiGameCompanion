@@ -72,21 +72,22 @@ pub(crate) fn cancel_sage(ai: State<'_, AiState>, request_id: u64) {
     ai.cancel(request_id);
 }
 
-/// Persist the user's selected provider so it survives restarts.
+/// Persist the user's selected provider so it survives restarts. A refused
+/// save (a read-only run) announces nothing: the stored provider did not
+/// change, and a window that re-read it would put the old one back.
 #[tauri::command]
 #[expect(
     clippy::needless_pass_by_value,
     reason = "a Tauri command receives its arguments by value"
 )]
-pub(crate) fn set_active_provider(
-    app: AppHandle,
+pub(crate) fn set_active_provider<R: tauri::Runtime>(
+    app: AppHandle<R>,
     provider: Provider,
     state: State<'_, AppState>,
 ) -> Result<(), String> {
-    let saved =
-        state.edit_settings(|settings| provider.as_str().clone_into(&mut settings.active_provider));
+    state.edit_settings(|settings| provider.as_str().clone_into(&mut settings.active_provider))?;
     crate::ai::notify_providers_changed(&app);
-    saved
+    Ok(())
 }
 
 #[derive(serde::Serialize)]
@@ -140,4 +141,38 @@ pub(crate) async fn recheck_clis(
     ai.set_cli(cfg);
     crate::ai::notify_providers_changed(&app);
     Ok(ai.availability(&model))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tauri::{Listener as _, Manager as _};
+
+    #[test]
+    fn a_refused_provider_pick_announces_no_change() {
+        let dir =
+            std::env::temp_dir().join(format!("aigc-test-refused-pick-{}", std::process::id()));
+        // A folder where the state file belongs cannot be read, so this run
+        // is read-only and refuses every save.
+        let path = dir.join("launcher-state.json");
+        std::fs::create_dir_all(&path).unwrap();
+        let app = tauri::test::mock_app();
+        app.manage(AppState::load(path));
+        let (tx, rx) = std::sync::mpsc::channel();
+        app.listen_any("providers-changed", move |_| {
+            tx.send(()).unwrap();
+        });
+
+        let refused = set_active_provider(app.handle().clone(), Provider::Claude, app.state());
+        let announced = rx
+            .recv_timeout(std::time::Duration::from_millis(500))
+            .is_ok();
+        std::fs::remove_dir_all(&dir).unwrap();
+        println!("refused: {refused:?}, announced: {announced}");
+        assert!(refused.is_err(), "a read-only run saved the provider");
+        assert!(
+            !announced,
+            "a refused pick announced a change, so every window re-read the old provider"
+        );
+    }
 }
