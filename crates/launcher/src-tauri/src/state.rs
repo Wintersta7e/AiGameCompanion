@@ -208,14 +208,27 @@ fn dropped_entries(contents: &str, state: &LauncherState) -> usize {
 /// that may not be readable -- to a backup name that does not exist yet:
 /// `.json.bak`, else the first free `.json.bak.1` ... `.json.bak.99`. Never
 /// replaces an existing file, which may be the only copy of an older library.
+/// A backup that already holds these bytes is reused: a file nothing has saved
+/// since is met again on every start, and a copy per start would use up every
+/// name and leave the next start read-only.
 fn back_up(state_path: &Path, bytes: &[u8]) -> std::io::Result<PathBuf> {
-    let mut last_error = None;
-    for n in 0..=MAX_BACKUP_SUFFIX {
-        let candidate = if n == 0 {
+    let backup_name = |n: u32| {
+        if n == 0 {
             state_path.with_extension("json.bak")
         } else {
             state_path.with_extension(format!("json.bak.{n}"))
-        };
+        }
+    };
+    if let Some(kept) = (0..=MAX_BACKUP_SUFFIX)
+        .map(backup_name)
+        .find(|candidate| std::fs::read(candidate).is_ok_and(|kept| kept == bytes))
+    {
+        tracing::info!("The launcher state is already kept at {}", kept.display());
+        return Ok(kept);
+    }
+    let mut last_error = None;
+    for n in 0..=MAX_BACKUP_SUFFIX {
+        let candidate = backup_name(n);
         let mut file = match std::fs::OpenOptions::new()
             .write(true)
             .create_new(true)
@@ -833,6 +846,52 @@ mod tests {
             std::fs::read_to_string(path.with_extension("json.bak.1")).unwrap(),
             "{ not json"
         );
+        cleanup(&path);
+    }
+
+    /// With nothing saving the cleaned file (scan on startup off), every start
+    /// meets the same bytes. One copy is enough; a new one per start used up
+    /// every backup name and made a readable file read-only.
+    #[test]
+    fn same_bytes_are_backed_up_once_across_starts() {
+        let dropped = r#"{"games":[{"id":"ok","name":"Good"},{"id":"bad","play_time_minutes":"lots"}],"settings":{"scan_on_startup":false}}"#;
+        for (label, text) in [("dropped_once", dropped), ("corrupt_once", "{ not json")] {
+            let path = temp_state_path(label);
+            std::fs::write(&path, text).unwrap();
+            for start in 1..=3 {
+                let app = AppState::load(path.clone());
+                assert_eq!(
+                    app.load_error(),
+                    None,
+                    "{label}: start {start} is read-only"
+                );
+            }
+            let kept: Vec<_> = backup_names(&path)
+                .into_iter()
+                .filter(|p| p.exists())
+                .collect();
+            assert_eq!(
+                kept,
+                [path.with_extension("json.bak")],
+                "{label}: the same bytes were backed up again"
+            );
+            cleanup(&path);
+        }
+    }
+
+    /// A copy already kept under any backup name counts, even past a gap
+    /// left by a deleted one.
+    #[test]
+    fn backup_reuses_an_identical_copy_past_a_gap() {
+        let path = temp_state_path("backup_gap");
+        std::fs::write(path.with_extension("json.bak"), "older backup").unwrap();
+        std::fs::write(path.with_extension("json.bak.2"), "{ not json").unwrap();
+        std::fs::write(&path, "{ not json").unwrap();
+
+        let app = AppState::load(path.clone());
+
+        assert_eq!(app.load_error(), None);
+        assert!(!path.with_extension("json.bak.1").exists());
         cleanup(&path);
     }
 

@@ -114,6 +114,7 @@ placement::tests::placement_table run
 placement::tests::reference_cases run
 placement::tests::user_moved_tolerance run
 state::tests::backup_never_replaces_an_existing_one run
+state::tests::backup_reuses_an_identical_copy_past_a_gap run
 state::tests::corrupt_state_falls_back_to_default_and_backs_up run
 state::tests::corrupt_state_without_backup_is_read_only run
 state::tests::dropped_entries_are_preserved run
@@ -129,6 +130,7 @@ state::tests::overlay_position_loads_leniently run
 state::tests::read_error_makes_state_read_only run
 state::tests::read_retries_transient_errors_only run
 state::tests::recovers_state_from_leftover_tmp_when_main_missing run
+state::tests::same_bytes_are_backed_up_once_across_starts run
 state::tests::save_is_atomic_and_leaves_no_tmp run
 state::tests::save_then_load_round_trips_games run
 state::tests::settings_are_written_only_by_their_writers run

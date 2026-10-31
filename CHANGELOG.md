@@ -11,6 +11,9 @@ All notable changes to this project are documented here. The format is based on
 - **A Steam game keeps its playtime when a scan cannot read its details.** A
   game whose Steam manifest was being rewritten, was cut short by a crash or had
   no name yet was dropped by the scan, and came back with zero playtime.
+- **A library file with an unreadable entry is backed up once, not on every
+  start.** With scan on startup off, each start kept another copy until the
+  launcher ran out of backup names and refused to save anything.
 
 ## 2.1.0 - 2026-10-07
 
