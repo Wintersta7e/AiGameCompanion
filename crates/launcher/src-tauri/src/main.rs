@@ -116,6 +116,7 @@ fn main() {
         )
         .manage(OverlayState::default())
         .manage(AiState::default())
+        .manage(shots::ShotStore::default())
         .manage(HotkeyStatus::default())
         .setup(move |app| {
             // Under `windows_subsystem = "windows"` there is no console and no
@@ -277,6 +278,9 @@ fn main() {
             commands::ai::recheck_clis,
             overlay::hide_overlay,
             overlay::link_game,
+            shots::take_shot,
+            shots::shot_png,
+            shots::drop_shot,
         ])
         .run(context);
 

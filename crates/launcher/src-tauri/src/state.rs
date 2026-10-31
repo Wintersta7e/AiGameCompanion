@@ -5,7 +5,7 @@ use std::time::Duration;
 
 use parking_lot::Mutex;
 
-use crate::models::{LauncherSettings, LauncherState};
+use crate::models::{GamePrefs, LauncherSettings, LauncherState};
 
 /// Reads of the state file, in total, before it counts as unreadable: about a
 /// second, for a scanner that holds the file open without read sharing.
@@ -84,6 +84,17 @@ impl AppState {
             file.sync_all().map_err(|e| e.to_string())?;
         }
         std::fs::rename(&tmp_path, &self.state_path).map_err(|e| e.to_string())
+    }
+
+    /// A copy of the values stored for the game `key`; the defaults when
+    /// nothing is stored for it.
+    pub(crate) fn game_prefs(&self, key: &str) -> GamePrefs {
+        self.launcher
+            .lock()
+            .game_prefs
+            .get(key)
+            .cloned()
+            .unwrap_or_default()
     }
 
     /// The one write path for a settings setter. Refuses in read-only mode
@@ -249,7 +260,7 @@ mod tests {
     #![allow(let_underscore_drop, reason = "test cleanup is best-effort")]
 
     use super::*;
-    use crate::models::{Game, GamePrefs, GameSource};
+    use crate::models::{Game, GameSource};
     use crate::placement::{place, MonitorArea, OverlayPlacement, Placed, PlacedFrom, Rect};
     use std::path::Path;
 
@@ -684,6 +695,75 @@ mod tests {
             scalar
         );
         assert_eq!(app.load_error(), None);
+        cleanup(&path);
+    }
+
+    /// A stored region that is not a region inside the window drops its whole
+    /// entry, like any unreadable entry: the file is backed up first, else the
+    /// run is read-only. It never loads as no region, which would widen the
+    /// next translate screenshot to the whole window.
+    #[test]
+    fn unreadable_region_drops_its_entry() {
+        let original = r#"{"games":[{"id":"g1","name":"Foo"}],"game_prefs":{"library:x":{"translate_region":{"x":0.5,"y":0,"w":0.6,"h":1}},"library:y":{"translate_region":{"x":0,"y":0.5,"w":1,"h":0.5}}},"settings":{}}"#;
+
+        let path = temp_state_path("region_backed_up");
+        std::fs::write(&path, original).unwrap();
+        let app = AppState::load(path.clone());
+        let kept: Vec<String> = app.launcher.lock().game_prefs.keys().cloned().collect();
+        println!(
+            "unreadable region: {} dropped, kept {kept:?}",
+            dropped_entries(original, &app.launcher.lock())
+        );
+        assert_eq!(kept, ["library:y"], "only the readable entry is kept");
+        assert!(app.game_prefs("library:y").translate_region.is_some());
+        assert_eq!(app.launcher.lock().games.len(), 1);
+        assert_eq!(app.load_error(), None, "a preserved file stays writable");
+        assert_eq!(
+            std::fs::read_to_string(path.with_extension("json.bak")).unwrap(),
+            original
+        );
+        app.save().unwrap();
+        cleanup(&path);
+
+        let path = temp_state_path("region_no_backup");
+        std::fs::write(&path, original).unwrap();
+        occupy_every_backup_name(&path);
+        let app = AppState::load(path.clone());
+        println!("no backup possible: {:?}", app.load_error());
+        assert!(
+            app.load_error().is_some(),
+            "an unpreserved file is read-only"
+        );
+        app.save().unwrap_err();
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), original);
+        cleanup(&path);
+    }
+
+    #[test]
+    fn game_prefs_reads_a_clone_or_default() {
+        let stored = r#"{"game_prefs":{"library:x":{"translate_region":{"x":0.25,"y":0.5,"w":0.5,"h":0.25}}}}"#;
+        let path = temp_state_path("prefs_read");
+        std::fs::write(&path, stored).unwrap();
+        let app = AppState::load(path.clone());
+        let mut read = app.game_prefs("library:x");
+        println!("stored entry: {read:?}");
+        assert!(read.translate_region.is_some(), "the stored entry");
+        read.translate_region = None;
+        assert_ne!(
+            app.game_prefs("library:x"),
+            read,
+            "changing the copy leaves the store alone"
+        );
+        assert_eq!(
+            app.game_prefs(r"exe:c:\games\other\other.exe"),
+            GamePrefs::default(),
+            "a key with no entry reads the defaults"
+        );
+        assert_eq!(
+            app.launcher.lock().game_prefs.len(),
+            1,
+            "a read adds no entry"
+        );
         cleanup(&path);
     }
 

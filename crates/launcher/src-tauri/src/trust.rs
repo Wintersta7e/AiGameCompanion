@@ -125,6 +125,9 @@ mod tests {
         "link_game",
         "open_url",
         "set_hints_first",
+        "take_shot",
+        "shot_png",
+        "drop_shot",
     ];
     /// Core permissions of the main window.
     const MAIN_CORE: &[&str] = &[

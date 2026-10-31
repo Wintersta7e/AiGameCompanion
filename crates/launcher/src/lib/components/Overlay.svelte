@@ -7,6 +7,19 @@
   import { PROVIDERS, modelName, type ModelNames, type Provider } from '../stores/companion.svelte';
   import type { LauncherSettings } from '../settings';
   import Markdown from './Markdown.svelte';
+  import {
+    NO_SHOT,
+    afterSend,
+    drawFailed,
+    drawn,
+    received,
+    sendBlocked,
+    sendableShot,
+    takeFailed,
+    taking,
+    type ShotInfo,
+    type ShotState,
+  } from '../utils/shots';
 
   type GameInfo = {
     hwnd: number;
@@ -35,6 +48,8 @@
     content: string;
     model?: string;
     screenshot?: boolean;
+    // The sent screenshot, chip-sized; absent when none was sent.
+    thumb?: ImageBitmap;
     streaming?: boolean;
     // Set only when the answer finished ("done"); stopped and failed ones never are.
     complete?: boolean;
@@ -63,7 +78,13 @@
   let savedProvider: Provider | null = null;
   let dropdownOpen = $state(false);
   let tab = $state<'chat' | 'translate'>('chat');
-  let attach = $state(false);
+  // The chat screenshot: taken by the image button, shown above the input, and
+  // sent with the next question only once it is drawn.
+  let chatShot = $state.raw<ShotState>(NO_SHOT);
+  let chatCanvas = $state<HTMLCanvasElement | null>(null);
+  // The drawn preview; freed whenever its shot is replaced, removed or sent.
+  let chatBitmap: ImageBitmap | null = null;
+  let shotSeq = 0;
   // Hints first: answers to progress questions start as a nudge. Each send
   // carries the value shown here, whatever the saved setting says.
   let hintsFirst = $state(true);
@@ -99,18 +120,16 @@
   );
   // Nothing about a window is sent until it is linked; the backend enforces the
   // same gate, this only keeps the controls honest.
-  const canAttach = $derived(Boolean(game?.linked));
   const canSend = $derived(Boolean(game?.linked) && availability[provider]);
+  const canTakeShot = $derived(Boolean(game?.linked) && !sendBlocked(chatShot));
   const hintChips = $derived(showHintChips(messages, hintsFirst, asking, canSend));
   // The exe's file name, for the link control ("Link foo.exe ...").
   const exeFile = $derived(game?.exe.split(/[\\/]/u).pop() ?? '');
-  const captureHint = $derived.by(() => {
-    // Name the window Enter will capture: a hotkey pressed while the overlay
-    // is open acts on this stored target, not on whatever is in front now.
-    if (attach && canAttach && game)
-      return `screenshot of ${game.name || game.exe} attaches on send`;
-    return 'screenshot attaches via WGC';
-  });
+  // The linked window as the screenshot controls name it.
+  const shotName = $derived(game ? game.name || game.exe : '');
+  // A sent message's chip shows the screenshot at most twice its 24x16 box.
+  const THUMB_W = 48;
+  const THUMB_H = 32;
 
   // Follow a streaming answer, but only while the user is already at the bottom
   // -- scrolling up to re-read history must not be yanked back down. The check
@@ -179,6 +198,8 @@
     activeRequestId = 0;
     asking = false;
     conversationId += 1;
+    removeChatShot();
+    for (const m of messages) m.thumb?.close();
     messages = [];
     copiedIndex = -1;
     prompt = '';
@@ -188,6 +209,113 @@
       } catch {
         /* best effort */
       }
+    }
+  }
+
+  function dropShot(id: number) {
+    void invoke('drop_shot', { id }).catch(() => {
+      /* the next hide drops it anyway */
+    });
+  }
+
+  // Replace the drawn preview, freeing the old one.
+  function setChatBitmap(bitmap: ImageBitmap | null) {
+    chatBitmap?.close();
+    chatBitmap = bitmap;
+  }
+
+  // Remove: the held chat shot is dropped and the slot is empty again.
+  function removeChatShot() {
+    if ('info' in chatShot) dropShot(chatShot.info.id);
+    setChatBitmap(null);
+    chatShot = NO_SHOT;
+  }
+
+  // Draw `bitmap` at its own size; CSS scales the canvas, aspect kept.
+  function paint(canvas: HTMLCanvasElement, bitmap: ImageBitmap): boolean {
+    const context = canvas.getContext('2d');
+    if (!context) return false;
+    canvas.width = bitmap.width;
+    canvas.height = bitmap.height;
+    context.drawImage(bitmap, 0, 0);
+    return true;
+  }
+
+  // Svelte action: a sent message's chip thumbnail.
+  function showThumb(canvas: HTMLCanvasElement, bitmap: ImageBitmap) {
+    paint(canvas, bitmap);
+    return {
+      update(next: ImageBitmap) {
+        paint(canvas, next);
+      },
+    };
+  }
+
+  // Take (or retake) the chat screenshot. Nothing is sent: it is shown above
+  // the input and goes with the next question.
+  async function takeChatShot() {
+    if (!canTakeShot) return;
+    const seq = (shotSeq += 1);
+    setChatBitmap(null);
+    chatShot = taking(seq);
+    let info: ShotInfo;
+    try {
+      info = await invoke<ShotInfo>('take_shot', { slot: 'chat', editRegion: false });
+    } catch (err) {
+      chatShot = takeFailed(chatShot, seq, String(err));
+      return;
+    }
+    const next = received(chatShot, info, seq);
+    if (next === chatShot) {
+      // Replaced or reset while it was taken: nothing will show it.
+      dropShot(info.id);
+      return;
+    }
+    chatShot = next;
+    await drawChatShot(info.id);
+  }
+
+  // Fetch the held shot `id` and draw it into the preview.
+  async function drawChatShot(id: number) {
+    let bitmap: ImageBitmap;
+    try {
+      const png = await invoke<ArrayBuffer>('shot_png', { id });
+      bitmap = await createImageBitmap(new Blob([png], { type: 'image/png' }));
+    } catch (err) {
+      dropShot(id);
+      chatShot = drawFailed(chatShot, id, String(err));
+      return;
+    }
+    await tick();
+    if (drawn(chatShot, id) === chatShot) {
+      // Replaced or reset while it loaded.
+      bitmap.close();
+      return;
+    }
+    if (!chatCanvas || !paint(chatCanvas, bitmap)) {
+      bitmap.close();
+      dropShot(id);
+      chatShot = drawFailed(chatShot, id, 'the preview could not be drawn');
+      return;
+    }
+    setChatBitmap(bitmap);
+    chatShot = drawn(chatShot, id);
+  }
+
+  // The chip's image: the preview scaled into THUMB_W x THUMB_H. The full
+  // bitmap is freed either way.
+  async function makeThumb(full: ImageBitmap): Promise<ImageBitmap | null> {
+    const scale = Math.min(THUMB_W / full.width, THUMB_H / full.height, 1);
+    try {
+      return await createImageBitmap(full, {
+        resizeWidth: Math.max(1, Math.round(full.width * scale)),
+        resizeHeight: Math.max(1, Math.round(full.height * scale)),
+        resizeQuality: 'medium',
+      });
+    } catch {
+      return null;
+    } finally {
+      full.close();
     }
   }
 
@@ -225,12 +353,17 @@
 
   async function send(text?: string) {
     const question = (text ?? prompt).trim();
-    if (!question || asking || !canSend) return;
+    if (!question || asking || !canSend || sendBlocked(chatShot)) return;
 
     const id = (nextRequestId += 1);
     const convo = conversationId;
     activeRequestId = id;
-    const withShot = attach && canAttach;
+    // Only a drawn screenshot goes; its preview becomes the chip's thumbnail.
+    const shotId = sendableShot(chatShot);
+    const full = shotId === null ? null : chatBitmap;
+    if (full) chatBitmap = null;
+    chatShot = afterSend(chatShot);
+    const thumb = full ? makeThumb(full) : null;
 
     // History for the backend: finished exchanges + this question.
     const outgoing = completedHistory(messages);
@@ -238,7 +371,7 @@
 
     messages = [
       ...messages,
-      { role: 'user', content: question, screenshot: withShot },
+      { role: 'user', content: question },
       {
         role: 'assistant',
         content: '',
@@ -252,12 +385,27 @@
     prompt = '';
     asking = true;
 
+    // The chip shows once the answer starts: a refused screenshot ends the
+    // request with only an error, and then no chip says it was sent.
+    const asked = messages[idx - 1];
+    let shotPending = thumb !== null;
+    const settleShot = (sent: boolean) => {
+      if (!shotPending) return;
+      shotPending = false;
+      if (sent && asked) asked.screenshot = true;
+      void thumb?.then((bitmap) => {
+        if (sent && asked && bitmap) asked.thumb = bitmap;
+        else bitmap?.close();
+      });
+    };
+
     const channel = new Channel<SageEvent>();
     channel.onmessage = (event) => {
       // Ignore output from a superseded request or cleared conversation.
       if (event.requestId !== activeRequestId || event.conversationId !== convo) return;
       const bubble = messages[idx];
       if (!bubble) return;
+      settleShot(event.kind !== 'error');
       if (event.kind === 'chunk') {
         bubble.content += event.text ?? '';
       } else if (event.kind === 'done') {
@@ -277,11 +425,12 @@
         conversationId: convo,
         provider,
         messages: outgoing,
-        attachScreenshot: withShot,
+        shotId,
         hints: hintsFirst,
         channel,
       });
     } catch (err) {
+      settleShot(false);
       // Same guard as the channel handler: a rejection that lands after New chat
       // or a newer Send must not write into the current conversation's bubble.
       if (id !== activeRequestId || convo !== conversationId) return;
@@ -364,7 +513,6 @@
   async function runQuickAsk() {
     tab = 'chat';
     prompt = QUICK_ASK;
-    if (canAttach) attach = true;
     await tick();
     inputEl?.focus();
   }
@@ -435,6 +583,9 @@
 
     const listeners = [
       listen<GameInfo>('overlay-status', (event) => {
+        // A show: the backend dropped every held screenshot at the hide before.
+        setChatBitmap(null);
+        chatShot = NO_SHOT;
         game = event.payload;
         // The overlay just became visible: CLI detection has had time to finish.
         if (savedProviderLoaded) void refreshProviders();
@@ -652,8 +803,8 @@
               <span class="avatar"></span>
               <div class="bubble intro">
                 {#if game?.linked}
-                  Linked to {game.name || game.exe}. Ask me anything, or tap a prompt below — turn
-                  on the image button to include a screenshot.
+                  Linked to {game.name || game.exe}. Ask me anything, or tap a prompt below. Take a
+                  screenshot with the image button; you see it before anything is sent.
                 {:else if game?.exe}
                   Nothing about this window is sent until you link it. Link {exeFile} above to ask about
                   it this session.
@@ -678,7 +829,10 @@
               {#if m.role === 'user'}
                 <div class="msg user">
                   {#if m.screenshot}
-                    <span class="frame-chip"><span class="thumb"></span>frame · WGC</span>
+                    <span class="frame-chip"
+                      >{#if m.thumb}<canvas class="thumb" use:showThumb={m.thumb}
+                        ></canvas>{:else}<span class="thumb"></span>{/if}frame · WGC</span
+                    >
                   {/if}
                   <div class="bubble">{m.content}</div>
                 </div>
@@ -732,14 +886,44 @@
         </div>
 
         <div class="inputbar">
+          {#if chatShot.kind === 'fetched' || chatShot.kind === 'shown'}
+            <div class="shot-preview">
+              <div aria-label="Screenshot of {shotName} that will be sent" role="img">
+                <canvas bind:this={chatCanvas} class="shot-canvas"></canvas>
+              </div>
+              <div class="shot-actions">
+                <button
+                  class="recapture live"
+                  disabled={!canTakeShot}
+                  onclick={takeChatShot}
+                  type="button">Retake</button
+                >
+                <button class="recapture live" onclick={removeChatShot} type="button">Remove</button
+                >
+              </div>
+              <div class="shot-hint">To capture a new moment, hide Sage and open it again.</div>
+            </div>
+          {:else if chatShot.kind === 'failed'}
+            <div class="shot-preview">
+              <div class="shot-error">The screenshot could not be taken: {chatShot.message}</div>
+              <div class="shot-actions">
+                <button
+                  class="recapture live"
+                  disabled={!canTakeShot}
+                  onclick={takeChatShot}
+                  type="button">Retake</button
+                >
+              </div>
+            </div>
+          {/if}
           <div class="inputrow">
             <button
               class="attach-btn"
-              class:off={!(attach && canAttach)}
-              aria-label="Attach screenshot"
-              disabled={!canAttach}
-              onclick={() => (attach = !attach)}
-              title="Attach a screenshot of the game"
+              class:off={chatShot.kind !== 'shown'}
+              aria-label="Take screenshot of {shotName}"
+              disabled={!canTakeShot}
+              onclick={takeChatShot}
+              title="Take screenshot of {shotName}"
               type="button"
             >
               <svg
@@ -803,7 +987,7 @@
               <button
                 class="send-btn"
                 aria-label="Send"
-                disabled={!canSend || !prompt.trim()}
+                disabled={!canSend || !prompt.trim() || sendBlocked(chatShot)}
                 onclick={() => send()}
                 title="Send"
                 type="button"
@@ -816,7 +1000,6 @@
           </div>
           <div class="footer">
             <span>{modelLabel(provider)} · {asking ? 'streaming' : 'Enter to send'}</span>
-            <span>{captureHint}</span>
           </div>
         </div>
       </div>
@@ -1305,6 +1488,39 @@
     height: 16px;
     border-radius: 4px;
     background: linear-gradient(135deg, color-mix(in oklab, var(--accent) 52%, #17171b), #101013);
+  }
+  .frame-chip canvas.thumb {
+    object-fit: contain;
+  }
+  /* the chat screenshot, shown before it is sent */
+  .shot-preview {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 6px;
+    margin-bottom: 9px;
+  }
+  .shot-canvas {
+    display: block;
+    width: auto;
+    height: auto;
+    max-width: 100%;
+    max-height: 30vh;
+    border-radius: 8px;
+    border: 1px solid var(--color-line);
+  }
+  .shot-actions {
+    display: flex;
+    gap: 8px;
+  }
+  .shot-hint {
+    font-size: 11px;
+    color: var(--color-t-mid);
+  }
+  .shot-error {
+    white-space: pre-wrap;
+    font-size: 12px;
+    color: var(--color-err);
   }
   /* A wide code block or table scrolls inside the answer, never widens the panel. */
   .sage-col {

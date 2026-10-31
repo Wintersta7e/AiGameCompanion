@@ -1,15 +1,9 @@
-// Module-wide because serde's generated code for `LauncherState` names the
-// map type too, outside any item an attribute here could cover.
-#![expect(
-    clippy::zero_sized_map_values,
-    reason = "GamePrefs has no field until the first per-game setting joins it"
-)]
-
 use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 
 use crate::placement::OverlayPlacement;
+use crate::region::TranslateRegion;
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 // Deserialize via String so an unrecognised source (a state file written by a
@@ -112,7 +106,12 @@ where
 /// each value reaches it only through its own command.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
-pub(crate) struct GamePrefs {}
+pub(crate) struct GamePrefs {
+    /// The part of the window a translation keeps. A stored value that is not
+    /// a region inside the window fails the whole entry rather than loading
+    /// as none, which would send the whole window.
+    pub(crate) translate_region: Option<TranslateRegion>,
+}
 
 /// Load `game_prefs` one entry at a time, like `games`: an unreadable entry is
 /// dropped, and a value that is not an object loads as empty. The warning never

@@ -59,11 +59,13 @@ ai::prompt::tests::slots_in_order run
 ai::tests::answer_errors_stay_out_of_answer_text run
 ai::tests::availability_reports_the_models_in_use run
 ai::tests::every_provider_change_is_announced run
+ai::tests::every_provider_takes_screenshots run
 ai::tests::identity_block_is_exact_and_fenced run
 ai::tests::identity_goes_before_the_latest_question run
 ai::tests::identity_log_values run
 ai::tests::identity_never_in_system_prompt_or_argv run
 ai::tests::prompt_kind_selects_by_flags run
+ai::tests::provider_labels_match_the_overlay run
 ai::tests::request_log_line_names_no_game run
 ai::tests::unlinked_target_contributes_nothing run
 commands::games::tests::complete_scan_carries_playtime_across run
@@ -91,6 +93,7 @@ overlay::tests::classify_cases run
 overlay::tests::every_overlay_hide_goes_through_overlay_hide run
 overlay::tests::frame_host_resolves_to_the_hosted_app run
 overlay::tests::game_info_sends_no_identity run
+overlay::tests::game_key_only_for_linked_targets run
 overlay::tests::identity_text_cases run
 overlay::tests::library_match_cases run
 overlay::tests::link_requires_the_displayed_window run
@@ -105,6 +108,12 @@ overlay::tests::stored_target_is_read_only_through_overlay run
 placement::tests::placement_table run
 placement::tests::reference_cases run
 placement::tests::user_moved_tolerance run
+region::tests::invalid_regions_do_not_parse run
+region::tests::region_to_pixels_clamps_and_rejects run
+region::tests::stored_region_never_widens run
+region::tests::translate_region_has_one_reader_file run
+shots::tests::capture_target_needs_a_linked_identified_window run
+shots::tests::claim_table run
 shots::tests::client_box_is_client_minus_frame_origin run
 shots::tests::fit_within_averages_each_block run
 shots::tests::fit_within_keeps_the_aspect_of_odd_sizes run
@@ -112,6 +121,8 @@ shots::tests::fit_within_leaves_small_frames_alone run
 shots::tests::fit_within_scales_large_frames run
 shots::tests::one_capture_producer run
 shots::tests::prepare_bounds_every_sent_image run
+shots::tests::shot_store_ids_slots_epoch run
+shots::tests::shot_types_mirror_typescript run
 shots::tests::source_is_capped run
 state::tests::backup_never_replaces_an_existing_one run
 state::tests::corrupt_state_falls_back_to_default_and_backs_up run
@@ -120,6 +131,7 @@ state::tests::dropped_entries_are_preserved run
 state::tests::edit_settings_refuses_before_changing_memory run
 state::tests::game_prefs_field_stays_in_the_store run
 state::tests::game_prefs_load_save_and_backup run
+state::tests::game_prefs_reads_a_clone_or_default run
 state::tests::load_drops_only_the_unreadable_game_entry run
 state::tests::load_fills_defaults_for_fields_missing_in_old_json run
 state::tests::load_returns_default_when_file_absent run
@@ -135,6 +147,7 @@ state::tests::save_then_load_round_trips_games run
 state::tests::settings_are_written_only_by_their_writers run
 state::tests::tmp_is_promoted_only_when_state_is_absent run
 state::tests::transient_lock_is_retried run
+state::tests::unreadable_region_drops_its_entry run
 state::tests::writable_outcomes_stay_writable run
 tests::hotkey_labels_are_the_documented_chords run
 trust::tests::acl_denies_everything_unlisted run

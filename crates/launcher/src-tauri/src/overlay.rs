@@ -14,6 +14,9 @@ use crate::models::{Game, GameSource};
 use crate::placement::{self, MonitorArea, OverlayPlacement, Placed, Rect};
 use crate::state::AppState;
 
+/// Shown when a screenshot or a translation needs a linked game and there is none.
+pub(crate) const NO_LINKED_GAME: &str = "No linked game -- link the window in the overlay first.";
+
 /// What a linked request may tell a provider about the game, besides its name.
 /// Rust-only: never sent to the page.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -50,6 +53,11 @@ pub(crate) struct GameInfo {
     /// What a linked request may say about the game; never sent to the page.
     #[serde(skip)]
     pub(crate) identity: Identity,
+    /// The key the game's stored values are kept under; empty when the exe
+    /// path could not be read. It may hold a local path: never sent to the
+    /// page or a provider, never logged.
+    #[serde(skip)]
+    pub(crate) game_key: String,
 }
 
 /// Remembers the game window that had focus before the overlay was shown, so
@@ -106,6 +114,9 @@ pub(crate) fn hide_overlay(app: AppHandle) {
 /// A panel the user dragged or resized since the show is remembered; an
 /// unmoved one writes nothing, so a default is never frozen into the record.
 pub(crate) fn hide(app: &AppHandle) {
+    if let Some(shots) = app.try_state::<crate::shots::ShotStore>() {
+        shots.clear();
+    }
     let Some(overlay) = app.get_webview_window("overlay") else {
         return;
     };
@@ -208,6 +219,7 @@ fn show_overlay(app: &AppHandle) {
                 game.name = classification.name;
                 game.linked = classification.linked;
                 game.identity = classification.identity;
+                game.game_key = classification.game_key;
                 // Read from the exe file, with no lock held.
                 if let Identity::Program { product_name } = &mut game.identity {
                     *product_name =
@@ -346,6 +358,7 @@ struct Classification {
     name: String,
     linked: bool,
     identity: Identity,
+    game_key: String,
 }
 
 /// Name the detected window, decide whether requests may use it and what they
@@ -353,7 +366,7 @@ struct Classification {
 /// identified by its id and Steam app id; any other window is named by its exe
 /// stem, identified as a program and linked only if the user linked this
 /// (pid, exe) this session. A window whose exe path could not be read is never
-/// linked and has no identity.
+/// linked and has no identity and no key.
 fn classify(
     exe: &str,
     pid: u32,
@@ -365,8 +378,10 @@ fn classify(
             name: String::new(),
             linked: false,
             identity: Identity::Unknown,
+            game_key: String::new(),
         };
     }
+    let exe_key = || format!("exe:{}", normalize_path(exe));
     if let Some(game) = library_match(exe, games) {
         return Classification {
             name: identity_text(&game.name),
@@ -375,13 +390,30 @@ fn classify(
                 game_id: game.id.clone(),
                 steam_app_id: steam_app_id(game),
             },
+            game_key: if game.id.is_empty() {
+                exe_key()
+            } else {
+                library_key(&game.id)
+            },
         };
     }
     Classification {
         name: identity_text(&exe_stem(exe)),
         linked: user_linked.contains(&(pid, exe.to_owned())),
         identity: Identity::Program { product_name: None },
+        game_key: exe_key(),
     }
+}
+
+/// The key a library game's stored values are kept under.
+pub(crate) fn library_key(game_id: &str) -> String {
+    format!("library:{game_id}")
+}
+
+/// The key `target`'s stored values are kept under: only for a linked target
+/// with a key.
+pub(crate) fn game_key(target: &GameInfo) -> Option<String> {
+    (target.linked && !target.game_key.is_empty()).then(|| target.game_key.clone())
 }
 
 /// A Steam game's app id: its `source_id` when that is 1-10 ASCII digits
@@ -1057,11 +1089,12 @@ mod tests {
         }
     }
 
-    fn program(name: &str, linked: bool) -> Classification {
+    fn program(name: &str, linked: bool, game_key: &str) -> Classification {
         Classification {
             name: name.to_owned(),
             linked,
             identity: Identity::Program { product_name: None },
+            game_key: game_key.to_owned(),
         }
     }
 
@@ -1078,8 +1111,14 @@ mod tests {
                     game_id: "steam_123450".to_owned(),
                     steam_app_id: Some(123_450),
                 },
+                game_key: "library:steam_123450".to_owned(),
             }
         );
+        let no_id = [game("Real Name", r"C:\Games\Foo", None)];
+        let found = classify(r"C:\Games\Foo\bin\Foo.exe", 7, &no_id, &nothing_linked);
+        println!("library game with no id: {:?}", found.game_key);
+        assert_eq!(found.game_key, r"exe:c:\games\foo\bin\foo.exe");
+        assert!(found.linked, "still a library game");
         for (source_id, app_id) in [
             ("62a", None),
             ("", None),
@@ -1119,21 +1158,22 @@ mod tests {
         );
         assert_eq!(
             classify(r"C:\a\b\Game.EXE", 7, &library, &nothing_linked),
-            program("Game", false)
+            program("Game", false, r"exe:c:\a\b\game.exe")
         );
 
         let linked = HashSet::from([(7, r"C:\a\b\Game.EXE".to_owned())]);
         assert_eq!(
             classify(r"C:\a\b\Game.EXE", 7, &library, &linked),
-            program("Game", true)
+            program("Game", true, r"exe:c:\a\b\game.exe"),
+            "linking keeps the key"
         );
         assert_eq!(
             classify(r"C:\a\b\Other.exe", 7, &library, &linked),
-            program("Other", false)
+            program("Other", false, r"exe:c:\a\b\other.exe")
         );
         assert_eq!(
             classify(r"C:\a\b\Game.EXE", 8, &library, &linked),
-            program("Game", false)
+            program("Game", false, r"exe:c:\a\b\game.exe")
         );
 
         let linked_empty = HashSet::from([(7, String::new())]);
@@ -1143,6 +1183,7 @@ mod tests {
                 name: String::new(),
                 linked: false,
                 identity: Identity::Unknown,
+                game_key: String::new(),
             }
         );
 
@@ -1154,11 +1195,35 @@ mod tests {
     }
 
     #[test]
+    fn game_key_only_for_linked_targets() {
+        let target = |linked: bool, game_key: &str| GameInfo {
+            hwnd: 42,
+            pid: 7,
+            exe: r"C:\Games\Foo\foo.exe".to_owned(),
+            linked,
+            game_key: game_key.to_owned(),
+            ..GameInfo::default()
+        };
+        let cases = [
+            ("unlinked", target(false, "library:x"), None),
+            ("linked, no key", target(true, ""), None),
+            ("linked", target(true, "library:x"), Some("library:x")),
+        ];
+        for (case, game, expected) in cases {
+            let got = game_key(&game);
+            println!("{case}: {got:?}");
+            assert_eq!(got.as_deref(), expected, "{case}");
+        }
+        assert_eq!(library_key("x"), "library:x");
+    }
+
+    #[test]
     fn game_info_sends_no_identity() {
         let identified = GameInfo {
             identity: Identity::Program {
                 product_name: Some("Foo Studio Game".to_owned()),
             },
+            game_key: r"exe:c:\games\foo\foo.exe".to_owned(),
             ..GameInfo::default()
         };
         for target in [GameInfo::default(), identified] {

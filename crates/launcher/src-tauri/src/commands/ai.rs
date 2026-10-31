@@ -43,7 +43,7 @@ pub(crate) fn ask_sage(
     conversation_id: u64,
     provider: Provider,
     messages: Vec<ChatMessage>,
-    attach_screenshot: bool,
+    shot_id: Option<u64>,
     hints: bool,
     channel: Channel<SageEvent>,
 ) {
@@ -54,7 +54,7 @@ pub(crate) fn ask_sage(
             conversation_id,
             provider,
             messages,
-            attach_screenshot,
+            shot_id,
             hints,
         },
         channel,
@@ -100,7 +100,7 @@ pub(crate) async fn translate_screen(app: AppHandle) -> Result<TranslateResult, 
     // Linked and revalidated, not just read: an unlinked window is never
     // captured, and a recycled handle would screenshot an unrelated window.
     let game = crate::overlay::linked_game(&app)
-        .ok_or_else(|| "No linked game -- link the window in the overlay first.".to_owned())?;
+        .ok_or_else(|| crate::overlay::NO_LINKED_GAME.to_owned())?;
     let model = settings_model(&app.state::<AppState>());
     let text = crate::ai::translate_capture(game.hwnd, game.pid, model).await?;
     Ok(TranslateResult { text })

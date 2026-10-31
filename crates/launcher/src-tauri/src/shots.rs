@@ -1,7 +1,392 @@
-//! Screenshots: the one capture pipeline, and the sizes every sent image keeps.
+//! Screenshots: the one capture pipeline, the sizes every sent image keeps,
+//! and the screenshots held in memory until a request claims one.
 
+use std::time::{Duration, Instant};
+
+use parking_lot::Mutex;
+use serde::{Deserialize, Serialize};
+use tauri::{AppHandle, Manager, State, WebviewWindow};
+
+use crate::overlay::GameInfo;
 use crate::placement::Rect;
-use crate::region::PixelRect;
+use crate::region::{PixelRect, TranslateRegion};
+
+/// How long a take may run before it is given up.
+pub(crate) const SHOT_TIMEOUT: Duration = Duration::from_secs(5);
+
+const TIMED_OUT: &str = "Taking the screenshot timed out.";
+const CLOSED: &str = "The overlay was closed before the screenshot was ready.";
+const GONE: &str = "The screenshot is no longer available. Take it again or remove it.";
+const OTHER_WINDOW: &str = "This command is only available in the Sage overlay.";
+const CHAT_HAS_NO_REGION: &str = "A chat screenshot has no region.";
+const REGION_UNUSABLE: &str = "The saved region cannot be applied -- edit or clear it.";
+
+/// Which held screenshot a take fills and a request claims.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub(crate) enum ShotSlot {
+    Chat,
+    Translate,
+}
+
+impl ShotSlot {
+    const fn as_str(self) -> &'static str {
+        match self {
+            Self::Chat => "chat",
+            Self::Translate => "translate",
+        }
+    }
+}
+
+/// What the overlay learns about a held screenshot: never its bytes.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct ShotInfo {
+    id: u64,
+    slot: ShotSlot,
+    width: u32,
+    height: u32,
+    /// The bytes are a crop of the game's stored region.
+    region: bool,
+}
+
+/// A screenshot held in memory from its take until it is claimed or dropped.
+#[derive(Debug)]
+pub(crate) struct HeldShot {
+    id: u64,
+    slot: ShotSlot,
+    /// The window it shows, as (hwnd, pid).
+    target: (i64, u32),
+    /// What `shot_png` returns and a claim moves, byte for byte.
+    png: Vec<u8>,
+    width: u32,
+    height: u32,
+    /// The stored region the bytes were cropped to, when they are a crop.
+    region: Option<TranslateRegion>,
+}
+
+/// The held screenshots: at most one per slot.
+#[derive(Debug, Default)]
+struct Held {
+    /// The last id given out; ids start at 1.
+    last_id: u64,
+    /// Bumped by every clear, so a take that outlives it is dropped.
+    epoch: u64,
+    chat: Option<HeldShot>,
+    translate: Option<HeldShot>,
+}
+
+impl Held {
+    const fn slot(&mut self, slot: ShotSlot) -> &mut Option<HeldShot> {
+        match slot {
+            ShotSlot::Chat => &mut self.chat,
+            ShotSlot::Translate => &mut self.translate,
+        }
+    }
+}
+
+/// The screenshots the overlay shows, held in memory only. The lock is never
+/// held across an await, a capture or an encode.
+#[derive(Debug, Default)]
+pub(crate) struct ShotStore {
+    held: Mutex<Held>,
+}
+
+impl ShotStore {
+    /// Start a take: returns the epoch its completion must still match.
+    pub(crate) fn begin(&self) -> u64 {
+        self.held.lock().epoch
+    }
+
+    /// Hold `prepared` in `slot` under a new id, replacing what the slot held,
+    /// unless a clear happened since `begin` returned `epoch`. `region` is the
+    /// stored region it was cropped to.
+    pub(crate) fn complete(
+        &self,
+        epoch: u64,
+        slot: ShotSlot,
+        target: (i64, u32),
+        region: Option<TranslateRegion>,
+        prepared: Prepared,
+    ) -> Result<ShotInfo, String> {
+        let mut held = self.held.lock();
+        if held.epoch != epoch {
+            return Err(CLOSED.to_owned());
+        }
+        held.last_id += 1;
+        let id = held.last_id;
+        let stored = held.slot(slot).insert(HeldShot {
+            id,
+            slot,
+            target,
+            png: prepared.png,
+            width: prepared.width,
+            height: prepared.height,
+            region,
+        });
+        let info = ShotInfo {
+            id: stored.id,
+            slot: stored.slot,
+            width: stored.width,
+            height: stored.height,
+            region: stored.region.is_some(),
+        };
+        drop(held);
+        Ok(info)
+    }
+
+    /// Drop every held screenshot and end every take in progress. Returns how
+    /// many were dropped.
+    pub(crate) fn clear(&self) -> usize {
+        let mut guard = self.held.lock();
+        let held = &mut *guard;
+        held.epoch += 1;
+        let dropped = [held.chat.take(), held.translate.take()]
+            .into_iter()
+            .flatten()
+            .count();
+        drop(guard);
+        if dropped > 0 {
+            tracing::info!("Held screenshots dropped: {dropped}");
+        }
+        dropped
+    }
+
+    /// Drop the screenshot `id`; an id not held is a no-op.
+    pub(crate) fn drop_id(&self, id: u64) {
+        let mut guard = self.held.lock();
+        let held = &mut *guard;
+        for slot in [&mut held.chat, &mut held.translate] {
+            slot.take_if(|shot| shot.id == id);
+        }
+        drop(guard);
+    }
+
+    /// The PNG of the held screenshot `id`.
+    pub(crate) fn png(&self, id: u64) -> Option<Vec<u8>> {
+        let held = self.held.lock();
+        let png = [&held.chat, &held.translate]
+            .into_iter()
+            .flatten()
+            .find(|shot| shot.id == id)
+            .map(|shot| shot.png.clone());
+        drop(held);
+        png
+    }
+
+    /// Decide once whether the screenshot `requested` goes with a request, and
+    /// on yes move its bytes out of `slot`. A refusal changes nothing.
+    pub(crate) fn claim_for_request(
+        &self,
+        slot: ShotSlot,
+        requested: Option<u64>,
+        target: Option<(i64, u32)>,
+        region: Option<&TranslateRegion>,
+        accepts_image: bool,
+    ) -> Result<Option<Vec<u8>>, ShotRefusal> {
+        let mut held = self.held.lock();
+        let slot = held.slot(slot);
+        let claimed = if claim_shot(slot.as_ref(), requested, target, region, accepts_image)? {
+            slot.take().map(|shot| shot.png)
+        } else {
+            None
+        };
+        drop(held);
+        Ok(claimed)
+    }
+}
+
+/// Why a request may not take the screenshot it named.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ShotRefusal {
+    /// The provider takes no image.
+    NotAccepted,
+    /// The screenshot is no longer held.
+    Gone,
+    /// It shows a window that is not the linked game now.
+    OtherTarget,
+    /// It was cropped to a region other than the one stored now.
+    RegionChanged,
+}
+
+impl ShotRefusal {
+    /// What the overlay shows for the refusal; `provider` names the provider
+    /// the request was for.
+    pub(crate) fn message(self, provider: &str) -> String {
+        match self {
+            Self::NotAccepted => {
+                format!("{provider} does not take screenshots. Remove the screenshot to send.")
+            }
+            Self::Gone | Self::OtherTarget | Self::RegionChanged => GONE.to_owned(),
+        }
+    }
+}
+
+/// Whether the held screenshot goes with a request that names `requested`:
+/// `Ok(false)` for a text-only request, `Ok(true)` when the screenshot shown
+/// is still held, of the linked `target`, cropped to the stored `region` (a
+/// whole frame when none is stored), and the provider takes images.
+pub(crate) fn claim_shot(
+    held: Option<&HeldShot>,
+    requested: Option<u64>,
+    target: Option<(i64, u32)>,
+    region: Option<&TranslateRegion>,
+    accepts_image: bool,
+) -> Result<bool, ShotRefusal> {
+    let Some(requested) = requested else {
+        return Ok(false);
+    };
+    if !accepts_image {
+        return Err(ShotRefusal::NotAccepted);
+    }
+    let held = held
+        .filter(|shot| shot.id == requested)
+        .ok_or(ShotRefusal::Gone)?;
+    if target != Some(held.target) {
+        return Err(ShotRefusal::OtherTarget);
+    }
+    if held.region.as_ref() != region {
+        return Err(ShotRefusal::RegionChanged);
+    }
+    Ok(true)
+}
+
+/// The window a take may capture, as (hwnd, pid): only a linked target whose
+/// exe is known.
+pub(crate) fn capture_target(target: Option<&GameInfo>) -> Option<(i64, u32)> {
+    target
+        .filter(|game| game.linked && !game.exe.is_empty())
+        .map(|game| (game.hwnd, game.pid))
+}
+
+/// Refuse `command` unless the overlay window called it.
+pub(crate) fn overlay_only(window: &WebviewWindow, command: &str) -> Result<(), String> {
+    if window.label() == "overlay" {
+        return Ok(());
+    }
+    tracing::warn!("{command} refused: called from another window");
+    Err(OTHER_WINDOW.to_owned())
+}
+
+/// What started a take, for its log line.
+#[derive(Clone, Copy, Debug)]
+pub(crate) enum Via {
+    Overlay,
+}
+
+impl Via {
+    const fn as_str(self) -> &'static str {
+        match self {
+            Self::Overlay => "overlay",
+        }
+    }
+}
+
+/// The one log line of a take: sizes and timings, never a name or a byte.
+pub(crate) fn shot_log_line(
+    info: &ShotInfo,
+    via: Via,
+    bytes: usize,
+    from: (u32, u32),
+    frame_ms: u128,
+    total_ms: u128,
+) -> String {
+    format!(
+        "Shot {}: {} via {}, {}x{} from {}x{}, {bytes} bytes, region: {}, frame {frame_ms} ms, total {total_ms} ms",
+        info.id,
+        info.slot.as_str(),
+        via.as_str(),
+        info.width,
+        info.height,
+        from.0,
+        from.1,
+        if info.region { "yes" } else { "no" },
+    )
+}
+
+/// Capture the linked game into `slot` and hold it for the overlay to show.
+/// Nothing is sent: a request claims the screenshot later, by its id.
+#[tauri::command]
+pub(crate) async fn take_shot(
+    app: AppHandle,
+    window: WebviewWindow,
+    slot: ShotSlot,
+    edit_region: bool,
+) -> Result<ShotInfo, String> {
+    overlay_only(&window, "take_shot")?;
+    let taken = take(&app, slot, edit_region).await;
+    if let Err(error) = &taken {
+        tracing::warn!("Shot failed: {} via overlay: {error}", slot.as_str());
+    }
+    taken
+}
+
+/// `take_shot` once the calling window is checked.
+async fn take(app: &AppHandle, slot: ShotSlot, edit_region: bool) -> Result<ShotInfo, String> {
+    if slot == ShotSlot::Chat && edit_region {
+        return Err(CHAT_HAS_NO_REGION.to_owned());
+    }
+    let linked = crate::overlay::linked_game(app);
+    let target =
+        capture_target(linked.as_ref()).ok_or_else(|| crate::overlay::NO_LINKED_GAME.to_owned())?;
+    // A translate screenshot is cut to the game's stored region; one taken to
+    // edit the region shows the whole frame.
+    let region = if slot == ShotSlot::Translate && !edit_region {
+        crate::region::linked_region(app, linked.as_ref())
+    } else {
+        None
+    };
+    let store = app.state::<ShotStore>();
+    let epoch = store.begin();
+    let started = Instant::now();
+    let (hwnd, pid) = target;
+    let job = tokio::task::spawn_blocking(move || {
+        let frame = grab_frame(hwnd, pid)?;
+        let frame_ms = started.elapsed().as_millis();
+        finish_frame(frame, region.as_ref()).map(|(prepared, from)| (prepared, from, frame_ms))
+    });
+    // On a timeout the task runs on; its late result is dropped with it.
+    let (prepared, from, frame_ms) = tokio::time::timeout(SHOT_TIMEOUT, job)
+        .await
+        .map_err(|_elapsed| TIMED_OUT.to_owned())?
+        .map_err(|error| format!("capture task failed: {error}"))??;
+    let bytes = prepared.png.len();
+    let info = store.complete(epoch, slot, target, region, prepared)?;
+    let total_ms = started.elapsed().as_millis();
+    let line = shot_log_line(&info, Via::Overlay, bytes, from, frame_ms, total_ms);
+    tracing::info!("{line}");
+    Ok(info)
+}
+
+/// The held screenshot `id` as PNG bytes, sent raw (an `ArrayBuffer` in JS).
+#[tauri::command]
+#[expect(
+    clippy::needless_pass_by_value,
+    reason = "a Tauri command receives its arguments by value"
+)]
+pub(crate) fn shot_png(
+    window: WebviewWindow,
+    store: State<'_, ShotStore>,
+    id: u64,
+) -> Result<tauri::ipc::Response, String> {
+    overlay_only(&window, "shot_png")?;
+    store
+        .png(id)
+        .map(tauri::ipc::Response::new)
+        .ok_or_else(|| GONE.to_owned())
+}
+
+/// Drop the held screenshot `id` (Remove, New chat, a preview that failed).
+#[tauri::command]
+#[expect(
+    clippy::needless_pass_by_value,
+    reason = "a Tauri command receives its arguments by value"
+)]
+pub(crate) fn drop_shot(window: WebviewWindow, store: State<'_, ShotStore>, id: u64) {
+    if overlay_only(&window, "drop_shot").is_ok() {
+        store.drop_id(id);
+    }
+}
 
 /// A sent image fits inside this box, aspect kept.
 pub(crate) const SHOT_MAX_W: u32 = 1920;
@@ -17,7 +402,7 @@ const TOO_LARGE: &str = "The screenshot is too large to send.";
 
 /// One captured frame: unscaled RGBA, and where the game's client area lies
 /// in it (`None` when it could not be read).
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub(crate) struct Frame {
     pub(crate) rgba: Vec<u8>,
     pub(crate) width: u32,
@@ -38,21 +423,27 @@ pub(crate) fn grab_frame(hwnd: i64, pid: u32) -> Result<Frame, String> {
     crate::overlay_capture::capture_live_frame(hwnd, pid)
 }
 
-/// Size and encode a captured frame for sending. Returns the image and the
-/// size of the source it was made from.
-pub(crate) fn finish_frame(frame: Frame) -> Result<(Prepared, (u32, u32)), String> {
-    let captured = (frame.width, frame.height);
+/// Size and encode a captured frame for sending, cut to `region` first when
+/// one is stored. Returns the image and the size of the source it was made
+/// from. A region that cannot be applied is an error: the whole frame would
+/// show more than the user kept.
+pub(crate) fn finish_frame(
+    frame: Frame,
+    region: Option<&TranslateRegion>,
+) -> Result<(Prepared, (u32, u32)), String> {
     let source = source(frame);
-    let prepared = prepare(&source.rgba, source.width, source.height)?;
-    tracing::info!(
-        "Screenshot {}x{} (captured {}x{}) encoded to {} bytes",
-        prepared.width,
-        prepared.height,
-        captured.0,
-        captured.1,
-        prepared.png.len()
-    );
-    Ok((prepared, (source.width, source.height)))
+    let from = (source.width, source.height);
+    let prepared = match region {
+        None => prepare(&source.rgba, source.width, source.height)?,
+        Some(region) => {
+            let crop = crate::region::framed(&source, Some(region)).map_err(|error| {
+                tracing::debug!("Stored region not applied: {error:?}");
+                REGION_UNUSABLE.to_owned()
+            })?;
+            prepare(&crop.rgba, crop.width, crop.height)?
+        }
+    };
+    Ok((prepared, from))
 }
 
 /// `frame` fitted inside `SOURCE_MAX_W` x `SOURCE_MAX_H`, its client box
@@ -137,7 +528,7 @@ pub(crate) fn prepare(rgba: &[u8], w: u32, h: u32) -> Result<Prepared, String> {
     clippy::cast_sign_loss,
     reason = "a non-negative size no larger than the side it was scaled from"
 )]
-const fn floor_px(value: f64) -> u32 {
+pub(crate) const fn floor_px(value: f64) -> u32 {
     value.floor() as u32
 }
 
@@ -256,8 +647,10 @@ fn fitted_size(w: u32, h: u32, max_w: u32, max_h: u32) -> (u32, u32) {
 
 #[cfg(test)]
 mod tests {
-    use super::{client_box, fit_within, prepare, source, Frame};
+    use super::{capture_target, claim_shot, HeldShot, Prepared, ShotInfo, ShotRefusal};
+    use super::{client_box, fit_within, prepare, source, Frame, ShotSlot, ShotStore};
     use super::{SHOT_MAX_BYTES, SHOT_MAX_H, SHOT_MAX_W, SOURCE_MAX_H, SOURCE_MAX_W};
+    use crate::overlay::GameInfo;
     use crate::placement::Rect;
     use crate::region::PixelRect;
 
@@ -546,5 +939,361 @@ mod tests {
             raw.is_empty(),
             "the raw capture is private to overlay_capture.rs"
         );
+    }
+
+    const TARGET: (i64, u32) = (42, 7);
+
+    /// A prepared image whose bytes are all `fill`.
+    fn prepared(fill: u8) -> Prepared {
+        Prepared {
+            png: vec![fill; 4],
+            width: 2,
+            height: 1,
+        }
+    }
+
+    #[test]
+    fn shot_store_ids_slots_epoch() {
+        let store = ShotStore::default();
+        let epoch = store.begin();
+        let first = store
+            .complete(epoch, ShotSlot::Chat, TARGET, None, prepared(1))
+            .unwrap();
+        let second = store
+            .complete(epoch, ShotSlot::Chat, TARGET, None, prepared(2))
+            .unwrap();
+        println!("chat: {first:?} then {second:?}");
+        assert_eq!(first.id, 1, "ids start at 1");
+        assert!(second.id > first.id, "every completion gets a new id");
+        assert_eq!(store.png(first.id), None, "a replaced shot is gone");
+        assert_eq!(store.png(second.id), Some(vec![2; 4]));
+        assert_eq!(
+            second,
+            ShotInfo {
+                id: second.id,
+                slot: ShotSlot::Chat,
+                width: 2,
+                height: 1,
+                region: false,
+            }
+        );
+
+        let third = store
+            .complete(epoch, ShotSlot::Translate, TARGET, None, prepared(3))
+            .unwrap();
+        assert!(third.id > second.id);
+        store.drop_id(999);
+        assert_eq!(store.png(999), None);
+        assert!(
+            store.png(second.id).is_some() && store.png(third.id).is_some(),
+            "dropping an id not held drops nothing"
+        );
+
+        assert_eq!(store.clear(), 2, "both slots were full");
+        assert_eq!((store.png(second.id), store.png(third.id)), (None, None));
+        let stale = store.complete(epoch, ShotSlot::Chat, TARGET, None, prepared(4));
+        println!("completion with the epoch before the clear: {stale:?}");
+        assert!(stale.is_err(), "a take that outlived a clear is dropped");
+        let fresh = store.begin();
+        assert_ne!(fresh, epoch, "a clear starts a new epoch");
+        let next = store
+            .complete(fresh, ShotSlot::Chat, TARGET, None, prepared(5))
+            .unwrap();
+        assert_eq!(next.id, third.id + 1, "the stale completion took no id");
+        assert_eq!(store.clear(), 1, "the stale completion held nothing");
+    }
+
+    fn held(id: u64) -> HeldShot {
+        HeldShot {
+            id,
+            slot: ShotSlot::Chat,
+            target: TARGET,
+            png: vec![9; 3],
+            width: 2,
+            height: 1,
+            region: None,
+        }
+    }
+
+    /// A stored region, read the way the state file is.
+    fn band() -> crate::region::TranslateRegion {
+        serde_json::from_str(r#"{"x":0,"y":0.5,"w":1,"h":0.5}"#).unwrap()
+    }
+
+    #[test]
+    fn claim_table() {
+        use ShotRefusal::{Gone, NotAccepted, OtherTarget};
+        let shot = held(5);
+        let other = Some((43, 7));
+        // Each row: case, held, requested, target, accepts_image, expected.
+        let rows = [
+            (
+                "text only",
+                Some(&shot),
+                None,
+                Some(TARGET),
+                true,
+                Ok(false),
+            ),
+            (
+                "text only, nothing held",
+                None,
+                None,
+                None,
+                false,
+                Ok(false),
+            ),
+            (
+                "provider takes no image",
+                Some(&shot),
+                Some(5),
+                Some(TARGET),
+                false,
+                Err(NotAccepted),
+            ),
+            (
+                "takes no image, nothing held",
+                None,
+                Some(5),
+                None,
+                false,
+                Err(NotAccepted),
+            ),
+            ("nothing held", None, Some(5), Some(TARGET), true, Err(Gone)),
+            (
+                "another id held",
+                Some(&shot),
+                Some(4),
+                Some(TARGET),
+                true,
+                Err(Gone),
+            ),
+            (
+                "another id, another target",
+                Some(&shot),
+                Some(4),
+                other,
+                true,
+                Err(Gone),
+            ),
+            (
+                "no linked target",
+                Some(&shot),
+                Some(5),
+                None,
+                true,
+                Err(OtherTarget),
+            ),
+            (
+                "another target",
+                Some(&shot),
+                Some(5),
+                other,
+                true,
+                Err(OtherTarget),
+            ),
+            (
+                "the shot shown",
+                Some(&shot),
+                Some(5),
+                Some(TARGET),
+                true,
+                Ok(true),
+            ),
+        ];
+        for (case, held, requested, target, accepts, expected) in rows {
+            let got = claim_shot(held, requested, target, None, accepts);
+            println!("{case}: {got:?}");
+            assert_eq!(got, expected, "{case}");
+        }
+        claims_by_region(&shot, other);
+        claims_through_the_store(other);
+    }
+
+    /// `claim_table`'s region rows: the region the screenshot was cropped to
+    /// must be the one stored now, checked after the target.
+    fn claims_by_region(shot: &HeldShot, other: Option<(i64, u32)>) {
+        use ShotRefusal::{OtherTarget, RegionChanged};
+        let band = band();
+        let cropped = HeldShot {
+            region: Some(band),
+            ..held(5)
+        };
+        // Each row: case, held, target, region, expected.
+        let region_rows = [
+            (
+                "a region stored since the take",
+                shot,
+                Some(TARGET),
+                Some(&band),
+                Err(RegionChanged),
+            ),
+            (
+                "the region cleared since the take",
+                &cropped,
+                Some(TARGET),
+                None,
+                Err(RegionChanged),
+            ),
+            (
+                "another target and another region",
+                &cropped,
+                other,
+                None,
+                Err(OtherTarget),
+            ),
+            (
+                "the crop of the stored region",
+                &cropped,
+                Some(TARGET),
+                Some(&band),
+                Ok(true),
+            ),
+        ];
+        for (case, held, target, region, expected) in region_rows {
+            let got = claim_shot(Some(held), Some(5), target, region, true);
+            println!("{case}: {got:?}");
+            assert_eq!(got, expected, "{case}");
+        }
+    }
+
+    /// `claim_table` through `ShotStore`: only `Ok(true)` moves the bytes out
+    /// of the slot, and a claim reads only its own slot.
+    fn claims_through_the_store(other: Option<(i64, u32)>) {
+        let band = band();
+        for (case, requested, target, region, accepts) in [
+            ("text only", None, Some(TARGET), None, true),
+            (
+                "provider takes no image",
+                Some(1),
+                Some(TARGET),
+                None,
+                false,
+            ),
+            ("another id", Some(2), Some(TARGET), None, true),
+            ("another target", Some(1), other, None, true),
+            ("another region", Some(1), Some(TARGET), Some(&band), true),
+            ("the shot shown", Some(1), Some(TARGET), None, true),
+        ] {
+            let store = ShotStore::default();
+            let info = store
+                .complete(store.begin(), ShotSlot::Chat, TARGET, None, prepared(7))
+                .unwrap();
+            assert_eq!(info.id, 1);
+            let claimed =
+                store.claim_for_request(ShotSlot::Chat, requested, target, region, accepts);
+            let left = store.png(info.id);
+            println!("store, {case}: {claimed:?}, still held: {}", left.is_some());
+            if case == "the shot shown" {
+                assert_eq!(claimed, Ok(Some(vec![7; 4])), "{case}: the held bytes");
+                assert_eq!(left, None, "{case}: claimed bytes leave the slot");
+            } else {
+                assert!(matches!(claimed, Ok(None) | Err(_)), "{case}: {claimed:?}");
+                assert_eq!(left, Some(vec![7; 4]), "{case}: the store is unchanged");
+            }
+        }
+
+        // A claim reads only its own slot.
+        let store = ShotStore::default();
+        let info = store
+            .complete(store.begin(), ShotSlot::Chat, TARGET, None, prepared(7))
+            .unwrap();
+        let wrong_slot =
+            store.claim_for_request(ShotSlot::Translate, Some(info.id), Some(TARGET), None, true);
+        assert_eq!(wrong_slot, Err(ShotRefusal::Gone));
+        assert_eq!(store.png(info.id), Some(vec![7; 4]));
+
+        // A cropped translate screenshot goes with the region it was cut to.
+        let info = store
+            .complete(
+                store.begin(),
+                ShotSlot::Translate,
+                TARGET,
+                Some(band),
+                prepared(8),
+            )
+            .unwrap();
+        assert!(info.region, "the overlay learns the screenshot is a crop");
+        let claimed = store.claim_for_request(
+            ShotSlot::Translate,
+            Some(info.id),
+            Some(TARGET),
+            Some(&band),
+            true,
+        );
+        assert_eq!(claimed, Ok(Some(vec![8; 4])), "the cropped bytes");
+    }
+
+    #[test]
+    fn capture_target_needs_a_linked_identified_window() {
+        let game = |linked: bool, exe: &str| GameInfo {
+            hwnd: 42,
+            pid: 7,
+            exe: exe.to_owned(),
+            linked,
+            ..GameInfo::default()
+        };
+        let cases = [
+            ("no target", None, None),
+            ("unlinked", Some(game(false, r"C:\Games\Foo\foo.exe")), None),
+            ("linked, exe unknown", Some(game(true, "")), None),
+            (
+                "linked",
+                Some(game(true, r"C:\Games\Foo\foo.exe")),
+                Some(TARGET),
+            ),
+        ];
+        for (case, target, expected) in cases {
+            let got = capture_target(target.as_ref());
+            println!("{case}: {got:?}");
+            assert_eq!(got, expected, "{case}");
+        }
+    }
+
+    #[test]
+    fn shot_types_mirror_typescript() {
+        let source = include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../src/lib/utils/shots.ts"
+        ));
+
+        let info = ShotInfo {
+            id: 3,
+            slot: ShotSlot::Translate,
+            width: 640,
+            height: 360,
+            region: true,
+        };
+        let typescript = crate::util::ts_fields(source, "interface ShotInfo {");
+        let rust = crate::util::json_fields(&serde_json::to_value(&info).unwrap());
+        println!(
+            "ShotInfo: {} fields from Rust, {} in TypeScript",
+            rust.len(),
+            typescript.len()
+        );
+        assert!(!rust.is_empty() && !typescript.is_empty());
+        // ShotInfo has no Option field, so the same list stands for both.
+        let mismatches = crate::util::mirror_mismatches(&typescript, &rust, &rust, source);
+        assert!(mismatches.is_empty(), "{mismatches:#?}");
+
+        let slots: Vec<String> = [ShotSlot::Chat, ShotSlot::Translate]
+            .into_iter()
+            .map(|slot| {
+                // A new variant fails to compile here; add it to the list too.
+                match slot {
+                    ShotSlot::Chat | ShotSlot::Translate => {}
+                }
+                serde_json::to_value(slot)
+                    .unwrap()
+                    .as_str()
+                    .unwrap()
+                    .to_owned()
+            })
+            .collect();
+        let names: Vec<&str> = slots.iter().map(String::as_str).collect();
+        println!("ShotSlot: {} variants compared: {names:?}", names.len());
+        assert_ne!(names.len(), 0);
+        let mismatches = crate::util::alias_mismatches(source, "ShotSlot", &names);
+        assert!(mismatches.is_empty(), "{mismatches:#?}");
     }
 }
