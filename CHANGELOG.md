@@ -71,6 +71,8 @@ All notable changes to this project are documented here. The format is based on
   converted text was left behind in the input.
 - **Screenshots leave out the mouse pointer.** Taking one from the panel drew
   the pointer into the game screenshot, where it could cover text.
+- **The chat stays where you left it when you switch tabs.** Coming back from
+  the Translate tab showed the first messages instead of the latest.
 
 ## 2.1.0 - 2026-10-07
 

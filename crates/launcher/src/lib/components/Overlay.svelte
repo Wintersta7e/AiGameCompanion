@@ -1,5 +1,6 @@
 <script lang="ts">
   import { onMount, tick } from 'svelte';
+  import { on as onEvent } from 'svelte/events';
   import { invoke, Channel } from '@tauri-apps/api/core';
   import { listen } from '@tauri-apps/api/event';
   import { hashHue } from '../utils/accent';
@@ -185,10 +186,22 @@
     });
   });
 
-  // Svelte action: when the chat list gets shorter (a screenshot preview shows
-  // under it), its scroll position stays fixed from the top, which would leave
-  // a list that was at its bottom scrolled up and unfollowed. Keep it there.
+  // Where the chat list stood when it was last scrolled: null at its bottom,
+  // else its scrollTop. The list is rebuilt, at its top, on every switch back
+  // to the Chat tab.
+  let chatScrollTop: number | null = null;
+
+  // Svelte action: put a rebuilt chat list back where it stood. And when the
+  // list gets shorter (a screenshot preview shows under it), its scroll
+  // position stays fixed from the top, which would leave a list that was at
+  // its bottom scrolled up and unfollowed. Keep it there.
   function keepBottom(el: HTMLDivElement) {
+    el.scrollTop = chatScrollTop ?? el.scrollHeight;
+    const remember = () => {
+      const atBottom = el.scrollHeight - el.scrollTop - el.clientHeight <= FOLLOW_SLACK;
+      chatScrollTop = atBottom ? null : el.scrollTop;
+    };
+    const stopRemembering = onEvent(el, 'scroll', remember);
     let height = el.clientHeight;
     const observer = new ResizeObserver(() => {
       const wasAtBottom = el.scrollHeight - el.scrollTop - height <= FOLLOW_SLACK;
@@ -199,6 +212,7 @@
     return {
       destroy() {
         observer.disconnect();
+        stopRemembering();
       },
     };
   }
