@@ -169,9 +169,28 @@ struct Active {
     handle: tauri::async_runtime::JoinHandle<()>,
 }
 
-/// Backend AI state: cached CLI availability plus the active-request slot.
+/// What Gemini needs from the key store and the legacy config file: whether a
+/// key is stored, and the file's model (`""` when it names none).
+#[derive(Debug, Clone, Default)]
+pub(crate) struct GeminiPresence {
+    pub key: bool,
+    pub file_model: String,
+}
+
+/// Read the key store and the legacy config file for Gemini. Slow (the OS
+/// credential store, a file), so callers cache the result in `AiState`.
+pub(crate) fn gemini_presence() -> GeminiPresence {
+    GeminiPresence {
+        key: gemini::load_config().is_ok(),
+        file_model: gemini::file_model(),
+    }
+}
+
+/// Backend AI state: cached CLI and Gemini availability plus the active-request
+/// slot.
 pub(crate) struct AiState {
     cli: Mutex<CliConfig>,
+    gemini: Mutex<GeminiPresence>,
     active: Mutex<Option<Active>>,
 }
 
@@ -179,6 +198,7 @@ impl Default for AiState {
     fn default() -> Self {
         Self {
             cli: Mutex::new(CliConfig::default()),
+            gemini: Mutex::new(GeminiPresence::default()),
             active: Mutex::new(None),
         }
     }
@@ -190,20 +210,26 @@ impl AiState {
         *self.cli.lock() = cfg;
     }
 
+    /// Store what `gemini_presence` read.
+    pub(crate) fn set_gemini(&self, presence: GeminiPresence) {
+        *self.gemini.lock() = presence;
+    }
+
     /// Report which providers can currently serve a request, and the Gemini model
     /// a request would name given `settings_model` (the Settings choice). Gemini
-    /// depends on a stored key; Claude / Codex on a detected CLI.
+    /// depends on a stored key; Claude / Codex on a detected CLI. Reads only the
+    /// cached state, never the key store or a file.
     pub(crate) fn availability(&self, settings_model: &str) -> ProviderAvailability {
-        let file_model = gemini::file_model();
+        let presence = self.gemini.lock().clone();
         let cli = self.cli.lock();
         ProviderAvailability {
-            gemini: gemini::load_config().is_ok(),
+            gemini: presence.key,
             claude: cli.claude.is_available(),
             openai: cli.codex.is_available(),
             claude_where: cli.claude.location().to_owned(),
             openai_where: cli.codex.location().to_owned(),
-            gemini_model: gemini::resolve_model(settings_model, &file_model),
-            gemini_fallback_model: gemini::resolve_model("", &file_model),
+            gemini_model: gemini::resolve_model(settings_model, &presence.file_model),
+            gemini_fallback_model: gemini::resolve_model("", &presence.file_model),
             claude_model: cli::DEFAULT_CLAUDE_MODEL.to_owned(),
             openai_model: String::new(),
         }
@@ -1044,6 +1070,24 @@ mod tests {
         assert_eq!(availability.openai_model, "");
         assert_eq!(availability.gemini_model, "gemini-3.8-flash");
         assert_ne!(availability.gemini_fallback_model, "");
+    }
+
+    #[test]
+    fn availability_reads_only_the_cache() {
+        let ai = AiState::default();
+        ai.set_gemini(GeminiPresence {
+            key: true,
+            file_model: "gemini-from-file".into(),
+        });
+        let availability = ai.availability("");
+        println!("{availability:?}");
+        assert!(availability.gemini, "the cached key presence was not used");
+        assert_eq!(availability.gemini_model, "gemini-from-file");
+        assert_eq!(availability.gemini_fallback_model, "gemini-from-file");
+        let availability = ai.availability("gemini-x");
+        println!("{availability:?}");
+        assert_eq!(availability.gemini_model, "gemini-x");
+        assert_eq!(availability.gemini_fallback_model, "gemini-from-file");
     }
 
     #[test]

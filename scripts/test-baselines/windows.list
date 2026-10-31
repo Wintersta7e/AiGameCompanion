@@ -58,6 +58,7 @@ ai::prompt::tests::instruction_text_lives_only_here run
 ai::prompt::tests::prompt_is_compile_time_text run
 ai::prompt::tests::slots_in_order run
 ai::tests::answer_errors_stay_out_of_answer_text run
+ai::tests::availability_reads_only_the_cache run
 ai::tests::availability_reports_the_models_in_use run
 ai::tests::every_provider_change_is_announced run
 ai::tests::every_provider_takes_screenshots run

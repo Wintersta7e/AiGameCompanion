@@ -201,7 +201,9 @@ fn main() {
                     cfg.claude,
                     cfg.codex
                 );
-                detect_handle.state::<AiState>().set_cli(cfg);
+                let ai_state = detect_handle.state::<AiState>();
+                ai_state.set_cli(cfg);
+                ai_state.set_gemini(ai::gemini_presence());
                 ai::notify_providers_changed(&detect_handle);
             });
 

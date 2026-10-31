@@ -14,6 +14,8 @@ fn settings_model(state: &AppState) -> String {
 }
 
 /// Report which providers can currently serve a request (for the UI dropdown).
+/// Re-reads the Gemini key and the legacy config file first, so a key or file
+/// changed outside the launcher shows up here.
 #[tauri::command]
 #[expect(
     clippy::needless_pass_by_value,
@@ -23,6 +25,7 @@ pub(crate) fn available_providers(
     ai: State<'_, AiState>,
     state: State<'_, AppState>,
 ) -> ProviderAvailability {
+    ai.set_gemini(crate::ai::gemini_presence());
     ai.availability(&settings_model(&state))
 }
 
@@ -116,6 +119,7 @@ pub(crate) fn set_gemini_key(
     key: String,
 ) -> Result<ProviderAvailability, String> {
     crate::secrets::set_gemini_key(key.trim())?;
+    ai.set_gemini(crate::ai::gemini_presence());
     crate::ai::notify_providers_changed(&app);
     Ok(ai.availability(&settings_model(&state)))
 }
@@ -129,10 +133,12 @@ pub(crate) async fn recheck_clis(
     state: State<'_, AppState>,
 ) -> Result<ProviderAvailability, String> {
     let model = settings_model(&state);
-    let cfg = tokio::task::spawn_blocking(crate::ai::detect_all)
-        .await
-        .map_err(|error| format!("CLI re-check failed: {error}"))?;
+    let (cfg, gemini) =
+        tokio::task::spawn_blocking(|| (crate::ai::detect_all(), crate::ai::gemini_presence()))
+            .await
+            .map_err(|error| format!("CLI re-check failed: {error}"))?;
     ai.set_cli(cfg);
+    ai.set_gemini(gemini);
     crate::ai::notify_providers_changed(&app);
     Ok(ai.availability(&model))
 }
