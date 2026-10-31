@@ -993,24 +993,9 @@ mod tests {
             "no GameInfo type found in Overlay.svelte"
         );
 
-        let missing: Vec<String> = rust
-            .iter()
-            .filter(|(key, ty)| {
-                !typescript
-                    .iter()
-                    .any(|(name, ts_ty, _)| name == key && ts_ty == ty)
-            })
-            .map(|(key, ty)| format!("{key}: {ty}"))
-            .collect();
-        let extra_required: Vec<&str> = typescript
-            .iter()
-            .filter(|(name, _, optional)| !optional && !rust.iter().any(|(key, _)| key == name))
-            .map(|(name, _, _)| name.as_str())
-            .collect();
-        assert!(
-            missing.is_empty() && extra_required.is_empty(),
-            "missing or mistyped in TypeScript: {missing:?}; not sent by Rust but required: {extra_required:?}"
-        );
+        // GameInfo has no Option field, so the same list stands for both.
+        let mismatches = crate::util::mirror_mismatches(&typescript, &rust, &rust, source);
+        assert!(mismatches.is_empty(), "{mismatches:#?}");
     }
 
     fn game(name: &str, install_dir: &str, exe_path: Option<&str>) -> Game {

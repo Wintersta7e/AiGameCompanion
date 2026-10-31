@@ -543,6 +543,27 @@ impl Drop for TempShot {
     }
 }
 
+const CODEX_SHOT_FAILED: &str = "The screenshot could not be handed to Codex; nothing was sent.";
+
+/// The file Codex reads `png` from, written into `dir`. No screenshot is no
+/// file; a screenshot with no folder, or one that cannot be written, is an
+/// error: the request must not go out without the image the user asked for.
+fn codex_shot(
+    dir: Option<&std::path::Path>,
+    png: Option<&[u8]>,
+) -> Result<Option<TempShot>, String> {
+    let Some(png) = png else {
+        return Ok(None);
+    };
+    let dir = dir.ok_or_else(|| CODEX_SHOT_FAILED.to_owned())?;
+    TempShot::create(shot_path(dir), png)
+        .map(Some)
+        .map_err(|e| {
+            tracing::warn!("Codex screenshot could not be written: {e}");
+            CODEX_SHOT_FAILED.to_owned()
+        })
+}
+
 /// Delete every regular file in the shots directory: leftovers of a crash, a
 /// failed delete or a killed process. Returns how many were removed; a missing
 /// directory removes none.
@@ -691,14 +712,16 @@ where
 
 /// Stream a Codex response by spawning the Codex CLI in `exec` mode.
 ///
-/// `shot` is the shots directory and a PNG to show Codex. The file is written
+/// `png` is a screenshot to show Codex, written as a file into `shots_dir`
 /// here and deleted when this future ends, however it ends: answer, error,
-/// timeout, Stop or a newer request.
+/// timeout, Stop or a newer request. When the file cannot be written (or there
+/// is no folder) the request ends with an error before Codex is spawned.
 pub(super) async fn stream_codex<F>(
     cfg: &CliConfig,
     system_prompt: &str,
     messages: &[ChatMessage],
-    shot: Option<(&std::path::Path, &[u8])>,
+    shots_dir: Option<&std::path::Path>,
+    png: Option<&[u8]>,
     on_chunk: F,
 ) -> Result<(), String>
 where
@@ -708,16 +731,10 @@ where
         return Err("Codex CLI is not available on this system.".to_owned());
     }
 
-    let temp_shot = shot.and_then(|(dir, png)| match TempShot::create(shot_path(dir), png) {
-        Ok(temp) => {
-            tracing::info!("Codex request: screenshot attached");
-            Some(temp)
-        }
-        Err(e) => {
-            tracing::warn!("Codex request continues without the screenshot: {e}");
-            None
-        }
-    });
+    let temp_shot = codex_shot(shots_dir, png)?;
+    if temp_shot.is_some() {
+        tracing::info!("Codex request: screenshot attached");
+    }
     let image = temp_shot
         .as_ref()
         .map(|temp| temp.path.to_string_lossy().into_owned());
@@ -1277,6 +1294,36 @@ mod tests {
         std::fs::write(&path, b"ORIGINAL").unwrap();
         TempShot::create(path.clone(), b"NEW").unwrap_err();
         assert_eq!(std::fs::read(&path).unwrap(), b"ORIGINAL");
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn codex_shot_failure_is_an_error() {
+        let no_dir = codex_shot(None, Some(b"PNG"));
+        println!("png, no folder: {no_dir:?}");
+        assert_eq!(no_dir.unwrap_err(), CODEX_SHOT_FAILED);
+
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let missing = std::env::temp_dir().join(format!("aigc-test-missing-{nanos}"));
+        assert!(!missing.exists());
+        let unwritable = codex_shot(Some(&missing), Some(b"PNG"));
+        println!("png, missing folder: {unwritable:?}");
+        assert_eq!(unwritable.unwrap_err(), CODEX_SHOT_FAILED);
+
+        let dir = fresh_dir("codex-shot");
+        let none = codex_shot(Some(&dir), None);
+        println!("folder, no png: {none:?}");
+        assert!(none.unwrap().is_none());
+
+        let written = codex_shot(Some(&dir), Some(b"PNG")).unwrap().unwrap();
+        println!("folder and png: {written:?}");
+        assert_eq!(std::fs::read(&written.path).unwrap(), b"PNG");
+        let path = written.path.clone();
+        drop(written);
+        assert!(!path.exists(), "the screenshot outlived its guard");
         std::fs::remove_dir_all(&dir).unwrap();
     }
 

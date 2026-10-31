@@ -13,6 +13,7 @@ ai::cli::tests::codex_input_includes_system_prompt_with_blank_line run
 ai::cli::tests::codex_input_omits_system_prompt_when_empty run
 ai::cli::tests::codex_output_keeps_line_breaks run
 ai::cli::tests::codex_runs_ephemeral run
+ai::cli::tests::codex_shot_failure_is_an_error run
 ai::cli::tests::codex_wsl_script_hands_the_image_over run
 ai::cli::tests::every_wsl_spawn_uses_the_builder run
 ai::cli::tests::no_generic_claude_error_text run
@@ -59,7 +60,6 @@ ai::prompt::tests::prompt_is_compile_time_text run
 ai::prompt::tests::slots_in_order run
 ai::tests::answer_errors_stay_out_of_answer_text run
 ai::tests::availability_reports_the_models_in_use run
-ai::tests::captures_go_through_the_liveness_check run
 ai::tests::every_provider_change_is_announced run
 ai::tests::identity_block_is_exact_and_fenced run
 ai::tests::identity_goes_before_the_latest_question run
@@ -104,13 +104,17 @@ overlay::tests::product_name_kept_only_when_informative run
 overlay::tests::product_name_stub_reads_nothing run
 overlay::tests::record_placement_refuses_read_only run
 overlay::tests::stored_target_is_read_only_through_overlay run
-overlay_capture::tests::fit_within_averages_each_block run
-overlay_capture::tests::fit_within_keeps_the_aspect_of_odd_sizes run
-overlay_capture::tests::fit_within_leaves_small_frames_alone run
-overlay_capture::tests::fit_within_scales_large_frames run
 placement::tests::placement_table run
 placement::tests::reference_cases run
 placement::tests::user_moved_tolerance run
+shots::tests::client_box_is_client_minus_frame_origin run
+shots::tests::fit_within_averages_each_block run
+shots::tests::fit_within_keeps_the_aspect_of_odd_sizes run
+shots::tests::fit_within_leaves_small_frames_alone run
+shots::tests::fit_within_scales_large_frames run
+shots::tests::one_capture_producer run
+shots::tests::prepare_bounds_every_sent_image run
+shots::tests::source_is_capped run
 state::tests::backup_never_replaces_an_existing_one run
 state::tests::corrupt_state_falls_back_to_default_and_backs_up run
 state::tests::corrupt_state_without_backup_is_read_only run
@@ -144,6 +148,7 @@ trust::tests::overlay_window_cannot_maximize run
 trust::tests::search_suggestion_component_contract run
 util::tests::frontend_scan_walks_the_app run
 util::tests::frontend_suppressions_give_a_reason run
+util::tests::mirror_helper_fixtures run
 util::tests::needle_boundaries run
 util::tests::node_files_are_listed_once run
 util::tests::per_file_scan_skips_test_modules run

@@ -199,15 +199,10 @@ mod tests {
             !rust.is_empty() && !typescript.is_empty(),
             "no LauncherSettings fields found"
         );
-        let missing: Vec<String> = rust
-            .iter()
-            .filter(|(key, ty)| {
-                !typescript
-                    .iter()
-                    .any(|(name, ts_ty, _)| name == key && ts_ty == ty)
-            })
-            .map(|(key, ty)| format!("{key}: {ty}"))
-            .collect();
+        // LauncherSettings has no Option field, so the same list stands for both.
+        let mismatches = crate::util::mirror_mismatches(&typescript, &rust, &rust, source);
+        // Stricter than the mirror rule: even an optional extra field would be
+        // sent back by Save and dropped by serde.
         let extra: Vec<&str> = typescript
             .iter()
             .filter(|(name, _, _)| !rust.iter().any(|(key, _)| key == name))
@@ -215,12 +210,12 @@ mod tests {
             .collect();
         println!(
             "checked {} of {} fields",
-            rust.len() - missing.len(),
+            rust.len().saturating_sub(mismatches.len()),
             rust.len()
         );
         assert!(
-            missing.is_empty() && extra.is_empty(),
-            "missing or mistyped in TypeScript: {missing:?}; not in Rust: {extra:?}"
+            mismatches.is_empty() && extra.is_empty(),
+            "{mismatches:#?}; not in Rust: {extra:?}"
         );
 
         let scan = crate::util::count_in_frontend(&[

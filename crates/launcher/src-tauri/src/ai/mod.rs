@@ -299,8 +299,8 @@ async fn run(app: AppHandle, params: RequestParams, channel: Channel<SageEvent>)
                 .await
             }
             Provider::Openai => {
-                let shot = shots.as_deref().zip(screenshot.as_deref());
-                cli::stream_codex(&cli_cfg, &system_prompt, &messages, shot, on_chunk).await
+                let (dir, png) = (shots.as_deref(), screenshot.as_deref());
+                cli::stream_codex(&cli_cfg, &system_prompt, &messages, dir, png, on_chunk).await
             }
         }
     };
@@ -350,11 +350,11 @@ async fn run(app: AppHandle, params: RequestParams, channel: Channel<SageEvent>)
 async fn capture_png(target: Option<(i64, u32)>) -> Option<Vec<u8>> {
     let (hwnd, pid) = target?;
     match tokio::task::spawn_blocking(move || {
-        crate::overlay_capture::capture_live_window_png(hwnd, pid)
+        crate::shots::grab_frame(hwnd, pid).and_then(crate::shots::finish_frame)
     })
     .await
     {
-        Ok(Ok(png)) => Some(png),
+        Ok(Ok((prepared, _))) => Some(prepared.png),
         Ok(Err(error)) => {
             tracing::warn!("screenshot capture failed: {error}");
             None
@@ -383,13 +383,14 @@ pub(crate) fn shots_dir(app: &AppHandle) -> Option<std::path::PathBuf> {
     }
 }
 
-/// The screenshot folder, created if needed. `None` sends Codex no image.
+/// The screenshot folder, created if needed. `None` ends a Codex request that
+/// carries a screenshot.
 fn prepare_shots_dir(app: &AppHandle) -> Option<std::path::PathBuf> {
     let dir = shots_dir(app)?;
     match std::fs::create_dir_all(&dir) {
         Ok(()) => Some(dir),
         Err(e) => {
-            tracing::warn!("Codex request continues without the screenshot: {e}");
+            tracing::warn!("Could not create the screenshot folder: {e}");
             None
         }
     }
@@ -568,12 +569,12 @@ pub(crate) async fn translate_capture(
     pid: u32,
     settings_model: String,
 ) -> Result<String, String> {
-    let png = tokio::task::spawn_blocking(move || {
-        crate::overlay_capture::capture_live_window_png(hwnd, pid)
+    let (prepared, _) = tokio::task::spawn_blocking(move || {
+        crate::shots::grab_frame(hwnd, pid).and_then(crate::shots::finish_frame)
     })
     .await
     .map_err(|error| format!("capture task failed: {error}"))??;
-    let screenshot = base64::engine::general_purpose::STANDARD.encode(png);
+    let screenshot = base64::engine::general_purpose::STANDARD.encode(prepared.png);
     let cfg = gemini::load_config()?;
     let model = gemini::resolve_model(&settings_model, &gemini::file_model());
     let (system, messages) = payload(
@@ -894,15 +895,6 @@ mod tests {
         println!("scanned {files} files, found {count} occurrence(s) of {needle}");
         assert!(files > 0, "the source scan found no files");
         assert_eq!(count, 6, "a provider change that no window hears about");
-    }
-
-    #[test]
-    fn captures_go_through_the_liveness_check() {
-        let needle = concat!("capture_window_png", "(");
-        let (files, count) = crate::util::count_in_sources(needle, Some("overlay_capture.rs"));
-        println!("scanned {files} files, found {count} occurrence(s) of {needle}");
-        assert!(files > 0, "the source scan found no files");
-        assert_eq!(count, 0, "capture only through capture_live_window_png");
     }
 
     #[test]
