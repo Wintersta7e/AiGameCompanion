@@ -38,5 +38,8 @@
   "dependencies": {
     "@tauri-apps/api": "^2",
     "marked": "^18"
+  },
+  "overrides": {
+    "minimatch": "^11.0.1"
   }
 }
