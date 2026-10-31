@@ -66,6 +66,9 @@ All notable changes to this project are documented here. The format is based on
   provider at once, and the next question went to that one.
 - **A translation cut short keeps the text that arrived.** The translate tab
   showed only the stop reason; it now shows the text with the reason under it.
+- **Enter that confirms Japanese, Chinese or Korean input no longer sends the
+  question.** The half-converted question went to the provider, and the
+  converted text was left behind in the input.
 
 ## 2.1.0 - 2026-10-07
 

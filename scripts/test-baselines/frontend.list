@@ -24,6 +24,8 @@ renderMode: long, slow or failed renders stay plain run
 replaced: a take a newer one replaced leaves the slot empty, with no message run
 sendBlocked: a take or a fetch in progress blocks a send run
 sendableShot: an id only once the preview is shown run
+sendsQuestion: Enter sends, Shift+Enter does not run
+sendsQuestion: the Enter that confirms an IME composition does not send run
 shot states: one of each kind is reachable run
 showHintChips: shown only after a finished hinted answer run
 takeFailed and drawFailed: a failure blocks nothing and sends no id run

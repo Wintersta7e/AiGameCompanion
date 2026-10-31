@@ -4,6 +4,7 @@
   import { listen } from '@tauri-apps/api/event';
   import { hashHue } from '../utils/accent';
   import { ANOTHER_HINT_TURN, FULL_ANSWER_TURN, showHintChips } from '../utils/hints';
+  import { sendsQuestion } from '../utils/keys';
   import { unsavedPick } from '../utils/pick';
   import { PROVIDERS, modelName, type ModelNames, type Provider } from '../stores/companion.svelte';
   import type { LauncherSettings } from '../settings';
@@ -558,7 +559,7 @@
   }
 
   function onKeydown(event: KeyboardEvent) {
-    if (event.key === 'Enter' && !event.shiftKey) {
+    if (sendsQuestion(event)) {
       event.preventDefault();
       void send();
     }
