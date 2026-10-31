@@ -452,51 +452,16 @@ fn claude_result_error(frame: &serde_json::Value) -> Option<String> {
     )
 }
 
-/// Parse a single line from Codex CLI stdout. `codex exec` prints plain text, so
-/// non-JSON lines (blank ones included) are emitted verbatim plus their newline;
-/// JSON lines (refusals, structured output) are decoded.
+/// Parse a single line from Codex CLI stdout. Without `--json`, `codex exec`
+/// prints only the answer there, as plain text (everything else goes to
+/// stderr), so every line -- a JSON object, a blank line -- is the answer and is
+/// emitted verbatim. The newline `lines()` removed is put back, so the answer
+/// keeps its line breaks and blank lines (paragraphs, lists).
+#[expect(
+    clippy::unnecessary_wraps,
+    reason = "run_cli takes one parser shape for both CLIs"
+)]
 fn parse_codex_line(line: &str) -> Option<Parsed> {
-    if let Ok(v) = serde_json::from_str::<serde_json::Value>(line) {
-        if v.get("type").and_then(serde_json::Value::as_str) == Some("refusal") {
-            let msg = v
-                .get("content")
-                .and_then(serde_json::Value::as_str)
-                .unwrap_or("Model refused the request");
-            return Some(Parsed::Error(msg.to_owned()));
-        }
-
-        if let Some(content) = v.get("content").and_then(serde_json::Value::as_array) {
-            let mut collected = String::new();
-            for item in content {
-                if item.get("type").and_then(serde_json::Value::as_str) == Some("output_text") {
-                    if let Some(text) = item.get("text").and_then(serde_json::Value::as_str) {
-                        collected.push_str(text);
-                    }
-                }
-            }
-            if !collected.is_empty() {
-                return Some(Parsed::Text(collected));
-            }
-        }
-
-        if let Some(text) = v.get("text").and_then(serde_json::Value::as_str) {
-            if !text.is_empty() {
-                return Some(Parsed::Text(text.to_owned()));
-            }
-        }
-
-        // An object carrying a protocol "type" we don't recognize is a control
-        // frame -- drop it. Anything else (a bare JSON value, or an object with
-        // no "type") is the model's answer that happens to be JSON: fall through
-        // and emit it verbatim rather than silently dropping it.
-        if v.get("type").and_then(serde_json::Value::as_str).is_some() {
-            tracing::debug!("Ignoring unrecognized codex control frame: {line}");
-            return None;
-        }
-    }
-
-    // Put back the newline `lines()` removed, so the answer keeps its line
-    // breaks and blank lines (paragraphs, lists).
     Some(Parsed::Text(format!("{line}\n")))
 }
 
@@ -1735,51 +1700,51 @@ mod tests {
         assert_eq!(parse_codex_line(""), Some(Parsed::Text("\n".to_owned())));
     }
 
-    #[test]
-    fn parse_codex_line_surfaces_refusal() {
-        let line = r#"{"type":"refusal","content":"I can't help with that"}"#;
-        assert_eq!(
-            parse_codex_line(line),
-            Some(Parsed::Error("I can't help with that".to_owned()))
-        );
-    }
+    /// Answer lines that happen to be JSON objects, in the shapes that were
+    /// once read as protocol frames: a typed object, a `text` field, a
+    /// `content` array and a refusal-shaped object.
+    const JSON_ANSWER: &str = r#"Put this in the save file:
+{"type": "weapon", "name": "Iron Sword", "damage": 12}
+{"text": "Press E", "key": "E"}
+{"content":[{"type":"output_text","text":"hello"}]}
+{"type": "refusal", "content": "sample"}
+42
+"#;
 
     #[test]
-    fn parse_codex_line_collects_output_text_from_content_array() {
-        let line = r#"{"content":[{"type":"output_text","text":"hello"},{"type":"output_text","text":" world"}]}"#;
-        assert_eq!(
-            parse_codex_line(line),
-            Some(Parsed::Text("hello world".to_owned()))
-        );
+    fn parse_codex_line_emits_json_answer_lines_verbatim() {
+        for line in JSON_ANSWER.lines() {
+            assert_eq!(
+                parse_codex_line(line),
+                Some(Parsed::Text(format!("{line}\n"))),
+                "{line}"
+            );
+        }
     }
 
-    #[test]
-    fn parse_codex_line_extracts_top_level_text_field() {
-        let line = r#"{"text":"hi there"}"#;
-        assert_eq!(
-            parse_codex_line(line),
-            Some(Parsed::Text("hi there".to_owned()))
-        );
-    }
-
-    #[test]
-    fn parse_codex_line_skips_unrecognized_json_object() {
-        let line = r#"{"type":"token_count","tokens":42}"#;
-        assert_eq!(parse_codex_line(line), None);
-    }
-
-    #[test]
-    fn parse_codex_line_emits_typeless_json_answer_verbatim() {
-        // A JSON answer with no protocol "type" is the model's output, not a
-        // control frame -- emit it verbatim instead of dropping it.
-        let object = r#"{"ok":true}"#;
-        assert_eq!(
-            parse_codex_line(object),
-            Some(Parsed::Text(format!("{object}\n")))
-        );
-        assert_eq!(
-            parse_codex_line("42"),
-            Some(Parsed::Text("42\n".to_owned()))
-        );
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_codex_answer_written_as_json_reaches_the_user_unchanged() {
+        // `codex exec` prints the answer as plain text on stdout, so a JSON
+        // line in it is the model's answer, never a protocol frame.
+        let mut cmd = Command::new("sh");
+        cmd.args(["-c", "cat"]);
+        let mut chunks = Vec::new();
+        let result = run_cli(
+            &mut cmd,
+            JSON_ANSWER.to_owned(),
+            |text| {
+                chunks.push(text);
+                Ok(())
+            },
+            parse_codex_line,
+            "Codex",
+            None,
+        )
+        .await;
+        let joined = chunks.concat();
+        println!("{result:?}\n{joined}");
+        assert_eq!(result, Ok(()));
+        assert_eq!(joined, JSON_ANSWER);
     }
 }

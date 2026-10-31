@@ -21,12 +21,8 @@ ai::cli::tests::parse_claude_line_skips_malformed_or_empty_lines run
 ai::cli::tests::parse_claude_line_surfaces_error_result_message run
 ai::cli::tests::parse_claude_line_treats_successful_result_as_stream_end run
 ai::cli::tests::parse_claude_line_uses_fallback_when_error_result_has_no_message run
-ai::cli::tests::parse_codex_line_collects_output_text_from_content_array run
+ai::cli::tests::parse_codex_line_emits_json_answer_lines_verbatim run
 ai::cli::tests::parse_codex_line_emits_plain_text_verbatim run
-ai::cli::tests::parse_codex_line_emits_typeless_json_answer_verbatim run
-ai::cli::tests::parse_codex_line_extracts_top_level_text_field run
-ai::cli::tests::parse_codex_line_skips_unrecognized_json_object run
-ai::cli::tests::parse_codex_line_surfaces_refusal run
 ai::cli::tests::shell_escape_escapes_inner_single_quote run
 ai::cli::tests::shell_escape_handles_empty_string run
 ai::cli::tests::shell_escape_preserves_spaces_and_special_chars run
