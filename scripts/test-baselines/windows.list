@@ -114,6 +114,7 @@ placement::tests::reference_cases run
 placement::tests::user_moved_tolerance run
 state::tests::a_kept_copy_is_named_to_the_main_window_once run
 state::tests::a_leading_bom_loads_the_same_file run
+state::tests::a_source_this_build_does_not_know_is_saved_back_unchanged run
 state::tests::autostart_follows_only_settings_that_were_read run
 state::tests::backup_never_replaces_an_existing_one run
 state::tests::backup_reuses_an_identical_copy_past_a_gap run

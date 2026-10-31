@@ -516,7 +516,7 @@ mod tests {
             1,
             "a newer source must not wipe the library"
         );
-        assert_eq!(st.games[0].source, GameSource::Manual);
+        assert_eq!(st.games[0].source, GameSource::Other("xbox".to_owned()));
         drop(st);
         cleanup(&path);
     }
@@ -1379,5 +1379,41 @@ mod tests {
         let text = std::fs::read_to_string(&path).unwrap();
         cleanup(&path);
         assert_eq!(text.matches("\"scan_on_startup\"").count(), 1, "{text}");
+    }
+
+    /// A game source a newer build added was rewritten as "manual" on the
+    /// next save. It is now written back as stored, and this build still
+    /// treats the game as one it did not scan.
+    #[test]
+    fn a_source_this_build_does_not_know_is_saved_back_unchanged() {
+        let path = temp_state_path("unknown_source_saved");
+        std::fs::write(
+            &path,
+            r#"{"games":[{"id":"a","source":"elsewhere"},{"id":"b","source":"steam"},{"id":"c","source":"manual"}]}"#,
+        )
+        .unwrap();
+        let app = AppState::load(path.clone());
+        let steam = app
+            .launcher
+            .lock()
+            .games
+            .iter()
+            .map(|game| game.source == GameSource::Steam)
+            .collect::<Vec<_>>();
+        app.save().unwrap();
+        let saved: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        let backups = backup_names(&path).iter().any(|name| name.exists());
+        cleanup(&path);
+        let sources = saved["games"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|game| game["source"].clone())
+            .collect::<Vec<_>>();
+        println!("saved sources {sources:?}, steam {steam:?}");
+        assert_eq!(sources, ["elsewhere", "steam", "manual"]);
+        assert_eq!(steam, [false, true, false]);
+        assert!(!backups, "nothing was dropped");
     }
 }

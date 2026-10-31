@@ -10,16 +10,18 @@ use crate::placement::OverlayPlacement;
 pub(crate) type UnknownFields = serde_json::Map<String, serde_json::Value>;
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
-// Deserialize via String so an unrecognised source (a state file written by a
-// newer build, then opened by an older one) degrades to `Manual` instead of
-// failing the whole file and resetting the user's library.
-#[serde(rename_all = "snake_case", from = "String")]
+// Read and written as a string so an unrecognised source (a state file written
+// by a newer build, then opened by an older one) neither fails the whole file
+// nor is lost: it is kept as `Other`, which this build treats like `Manual`,
+// and written back as stored.
+#[serde(from = "String", into = "String")]
 pub(crate) enum GameSource {
     Steam,
     Epic,
     Gog,
     #[default]
     Manual,
+    Other(String),
 }
 
 impl From<String> for GameSource {
@@ -28,12 +30,23 @@ impl From<String> for GameSource {
             "steam" => Self::Steam,
             "epic" => Self::Epic,
             "gog" => Self::Gog,
+            "manual" => Self::Manual,
             other => {
-                if other != "manual" {
-                    tracing::warn!("Unknown game source {other:?}, treating as manual");
-                }
-                Self::Manual
+                tracing::warn!("Unknown game source {other:?}, treating as manual");
+                Self::Other(value)
             }
+        }
+    }
+}
+
+impl From<GameSource> for String {
+    fn from(source: GameSource) -> Self {
+        match source {
+            GameSource::Steam => "steam".to_owned(),
+            GameSource::Epic => "epic".to_owned(),
+            GameSource::Gog => "gog".to_owned(),
+            GameSource::Manual => "manual".to_owned(),
+            GameSource::Other(stored) => stored,
         }
     }
 }

@@ -21,9 +21,9 @@ All notable changes to this project are documented here. The format is based on
   every value it can read, keeps a copy of the file when it skips one, and
   leaves launch on startup as it was when a setting could not be read.
 - **Going back to an older version no longer erases what a newer one saved.**
-  Settings, game details and per-game preferences that a newer version stored
-  were dropped the first time an older version saved the library; they are now
-  kept as they were.
+  Settings, game details, per-game preferences and game sources that a newer
+  version stored were dropped or rewritten the first time an older version saved
+  the library; they are now kept as they were.
 - **The launcher says where it kept a library file it could not read.** A
   damaged library file, or one with entries it could not read, left an empty or
   shorter library with no word of the copy it had kept. The main window now

@@ -4,7 +4,8 @@ import { listen } from '@tauri-apps/api/event';
 export interface Game {
   id: string;
   name: string;
-  source: 'steam' | 'epic' | 'gog' | 'manual';
+  /** 'steam', 'epic', 'gog' or 'manual', or a source a newer version stored. */
+  source: string;
   source_id: string | null;
   exe_name: string;
   exe_path: string | null;
