@@ -29,6 +29,31 @@ pub(crate) struct AppState {
     /// Whether the settings in memory are the user's: the file was absent, or
     /// every value in its `settings` was read.
     settings_read: bool,
+    /// What the main window tells the user once about a library file that was
+    /// not fully read but kept in a backup; taken by the first `health()`.
+    notice: Mutex<Option<String>>,
+}
+
+/// What the main window learns about the library file at start, as sent over
+/// IPC.
+#[derive(Debug, serde::Serialize)]
+pub(crate) struct StateHealth {
+    /// Why nothing is saved this run, or `None` when the state is writable.
+    pub read_only: Option<String>,
+    /// A notice that part or all of the file could not be read and where its
+    /// copy was kept; given once per run.
+    pub notice: Option<String>,
+}
+
+/// The result of reading the state file at start.
+struct Loaded {
+    state: LauncherState,
+    /// See `AppState::load_error`.
+    load_error: Option<String>,
+    /// See `AppState::settings_read`.
+    settings_read: bool,
+    /// See `AppState::notice`.
+    notice: Option<String>,
 }
 
 impl AppState {
@@ -46,23 +71,33 @@ impl AppState {
             );
         }
 
-        let (launcher, load_error, settings_read) = read_state(&state_path);
-        if let Some(reason) = &load_error {
+        let loaded = read_state(&state_path);
+        if let Some(reason) = &loaded.load_error {
             tracing::error!("Launcher state is read-only this run: {reason}");
         }
         Self {
-            launcher: Mutex::new(launcher),
+            launcher: Mutex::new(loaded.state),
             state_path,
             active_sessions: Mutex::new(HashSet::new()),
             save_lock: Mutex::new(()),
-            load_error,
-            settings_read,
+            load_error: loaded.load_error,
+            settings_read: loaded.settings_read,
+            notice: Mutex::new(loaded.notice),
         }
     }
 
     /// Why saving is refused this run, or `None` when the state is writable.
     pub(crate) fn load_error(&self) -> Option<&str> {
         self.load_error.as_deref()
+    }
+
+    /// The state file's health for the main window. The notice is handed out
+    /// once, so it is shown once per run.
+    pub(crate) fn health(&self) -> StateHealth {
+        StateHealth {
+            read_only: self.load_error.clone(),
+            notice: self.notice.lock().take(),
+        }
     }
 
     /// The launch-on-startup value to apply to the OS at start, or `None` to
@@ -115,25 +150,33 @@ impl AppState {
     }
 }
 
-/// Read the state file and decide whether this run may write it. Returns the
-/// state to run on and, when the file must be left alone, the reason.
+/// Read the state file and decide whether this run may write it: the state to
+/// run on, the reason when the file must be left alone, whether every setting
+/// was read, and the notice for a file kept in a backup.
 ///
 /// Writable: parsed with nothing dropped; absent; or corrupt / partly
 /// unreadable with its bytes now in a backup. Read-only: unreadable after every
 /// retry, or corrupt / partly unreadable with no backup written.
-///
-/// The third value says whether every setting was read (see `settings_read`).
-fn read_state(state_path: &Path) -> (LauncherState, Option<String>, bool) {
+fn read_state(state_path: &Path) -> Loaded {
     let contents = match read_with_retry(state_path, READ_ATTEMPTS, READ_RETRY_DELAY, |path| {
         std::fs::read_to_string(path)
     }) {
         Ok(contents) => contents,
         Err(e) if e.kind() == ErrorKind::NotFound => {
-            return (LauncherState::default(), None, true);
+            return Loaded {
+                state: LauncherState::default(),
+                load_error: None,
+                settings_read: true,
+                notice: None,
+            };
         }
         Err(e) => {
-            let reason = format!("could not read {}: {e}", state_path.display());
-            return (LauncherState::default(), Some(reason), false);
+            return Loaded {
+                state: LauncherState::default(),
+                load_error: Some(format!("could not read {}: {e}", state_path.display())),
+                settings_read: false,
+                notice: None,
+            };
         }
     };
     // A UTF-8 byte order mark, as some Windows editors write, is not JSON. The
@@ -149,29 +192,66 @@ fn read_state(state_path: &Path) -> (LauncherState, Option<String>, bool) {
             let settings_read = serde_json::from_str(text)
                 .is_ok_and(|raw| dropped_settings(&raw, &state.settings) == 0);
             if dropped == 0 {
-                return (state, None, settings_read);
+                return Loaded {
+                    state,
+                    load_error: None,
+                    settings_read,
+                    notice: None,
+                };
             }
             tracing::warn!("{dropped} unreadable entries in {}", state_path.display());
-            let reason = back_up(state_path, contents.as_bytes()).err().map(|e| {
-                format!(
-                    "{dropped} entries in {} could not be read, and it could not be backed up: {e}",
-                    state_path.display()
-                )
-            });
-            (state, reason, settings_read)
+            let (load_error, notice) = match back_up(state_path, contents.as_bytes()) {
+                Ok(kept) => (
+                    None,
+                    Some(format!(
+                        "Part of your game library file could not be read and was left out. \
+                         A copy of the file was kept at {}.",
+                        kept.display()
+                    )),
+                ),
+                Err(e) => (
+                    Some(format!(
+                        "{dropped} entries in {} could not be read, and it could not be backed up: {e}",
+                        state_path.display()
+                    )),
+                    None,
+                ),
+            };
+            Loaded {
+                state,
+                load_error,
+                settings_read,
+                notice,
+            }
         }
         Err(parse_error) => {
             tracing::error!(
                 "Corrupt launcher state at {}: {parse_error}",
                 state_path.display()
             );
-            let reason = back_up(state_path, contents.as_bytes()).err().map(|e| {
-                format!(
-                    "{} is not valid ({parse_error}), and it could not be backed up: {e}",
-                    state_path.display()
-                )
-            });
-            (LauncherState::default(), reason, false)
+            let (load_error, notice) = match back_up(state_path, contents.as_bytes()) {
+                Ok(kept) => (
+                    None,
+                    Some(format!(
+                        "Your game library file could not be read, so the launcher started \
+                         with an empty library. A copy of the file was kept at {}.",
+                        kept.display()
+                    )),
+                ),
+                Err(e) => (
+                    Some(format!(
+                        "{} is not valid ({parse_error}), and it could not be backed up: {e}",
+                        state_path.display()
+                    )),
+                    None,
+                ),
+            };
+            Loaded {
+                state: LauncherState::default(),
+                load_error,
+                settings_read: false,
+                notice,
+            }
         }
     }
 }
@@ -479,6 +559,50 @@ mod tests {
             "{ this is not valid json"
         );
         cleanup(&path);
+    }
+
+    /// A file that was not fully read but kept in a backup used to go
+    /// unannounced: the user saw an empty or shorter library and nothing said
+    /// where the old one was. The main window now gets the copy's path, once.
+    #[test]
+    fn a_kept_copy_is_named_to_the_main_window_once() {
+        let corrupt = temp_state_path("notice_corrupt");
+        std::fs::write(&corrupt, "{ this is not valid json").unwrap();
+        // `.json.bak` holds an older library, so the copy goes to `.json.bak.1`.
+        std::fs::write(corrupt.with_extension("json.bak"), ONE_GAME).unwrap();
+        let partial = temp_state_path("notice_partial");
+        std::fs::write(
+            &partial,
+            r#"{"games":[{"id":"ok","name":"Good"},{"id":"bad","play_time_minutes":"lots"}],"settings":{}}"#,
+        )
+        .unwrap();
+        let clean = temp_state_path("notice_clean");
+        std::fs::write(&clean, ONE_GAME).unwrap();
+
+        let mut wrong = Vec::new();
+        for (path, kept, empty) in [
+            (&corrupt, Some(corrupt.with_extension("json.bak.1")), true),
+            (&partial, Some(partial.with_extension("json.bak")), false),
+            (&clean, None, false),
+        ] {
+            let app = AppState::load(path.clone());
+            let first = serde_json::to_value(app.health()).unwrap();
+            let second = serde_json::to_value(app.health()).unwrap();
+            println!("{}: {first}", path.display());
+            let names_kept = match (first["notice"].as_str(), &kept) {
+                (Some(notice), Some(kept)) => {
+                    notice.contains(&kept.display().to_string())
+                        && notice.contains("empty library") == empty
+                }
+                (None, None) => true,
+                _ => false,
+            };
+            if !names_kept || !first["read_only"].is_null() || !second["notice"].is_null() {
+                wrong.push(format!("{}: {first} then {second}", path.display()));
+            }
+            cleanup(path);
+        }
+        assert!(wrong.is_empty(), "{wrong:#?}");
     }
 
     #[test]

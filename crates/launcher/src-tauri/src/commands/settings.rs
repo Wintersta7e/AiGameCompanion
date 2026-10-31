@@ -3,7 +3,7 @@ use tauri_plugin_autostart::ManagerExt;
 use tauri_plugin_opener::OpenerExt;
 
 use crate::models::LauncherSettings;
-use crate::state::AppState;
+use crate::state::{AppState, StateHealth};
 
 #[tauri::command]
 #[expect(
@@ -30,15 +30,16 @@ pub(crate) fn hotkey_status(status: State<'_, HotkeyStatus>) -> Vec<String> {
     status.0.lock().clone()
 }
 
-/// Why the library file is read-only this run, or `None` when it is writable.
-/// The main window asks before deciding whether to scan.
+/// Whether the library file is read-only this run, and the once-per-run notice
+/// about a file kept in a backup. The main window asks before deciding whether
+/// to scan.
 #[tauri::command]
 #[expect(
     clippy::needless_pass_by_value,
     reason = "a Tauri command receives its arguments by value"
 )]
-pub(crate) fn state_health(state: State<'_, AppState>) -> Option<String> {
-    state.load_error().map(str::to_owned)
+pub(crate) fn state_health(state: State<'_, AppState>) -> StateHealth {
+    state.health()
 }
 
 #[tauri::command]

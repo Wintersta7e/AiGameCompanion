@@ -114,6 +114,7 @@ overlay_capture::tests::fit_within_scales_large_frames run
 placement::tests::placement_table run
 placement::tests::reference_cases run
 placement::tests::user_moved_tolerance run
+state::tests::a_kept_copy_is_named_to_the_main_window_once run
 state::tests::a_leading_bom_loads_the_same_file run
 state::tests::autostart_follows_only_settings_that_were_read run
 state::tests::backup_never_replaces_an_existing_one run

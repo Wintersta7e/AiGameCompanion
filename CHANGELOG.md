@@ -24,6 +24,10 @@ All notable changes to this project are documented here. The format is based on
   Settings, game details and per-game preferences that a newer version stored
   were dropped the first time an older version saved the library; they are now
   kept as they were.
+- **The launcher says where it kept a library file it could not read.** A
+  damaged library file, or one with entries it could not read, left an empty or
+  shorter library with no word of the copy it had kept. The main window now
+  names that copy once per start.
 
 ## 2.1.0 - 2026-10-07
 
