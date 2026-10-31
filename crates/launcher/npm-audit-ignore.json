@@ -1,0 +1,7 @@
+[
+  {
+    "id": "GHSA-gcqx-w48m-w2h4",
+    "package": "deepmerge",
+    "reason": "no patched release; reached only through @sveltejs/vite-plugin-svelte at build time, merging the project's own config; remove when the plugin drops deepmerge"
+  }
+]

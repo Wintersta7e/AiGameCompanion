@@ -1878,11 +1878,12 @@ declare_table() {
 	row name='frontend unit tests + test identity' tags=frontend category=both target=any tools=node,npm dir=. \
 		count='^# tests [0-9]+$|^test identity: ' zero='ids ([0-9]+)' \
 		cmd='node --version && npm --prefix crates/launcher test | node crates/launcher/scripts/test-ids.ts tap scripts/test-baselines/frontend.list'
-	# shellcheck disable=SC2016 # the row's own bash expands these, not this file
+	row name='npm audit self-test' tags=frontend category=both target=any tools=node \
+		count='^npm audit self-test: ' zero='cases ([0-9]+)' cmd='node crates/launcher/scripts/npm-audit.selftest.ts'
+	# npm audit exits 1 on any finding, ignored or not; the checker owns the verdict.
 	row name='npm audit' tags=frontend category=both target=any tools=node,npm dir=crates/launcher \
-		count='^found [0-9]+ (vulnerability|vulnerabilities)|^[0-9]+ (info|low|moderate|high|critical) severity (vulnerability|vulnerabilities)|^[0-9]+ vulnerabilities \(|^npm audit: dependencies audited: ' \
-		zero='^npm audit: dependencies audited: ([0-9]+)$' \
-		cmd='npm audit --audit-level=low; status=$?; json=$(npm audit --audit-level=low --json 2>/dev/null) || true; total=$(printf %s "${json}" | node -p "JSON.parse(fs.readFileSync(0)).metadata.dependencies.total" 2>/dev/null) || true; echo "npm audit: dependencies audited: ${total:-none}"; case ${total} in "" | 0 | *[!0-9]*) status=1 ;; *) ;; esac; exit "${status}"'
+		count='^npm audit: advisories [0-9]+' zero='^npm audit: dependencies audited: ([0-9]+)$' \
+		cmd='{ npm audit --json || true; } | node scripts/npm-audit.ts npm-audit-ignore.json'
 	row name=cargo-deny tags=supply-chain category=both target=any tools=rust,cargo-deny \
 		count='gathered [0-9]+ crates|^advisories (ok|FAILED)' zero='gathered ([0-9]+) crates' \
 		cmd='cargo deny --locked -L info check --show-stats'
