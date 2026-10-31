@@ -4,6 +4,26 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## Unreleased
+
+### Added
+
+- **You see every screenshot before it is sent.** The image button takes a
+  screenshot and shows it in the panel with **Retake** and **Remove**; it is
+  kept only in memory and sent only when you press Enter or click. Translate
+  sends the screenshot shown in its tab.
+- **Ctrl+Shift+A and Ctrl+Shift+T take a screenshot of the linked game before
+  the panel takes focus,** so it shows the game, not the panel. Nothing is sent
+  until you press Enter or click.
+
+### Fixed
+
+- **A screenshot that cannot be taken is shown as an error** instead of the
+  question being sent without it.
+- **Large screenshots stay under provider size limits.**
+- **A Codex question whose screenshot cannot be written now stops with an
+  error** instead of being answered without the screenshot.
+
 ## 2.1.0 - 2026-10-07
 
 ### Added
