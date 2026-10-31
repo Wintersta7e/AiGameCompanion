@@ -6,6 +6,8 @@
     "scripts/freshness.ts!",
     "scripts/hygiene-scan.selftest.ts!",
     "scripts/hygiene-scan.ts!",
+    "scripts/npm-audit.selftest.ts!",
+    "scripts/npm-audit.ts!",
     "scripts/pin-guard.selftest.ts!",
     "scripts/pin-guard.ts!",
     "scripts/test-ids.selftest.ts!",
