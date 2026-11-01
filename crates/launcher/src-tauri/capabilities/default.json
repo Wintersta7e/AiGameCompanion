@@ -23,6 +23,7 @@
     "allow-open-url",
     "allow-get-settings",
     "allow-available-providers",
-    "allow-set-active-provider"
+    "allow-set-active-provider",
+    "allow-delete-saved-chats"
   ]
 }

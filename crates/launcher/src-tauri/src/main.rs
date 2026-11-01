@@ -282,6 +282,8 @@ fn main() {
             commands::ai::set_gemini_key,
             commands::ai::recheck_clis,
             commands::chat::load_chat,
+            commands::chat::clear_chat,
+            commands::chat::delete_saved_chats,
             overlay::hide_overlay,
             overlay::link_game,
             shots::take_shot,

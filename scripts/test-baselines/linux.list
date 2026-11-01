@@ -77,6 +77,8 @@ ai::tests::request_log_line_names_no_game run
 ai::tests::translate_gate_order run
 ai::tests::unlinked_target_contributes_nothing run
 chat_store::tests::chat_types_mirror_rust run
+chat_store::tests::clear_removes_backups run
+chat_store::tests::delete_all_empties_the_store run
 chat_store::tests::file_names_hide_the_key run
 chat_store::tests::generations run
 chat_store::tests::read_only_writes_nothing run

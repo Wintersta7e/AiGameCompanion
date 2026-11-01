@@ -118,8 +118,11 @@
   // has arrived -- nothing is sent before it has.
   let displayGeneration = 0;
   let chatReady = $state(false);
-  // Only the latest load_chat call applies its result.
+  // Only the latest load_chat or clear_chat call applies its result.
   let chatLoadSeq = 0;
+  // Why New chat did not clear the saved chat; shown above the messages until
+  // another chat is shown or a question is sent.
+  let chatNotice = $state('');
   // The answer whose Copy just succeeded, by index; -1 for none.
   let copiedIndex = $state(-1);
 
@@ -275,12 +278,29 @@
     messages = [];
     copiedIndex = -1;
     prompt = '';
+    // The saved chat on screen is deleted too; nothing is sent until the
+    // emptied chat arrives. A later show or link makes the result stale.
+    const shown = game?.linked && chatReady ? game : null;
+    const seq = shown ? (chatLoadSeq += 1) : 0;
+    const generation = displayGeneration;
+    if (shown) chatReady = false;
     if (inflight !== 0) {
       try {
         await invoke('cancel_sage', { requestId: inflight });
       } catch {
         /* best effort */
       }
+    }
+    if (!shown) return;
+    const stale = () => seq !== chatLoadSeq || game?.hwnd !== shown.hwnd || game.pid !== shown.pid;
+    try {
+      const view = await invoke<ChatView>('clear_chat', { displayGeneration: generation });
+      if (!stale()) await applyView(view);
+    } catch (err) {
+      if (stale()) return;
+      // Show the chat as it is, then why it was not cleared.
+      await reloadChat();
+      chatNotice = String(err);
     }
   }
 
@@ -499,6 +519,7 @@
       // A late answer or thumbnail of the chat replaced here must not land in this one.
       conversationId += 1;
       copiedIndex = -1;
+      chatNotice = '';
       // Another chat opens at its latest message.
       chatScrollTop = null;
     }
@@ -536,6 +557,7 @@
     const id = (nextRequestId += 1);
     const convo = conversationId;
     activeRequestId = id;
+    chatNotice = '';
     // Only a drawn screenshot goes; its preview becomes the chip's thumbnail.
     const shotId = sendableShot(chatShot);
     const full = shotId === null ? null : chatBitmap;
@@ -793,6 +815,9 @@
       listen('providers-changed', () => {
         void loadSavedProvider();
       }),
+      listen('saved-chats-changed', () => {
+        void reloadChat();
+      }),
       listen<HotkeyAction>('translate-request', (event) => {
         // Stage only: Enter on the focused button, or a click, runs it.
         tab = 'translate';
@@ -830,7 +855,7 @@
           class="icon-btn"
           aria-label="New chat"
           onclick={newChat}
-          title="New chat"
+          title="New chat — deletes this game's saved chat"
           type="button"
         >
           <svg
@@ -990,6 +1015,9 @@
       <!-- chat body -->
       <div class="body">
         <div bind:this={msglistEl} class="msglist" use:keepBottom>
+          {#if chatNotice}
+            <div style="color: var(--color-err);" class="chat-notice">{chatNotice}</div>
+          {/if}
           {#if available.length === 0}
             <div class="msg sage">
               <span class="avatar"></span>
@@ -1716,6 +1744,9 @@
   }
   .answer-error {
     white-space: pre-wrap;
+  }
+  .chat-notice {
+    font-size: 12px;
   }
   .answer-error.spaced {
     margin-top: 8px;

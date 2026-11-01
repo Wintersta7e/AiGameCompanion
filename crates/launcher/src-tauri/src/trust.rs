@@ -112,6 +112,7 @@ mod tests {
         "get_settings",
         "available_providers",
         "set_active_provider",
+        "delete_saved_chats",
     ];
     /// App commands the overlay's UI calls.
     const OVERLAY_APP: &[&str] = &[
@@ -129,6 +130,7 @@ mod tests {
         "shot_png",
         "drop_shot",
         "load_chat",
+        "clear_chat",
     ];
     /// Core permissions of the main window.
     const MAIN_CORE: &[&str] = &[

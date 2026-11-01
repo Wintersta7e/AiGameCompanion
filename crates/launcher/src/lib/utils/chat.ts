@@ -4,7 +4,8 @@ import type { Provider } from '../stores/companion.svelte';
 import type { SearchReport } from './search';
 
 /** Whether the chat on screen is being saved, and if not, why. */
-type SaveState = { state: 'on' } | { state: 'read_only'; reason: 'library' | 'chat_file' };
+type SaveState =
+  { state: 'on' | 'failed' } | { state: 'read_only'; reason: 'library' | 'chat_file' };
 
 export interface SavedExchange {
   savedAt: string;

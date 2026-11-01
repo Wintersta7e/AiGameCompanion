@@ -1,10 +1,22 @@
 //! The overlay's saved chat.
 
-use tauri::{AppHandle, Manager};
+use tauri::{AppHandle, Emitter, Manager};
 
-use crate::chat_store::{self, ChatStore, ChatView};
+use crate::chat_store::{self, ChatStore, ChatView, StoreMode};
 use crate::overlay::{self, GameInfo};
 use crate::state::AppState;
+use crate::util;
+
+/// What the overlay shows when clearing the chat did not run to its end.
+const CLEAR_FAILED: &str = "The chat could not be cleared.";
+
+/// This run's store mode. Without the launcher state nothing may be written.
+fn mode_of(app: &AppHandle) -> StoreMode {
+    app.try_state::<AppState>()
+        .map_or(StoreMode { read_only: true }, |state| {
+            chat_store::store_mode(&state)
+        })
+}
 
 /// The key of the chat the overlay may show for the window it displayed as
 /// `hwnd`/`pid`: only when the stored target is still that window and linked.
@@ -33,12 +45,7 @@ pub(crate) async fn load_chat(
         store.hide();
         return None;
     };
-    // Without the launcher state nothing may be written.
-    let mode = app
-        .try_state::<AppState>()
-        .map_or(chat_store::StoreMode { read_only: true }, |state| {
-            chat_store::store_mode(&state)
-        });
+    let mode = mode_of(&app);
     let worker = app.clone();
     let loading = key.clone();
     let loaded = tauri::async_runtime::spawn_blocking(move || {
@@ -53,6 +60,50 @@ pub(crate) async fn load_chat(
         return None;
     }
     Some(store.show(&key, mode))
+}
+
+/// New chat: empty the linked game's chat on screen and delete its saved
+/// copy. Refused when the game, or the chat on screen, changed since the
+/// page's `display_generation`.
+#[tauri::command]
+pub(crate) async fn clear_chat(
+    app: AppHandle,
+    display_generation: u64,
+) -> Result<ChatView, String> {
+    let key = overlay::linked_game(&app)
+        .as_ref()
+        .and_then(overlay::game_key);
+    let mode = mode_of(&app);
+    tauri::async_runtime::spawn_blocking(move || {
+        app.try_state::<ChatStore>().map_or_else(
+            || Err(CLEAR_FAILED.to_owned()),
+            |store| store.clear(key.as_deref(), display_generation, mode),
+        )
+    })
+    .await
+    .unwrap_or_else(|_| Err(CLEAR_FAILED.to_owned()))
+}
+
+/// Settings: delete every game's saved chat. The overlay is told, as the
+/// chat it shows may be gone, unless nothing could be deleted.
+#[tauri::command]
+pub(crate) async fn delete_saved_chats(app: AppHandle) -> Result<u32, String> {
+    let mode = mode_of(&app);
+    let worker = app.clone();
+    let deleted = tauri::async_runtime::spawn_blocking(move || {
+        worker
+            .try_state::<ChatStore>()
+            .map_or(Ok(0), |store| store.delete_all(mode))
+    })
+    .await
+    .unwrap_or_else(|_| Err(chat_store::DELETE_PARTIAL.to_owned()));
+    if !mode.read_only {
+        util::log_if_err(
+            "Telling the overlay the saved chats changed",
+            app.emit_to("overlay", "saved-chats-changed", ()),
+        );
+    }
+    deleted
 }
 
 #[cfg(test)]

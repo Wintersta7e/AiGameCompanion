@@ -28,6 +28,10 @@ use crate::state::{
 /// Exchanges older than this are removed when a chat is loaded.
 const EXPIRY_DAYS: i64 = 700;
 
+const CLEAR_REFUSED: &str = "The game changed -- the chat was not cleared.";
+const DELETE_REFUSED_READ_ONLY: &str = "Nothing can be deleted while the library cannot be read.";
+pub(crate) const DELETE_PARTIAL: &str = "Some saved chats could not be deleted.";
+
 /// One finished question and answer, as saved.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -70,7 +74,11 @@ pub(crate) fn store_mode(state: &AppState) -> StoreMode {
 #[serde(tag = "state", rename_all = "snake_case")]
 pub(crate) enum SaveState {
     On,
-    ReadOnly { reason: ReadOnlyReason },
+    ReadOnly {
+        reason: ReadOnlyReason,
+    },
+    /// The last change to this chat's files failed; the chat is kept in memory.
+    Failed,
 }
 
 /// Why a chat is not saved.
@@ -183,6 +191,67 @@ fn prune_expired(entries: &mut Vec<SavedExchange>, now: DateTime<Utc>) -> usize 
     before - entries.len()
 }
 
+/// The hash a store file belongs to, and whether it is the chat file itself:
+/// `<h>.json`, `<h>.json.tmp`, `<h>.json.bak` or `<h>.json.bak.<n>`, where
+/// `<h>` is 16 lower-case hex digits. `None` for any other name.
+fn store_file(name: &str) -> Option<(&str, bool)> {
+    let (hash, rest) = name.split_at_checked(16)?;
+    let hex = hash
+        .bytes()
+        .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b));
+    let rest = rest.strip_prefix(".json").filter(|_| hex)?;
+    let known = match rest {
+        "" | ".tmp" | ".bak" => true,
+        _ => rest
+            .strip_prefix(".bak.")
+            .is_some_and(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit())),
+    };
+    known.then_some((hash, rest.is_empty()))
+}
+
+/// What deleting store files did.
+#[derive(Debug, Default)]
+struct Deleted {
+    /// Chat files (`<h>.json`) deleted.
+    chat_files: u32,
+    /// Store files that could not be deleted, or a folder that could not be listed.
+    failed: usize,
+}
+
+/// Delete every store file in `dir` whose hash `matches`; leave any other
+/// file. A missing folder holds none.
+fn delete_store_files(dir: &Path, matches: impl Fn(&str) -> bool) -> Deleted {
+    let mut deleted = Deleted::default();
+    let listing = match std::fs::read_dir(dir) {
+        Ok(listing) => listing,
+        Err(e) if e.kind() == ErrorKind::NotFound => return deleted,
+        Err(e) => {
+            log_unlisted(e.kind());
+            deleted.failed += 1;
+            return deleted;
+        }
+    };
+    for item in listing {
+        let Ok(item) = item else {
+            deleted.failed += 1;
+            continue;
+        };
+        let name = item.file_name();
+        let Some((hash, chat_file)) = name.to_str().and_then(store_file) else {
+            continue;
+        };
+        if !matches(hash) {
+            continue;
+        }
+        match std::fs::remove_file(item.path()) {
+            Ok(()) => deleted.chat_files += u32::from(chat_file),
+            Err(e) if e.kind() == ErrorKind::NotFound => {}
+            Err(_) => deleted.failed += 1,
+        }
+    }
+    deleted
+}
+
 /// Whether a key's file may be written.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum KeyStatus {
@@ -197,6 +266,8 @@ enum KeyStatus {
 struct KeyEntry {
     entries: Vec<SavedExchange>,
     status: KeyStatus,
+    /// The last change to its files failed.
+    write_failed: bool,
 }
 
 impl KeyEntry {
@@ -204,6 +275,7 @@ impl KeyEntry {
         Self {
             entries: Vec::new(),
             status: KeyStatus::Loaded,
+            write_failed: false,
         }
     }
 
@@ -211,6 +283,7 @@ impl KeyEntry {
         Self {
             entries: Vec::new(),
             status: KeyStatus::Locked,
+            write_failed: false,
         }
     }
 }
@@ -277,14 +350,19 @@ impl ChatStore {
             memory.display_generation += 1;
             memory.displayed = Some((key.to_owned(), generation));
         }
-        let (exchanges, status) = memory.keys.get(key).map_or_else(
-            || (Vec::new(), KeyStatus::Locked),
-            |entry| (entry.entries.clone(), entry.status),
+        let (exchanges, save) = memory.keys.get(key).map_or_else(
+            || (Vec::new(), save_state(mode, KeyStatus::Locked, false)),
+            |entry| {
+                (
+                    entry.entries.clone(),
+                    save_state(mode, entry.status, entry.write_failed),
+                )
+            },
         );
         ChatView {
             display_generation: memory.display_generation,
             exchanges,
-            save: save_state(mode, status),
+            save,
         }
     }
 
@@ -292,9 +370,103 @@ impl ChatStore {
     pub(crate) fn hide(&self) {
         self.memory.lock().displayed = None;
     }
+
+    /// Start the chat on screen afresh: empty it and delete its file, `.tmp`
+    /// and backups. Refused unless `key` is the game on screen and
+    /// `display_generation` is the page's current one. A Locked chat's files,
+    /// and every file in read-only mode, stay as they are. Blocks on file I/O.
+    pub(crate) fn clear(
+        &self,
+        key: Option<&str>,
+        display_generation: u64,
+        mode: StoreMode,
+    ) -> Result<ChatView, String> {
+        // Held throughout, so no write of this chat lands between the check and the delete.
+        let io = self.io.lock();
+        let mut memory = self.memory.lock();
+        let Some(key) = key.filter(|key| {
+            memory.display_generation == display_generation
+                && memory
+                    .displayed
+                    .as_ref()
+                    .is_some_and(|(shown, _)| shown == key)
+        }) else {
+            return Err(CLEAR_REFUSED.to_owned());
+        };
+        let generation = memory.generations.entry(key.to_owned()).or_insert(0);
+        *generation += 1;
+        let generation = *generation;
+        memory.display_generation += 1;
+        memory.displayed = Some((key.to_owned(), generation));
+        let display_generation = memory.display_generation;
+        let status = memory.keys.get_mut(key).map_or(KeyStatus::Locked, |entry| {
+            entry.entries.clear();
+            entry.status
+        });
+        drop(memory);
+
+        let mut write_failed = false;
+        if !mode.read_only && status == KeyStatus::Loaded {
+            if let Some(dir) = self.dir.as_deref() {
+                let hash = file_hash(key);
+                let deleted = delete_store_files(dir, |h| h == hash.0);
+                if deleted.failed > 0 {
+                    log_clear_failed(&hash, deleted.failed);
+                }
+                write_failed = deleted.failed > 0;
+            }
+            if let Some(entry) = self.memory.lock().keys.get_mut(key) {
+                entry.write_failed = write_failed;
+            }
+        }
+        drop(io);
+        Ok(ChatView {
+            display_generation,
+            exchanges: Vec::new(),
+            save: save_state(mode, status, write_failed),
+        })
+    }
+
+    /// Delete every saved chat -- every game's file, `.tmp` and backups,
+    /// Locked ones too -- and empty the store; any other file in the folder
+    /// stays. Returns how many chat files were deleted. Refused in read-only
+    /// mode before any file is touched. Blocks on file I/O.
+    pub(crate) fn delete_all(&self, mode: StoreMode) -> Result<u32, String> {
+        if mode.read_only {
+            return Err(DELETE_REFUSED_READ_ONLY.to_owned());
+        }
+        let io = self.io.lock();
+        let deleted = self
+            .dir
+            .as_deref()
+            .map_or_else(Deleted::default, |dir| delete_store_files(dir, |_| true));
+        let mut memory = self.memory.lock();
+        let Memory {
+            keys, generations, ..
+        } = &mut *memory;
+        // A request answered for any chat emptied here must not save into it.
+        let emptied: Vec<String> = keys.drain().map(|(key, _)| key).collect();
+        for key in emptied {
+            generations.entry(key).or_insert(0);
+        }
+        *generations = std::mem::take(generations)
+            .into_iter()
+            .map(|(key, generation)| (key, generation + 1))
+            .collect();
+        memory.displayed = None;
+        memory.display_generation += 1;
+        drop(memory);
+        drop(io);
+        log_deleted_all(deleted.chat_files, deleted.failed);
+        if deleted.failed > 0 {
+            Err(DELETE_PARTIAL.to_owned())
+        } else {
+            Ok(deleted.chat_files)
+        }
+    }
 }
 
-const fn save_state(mode: StoreMode, status: KeyStatus) -> SaveState {
+const fn save_state(mode: StoreMode, status: KeyStatus, write_failed: bool) -> SaveState {
     if mode.read_only {
         SaveState::ReadOnly {
             reason: ReadOnlyReason::Library,
@@ -303,6 +475,8 @@ const fn save_state(mode: StoreMode, status: KeyStatus) -> SaveState {
         SaveState::ReadOnly {
             reason: ReadOnlyReason::ChatFile,
         }
+    } else if write_failed {
+        SaveState::Failed
     } else {
         SaveState::On
     }
@@ -365,7 +539,11 @@ fn read_key(dir: &Path, key: &str, mode: StoreMode, now: DateTime<Utc>) -> KeyEn
     let mut entries = parsed.entries;
     let expired = prune_expired(&mut entries, now);
     log_loaded(&hash, entries.len(), parsed.dropped, expired);
-    KeyEntry { entries, status }
+    KeyEntry {
+        entries,
+        status,
+        write_failed: false,
+    }
 }
 
 // Every store log line is built here, from the file hash, counts and error
@@ -417,6 +595,18 @@ fn log_loaded(hash: &ChatHash, entries: usize, dropped: usize, expired: usize) {
     tracing::info!(
         "Chat {hash}: loaded {entries} entries ({dropped} unreadable, {expired} expired)"
     );
+}
+
+fn log_unlisted(kind: ErrorKind) {
+    tracing::warn!("Saved chats: the chats folder could not be listed ({kind})");
+}
+
+fn log_clear_failed(hash: &ChatHash, failed: usize) {
+    tracing::warn!("Chat {hash}: cleared, but {failed} file(s) could not be deleted");
+}
+
+fn log_deleted_all(deleted: u32, failed: usize) {
+    tracing::info!("Saved chats: deleted {deleted} chat(s); {failed} file(s) could not be deleted");
 }
 
 #[cfg(test)]
@@ -799,6 +989,28 @@ mod tests {
             assert_eq!(questions(&shown), expected, "{key}");
         }
 
+        // Clear empties the chat on screen and deletes nothing.
+        let shown = store.show(readable, READ_ONLY);
+        let cleared = store.clear(Some(readable), shown.display_generation, READ_ONLY);
+        println!("clear: {cleared:?}");
+        let cleared = cleared.expect("a read-only clear was refused");
+        assert_eq!(
+            cleared.save,
+            SaveState::ReadOnly {
+                reason: ReadOnlyReason::Library
+            },
+            "clear"
+        );
+        assert!(cleared.exchanges.is_empty(), "clear kept the exchanges");
+        // Delete all is refused before it touches a file.
+        let deleted = store.delete_all(READ_ONLY);
+        println!("delete all: {deleted:?}");
+        assert_eq!(
+            deleted,
+            Err(DELETE_REFUSED_READ_ONLY.to_owned()),
+            "delete all"
+        );
+
         let after = listing(&dir);
         println!("after: {after:?}");
         assert_eq!(after, before, "a read-only run changed the chats folder");
@@ -824,6 +1036,242 @@ mod tests {
             back > other,
             "a chat shown after a hide must be a new generation"
         );
+
+        // Clear puts a new chat on screen: both numbers move on.
+        let key_generation = |key: &str| store.memory.lock().generations.get(key).copied();
+        let before = key_generation("exe:a").unwrap_or(0);
+        let cleared = store
+            .clear(Some("exe:a"), back, WRITABLE)
+            .expect("clearing the chat on screen was refused")
+            .display_generation;
+        let after = key_generation("exe:a");
+        println!("clear: display {back} -> {cleared}, key {before} -> {after:?}");
+        assert!(cleared > back, "a cleared chat must be a new generation");
+        assert_eq!(after, Some(before + 1), "the key's clear generation");
+        assert_eq!(
+            show("exe:a"),
+            cleared,
+            "the cleared chat is the one on screen"
+        );
+    }
+
+    /// `key`'s chat file with one exchange, and a `.tmp`, `.bak` and `.bak.3`.
+    fn write_with_copies(dir: &Path, key: &str) -> Vec<PathBuf> {
+        let path = path_of(dir, key);
+        let text = file_text(key, &[good()]);
+        let paths = vec![
+            path.clone(),
+            tmp_of(&path),
+            bak_of(&path),
+            path.with_extension("json.bak.3"),
+        ];
+        for path in &paths {
+            std::fs::write(path, &text).unwrap();
+        }
+        paths
+    }
+
+    /// The listing of `key`'s files only.
+    fn listing_of(dir: &Path, key: &str) -> Vec<(String, u64, std::time::SystemTime)> {
+        let hash = file_hash(key).to_string();
+        listing(dir)
+            .into_iter()
+            .filter(|(name, ..)| name.starts_with(&hash))
+            .collect()
+    }
+
+    /// Load `key` and put it on screen; returns its display generation.
+    fn on_screen(store: &ChatStore, key: &str) -> u64 {
+        store.load(key, WRITABLE);
+        store.show(key, WRITABLE).display_generation
+    }
+
+    #[test]
+    fn clear_removes_backups() {
+        let dir = temp_dir("clear");
+        let (a, b) = ("exe:a", "exe:b");
+        let a_files = write_with_copies(&dir, a);
+        write_with_copies(&dir, b);
+        let b_before = listing_of(&dir, b);
+        let store = ChatStore::new(Some(dir.clone()));
+        let shown = on_screen(&store, a);
+
+        // Refused: nothing is cleared, in memory or on disk.
+        let before = listing(&dir);
+        for (name, key, generation) in [
+            ("a stale display generation", Some(a), shown - 1),
+            ("no key", None, shown),
+            ("a key not on screen", Some(b), shown),
+        ] {
+            let result = store.clear(key, generation, WRITABLE);
+            println!("{name}: {result:?}");
+            assert_eq!(result, Err(CLEAR_REFUSED.to_owned()), "{name}");
+        }
+        assert_eq!(listing(&dir), before, "a refused clear changed the folder");
+        assert_eq!(
+            questions(&store.show(a, WRITABLE)),
+            ["Where next?"],
+            "a refused clear emptied the chat"
+        );
+
+        let cleared = store.clear(Some(a), shown, WRITABLE).unwrap();
+        println!("cleared: {:?}, {:?}", cleared.save, questions(&cleared));
+        println!("after: {:?}", listing(&dir));
+        assert_eq!(
+            cleared.save,
+            SaveState::On,
+            "a clear that deleted every file"
+        );
+        assert!(
+            cleared.exchanges.is_empty(),
+            "the cleared chat has exchanges"
+        );
+        for path in &a_files {
+            assert!(!path.exists(), "{} is still there", path.display());
+        }
+        assert_eq!(listing_of(&dir, b), b_before, "another key's files changed");
+        assert!(
+            store.show(a, WRITABLE).exchanges.is_empty(),
+            "memory still holds the cleared chat"
+        );
+
+        // A file that cannot be deleted: the chat says so until a clear succeeds.
+        let path = path_of(&dir, a);
+        let stuck = path.with_extension("json.bak.5");
+        std::fs::write(&path, file_text(a, &[good()])).unwrap();
+        std::fs::create_dir(&stuck).unwrap();
+        let shown = store.show(a, WRITABLE).display_generation;
+        let cleared = store.clear(Some(a), shown, WRITABLE).unwrap();
+        println!("a delete failed: {:?}", cleared.save);
+        assert_eq!(cleared.save, SaveState::Failed, "a delete failed");
+        assert!(!path.exists(), "the deletable file is still there");
+        assert_eq!(
+            store.show(a, WRITABLE).save,
+            SaveState::Failed,
+            "shown again"
+        );
+        std::fs::remove_dir(&stuck).unwrap();
+        let shown = store.show(a, WRITABLE).display_generation;
+        let cleared = store.clear(Some(a), shown, WRITABLE).unwrap();
+        println!("cleared again: {:?}", cleared.save);
+        assert_eq!(cleared.save, SaveState::On, "a clear after the failure");
+
+        // A Locked chat is emptied on screen; every file stays.
+        let locked = "exe:locked";
+        let path = path_of(&dir, locked);
+        let mut unknown = entry(&exchange("Who is this?", Utc::now()));
+        unknown["provider"] = serde_json::json!("elsewhere");
+        std::fs::write(&path, file_text(locked, &[good(), unknown])).unwrap();
+        std::fs::write(tmp_of(&path), "older").unwrap();
+        std::fs::write(bak_of(&path), "older").unwrap();
+        for n in 1..=99 {
+            std::fs::write(path.with_extension(format!("json.bak.{n}")), "older").unwrap();
+        }
+        let shown = on_screen(&store, locked);
+        assert_eq!(
+            questions(&store.show(locked, WRITABLE)),
+            ["Where next?"],
+            "the Locked chat's readable entry"
+        );
+        let before = listing(&dir);
+        let cleared = store.clear(Some(locked), shown, WRITABLE).unwrap();
+        println!(
+            "Locked: {:?}, {} exchanges",
+            cleared.save,
+            cleared.exchanges.len()
+        );
+        assert_eq!(cleared.save, LOCKED, "a Locked chat");
+        assert!(
+            cleared.exchanges.is_empty(),
+            "the Locked chat has exchanges"
+        );
+        assert_eq!(listing(&dir), before, "a Locked chat's files changed");
+        drop(std::fs::remove_dir_all(&dir));
+    }
+
+    #[test]
+    fn delete_all_empties_the_store() {
+        let dir = temp_dir("delete_all");
+        let store = ChatStore::new(Some(dir.clone()));
+        // A key cleared once before: its clear generation is 1.
+        let cleared = "exe:cleared";
+        let shown = on_screen(&store, cleared);
+        store.clear(Some(cleared), shown, WRITABLE).unwrap();
+
+        let keys = ["exe:a", cleared, "exe:locked"];
+        write_with_copies(&dir, "exe:a");
+        write_with_copies(&dir, cleared);
+        // A Locked key: its file holds another key's chat.
+        let path = path_of(&dir, "exe:locked");
+        std::fs::write(&path, file_text("exe:someone-else", &[good()])).unwrap();
+        std::fs::write(bak_of(&path), "older").unwrap();
+        let others = [
+            "notes.txt",
+            "0123456789abcdef.json.old",
+            "0123456789ABCDEF.json",
+            "0123456789abcdef.json.bak.x",
+        ];
+        for name in others {
+            std::fs::write(dir.join(name), "keep").unwrap();
+        }
+        on_screen(&store, "exe:locked");
+        on_screen(&store, "exe:a");
+        let before: Vec<u64> = {
+            let memory = store.memory.lock();
+            keys.iter()
+                .map(|key| memory.generations.get(*key).copied().unwrap_or(0))
+                .collect()
+        };
+        let display_before = store.memory.lock().display_generation;
+        println!("before: {:?}", listing(&dir));
+
+        let deleted = store.delete_all(WRITABLE);
+        let mut left: Vec<String> = listing(&dir).into_iter().map(|(name, ..)| name).collect();
+        println!("deleted {deleted:?}, left {left:?}");
+        assert_eq!(deleted, Ok(3), "the chat files deleted");
+        left.sort();
+        let mut expected = others.map(str::to_owned).to_vec();
+        expected.sort();
+        assert_eq!(left, expected, "what stays in the folder");
+        let memory = store.memory.lock();
+        let after: Vec<Option<u64>> = keys
+            .iter()
+            .map(|key| memory.generations.get(*key).copied())
+            .collect();
+        println!(
+            "generations {before:?} -> {after:?}, display {display_before} -> {}",
+            memory.display_generation
+        );
+        assert!(memory.keys.is_empty(), "memory still holds chats");
+        assert!(memory.displayed.is_none(), "a chat is still on screen");
+        assert!(
+            memory.display_generation > display_before,
+            "the display generation"
+        );
+        let expected: Vec<Option<u64>> = before.iter().map(|g| Some(g + 1)).collect();
+        assert_eq!(after, expected, "every clear generation");
+        drop(memory);
+
+        // A store-named file that cannot be deleted.
+        let stuck = dir.join("fedcba9876543210.json.bak.2");
+        std::fs::create_dir(&stuck).unwrap();
+        write_with_copies(&dir, "exe:a");
+        let deleted = store.delete_all(WRITABLE);
+        println!("with a stuck file: {deleted:?}");
+        assert_eq!(deleted, Err(DELETE_PARTIAL.to_owned()), "a file remained");
+        assert!(
+            listing_of(&dir, "exe:a").is_empty(),
+            "the deletable files stay"
+        );
+
+        // No folder: nothing to delete.
+        for store in [
+            ChatStore::new(Some(dir.join("absent"))),
+            ChatStore::new(None),
+        ] {
+            assert_eq!(store.delete_all(WRITABLE), Ok(0), "no folder");
+        }
+        drop(std::fs::remove_dir_all(&dir));
     }
 
     /// The `state` and `reason` literals of every `SaveState` equal those of
@@ -837,12 +1285,14 @@ mod tests {
             SaveState::ReadOnly {
                 reason: ReadOnlyReason::ChatFile,
             },
+            SaveState::Failed,
         ];
         let (mut rust_states, mut rust_reasons) = (Vec::new(), Vec::new());
         for state in states {
             // A new variant fails to compile here; add it to the list too.
             match state {
                 SaveState::On
+                | SaveState::Failed
                 | SaveState::ReadOnly {
                     reason: ReadOnlyReason::Library | ReadOnlyReason::ChatFile,
                 } => {}
