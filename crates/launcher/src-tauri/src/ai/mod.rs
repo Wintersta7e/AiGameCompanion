@@ -3,8 +3,9 @@
 //! Providers are dispatched directly from the Tauri backend (no localhost HTTP
 //! proxy): Gemini over its streaming HTTP API, Claude / Codex by spawning their
 //! CLIs. Output is coalesced and streamed to the overlay window over a Tauri
-//! `Channel`, tagged with request + conversation IDs. Only one request runs at a
-//! time -- a new request cancels and replaces the previous one.
+//! `Channel`, tagged with request + conversation IDs. Chat requests run in the
+//! chat lane, where a new one cancels and replaces the previous one.
+//! Translation has a separate lane, so neither cancels the other.
 
 mod cli;
 mod gemini;
@@ -162,11 +163,48 @@ pub(crate) struct RequestParams {
     pub hints: bool,
 }
 
-/// The single in-flight request (if any). Aborting `handle` cancels the request
-/// and -- because CLI children are spawned with `kill_on_drop` -- kills any child.
+/// A lane's in-flight request. Aborting `handle` cancels the request and --
+/// because CLI children are spawned with `kill_on_drop` -- kills any child.
 struct Active {
     request_id: u64,
     handle: tauri::async_runtime::JoinHandle<()>,
+}
+
+/// A lane refused a request because it already runs one.
+#[derive(Debug)]
+struct LaneBusy;
+
+/// Install a request in `slot`, under one hold of its lock. With
+/// `refuse_if_busy`, a busy lane refuses without calling `spawn`; otherwise
+/// the new request replaces and cancels the running one. `spawn` only
+/// schedules a future, so it may run under the lock.
+fn install_in(
+    slot: &Mutex<Option<Active>>,
+    request_id: u64,
+    refuse_if_busy: bool,
+    spawn: impl FnOnce() -> tauri::async_runtime::JoinHandle<()>,
+) -> Result<(), LaneBusy> {
+    let previous = {
+        let mut guard = slot.lock();
+        if refuse_if_busy && guard.is_some() {
+            return Err(LaneBusy);
+        }
+        guard.replace(Active {
+            request_id,
+            handle: spawn(),
+        })
+    };
+    if let Some(previous) = previous {
+        previous.handle.abort();
+    }
+    Ok(())
+}
+
+/// Empty `slot` once its request finishes, unless a newer request already
+/// replaced it.
+fn release_in(slot: &Mutex<Option<Active>>, request_id: u64) {
+    slot.lock()
+        .take_if(|active| active.request_id == request_id);
 }
 
 /// What Gemini needs from the key store and the legacy config file: whether a
@@ -186,12 +224,13 @@ pub(crate) fn gemini_presence() -> GeminiPresence {
     }
 }
 
-/// Backend AI state: cached CLI and Gemini availability plus the active-request
-/// slot.
+/// Backend AI state: cached CLI and Gemini availability plus the two request
+/// lanes, chat and translation.
 pub(crate) struct AiState {
     cli: Mutex<CliConfig>,
     gemini: Mutex<GeminiPresence>,
-    active: Mutex<Option<Active>>,
+    chat: Mutex<Option<Active>>,
+    translate: Mutex<Option<Active>>,
 }
 
 impl Default for AiState {
@@ -199,7 +238,8 @@ impl Default for AiState {
         Self {
             cli: Mutex::new(CliConfig::default()),
             gemini: Mutex::new(GeminiPresence::default()),
-            active: Mutex::new(None),
+            chat: Mutex::new(None),
+            translate: Mutex::new(None),
         }
     }
 }
@@ -235,49 +275,49 @@ impl AiState {
         }
     }
 
-    /// Cancel the previous request (if any) and install the new one.
-    fn replace_active(&self, request_id: u64, handle: tauri::async_runtime::JoinHandle<()>) {
-        let mut guard = self.active.lock();
-        if let Some(previous) = guard.take() {
-            previous.handle.abort();
-        }
-        *guard = Some(Active { request_id, handle });
-    }
-
-    /// Cancel `request_id` if it is the active request (Stop button).
+    /// Cancel `request_id` in whichever lane runs it (Stop button).
     pub(crate) fn cancel(&self, request_id: u64) {
-        let mut guard = self.active.lock();
-        if let Some(active) = guard.take_if(|active| active.request_id == request_id) {
-            active.handle.abort();
+        for slot in [&self.chat, &self.translate] {
+            let mut guard = slot.lock();
+            if let Some(active) = guard.take_if(|active| active.request_id == request_id) {
+                active.handle.abort();
+                return;
+            }
         }
     }
 
-    /// Clear the active slot once a request finishes, unless it was already
-    /// replaced by a newer request.
-    fn clear_if(&self, request_id: u64) {
-        let mut guard = self.active.lock();
-        guard.take_if(|active| active.request_id == request_id);
-    }
-
-    /// End the running request, then delete every Codex screenshot file, before
-    /// the launcher exits. `std::process::exit` runs no destructors: without
-    /// this, quitting while an answer streamed left the CLI answering on the
-    /// user's account and its screenshot on disk until the next start.
+    /// End the running requests of both lanes, then delete every Codex
+    /// screenshot file, before the launcher exits. `std::process::exit` runs no
+    /// destructors: without this, quitting while an answer streamed left the
+    /// CLI answering on the user's account and its screenshot on disk until the
+    /// next start.
     pub(crate) fn stop_for_exit(&self, shots_dir: Option<&std::path::Path>) {
-        let active = self.active.lock().take();
-        if let Some(active) = active {
-            active.handle.abort();
-            // The request's future is dropped on a runtime thread; waiting for
+        let running: Vec<Active> = [&self.chat, &self.translate]
+            .into_iter()
+            .filter_map(|slot| slot.lock().take())
+            .collect();
+        if !running.is_empty() {
+            let count = running.len();
+            for active in &running {
+                active.handle.abort();
+            }
+            // Each request's future is dropped on a runtime thread; waiting for
             // that is what kills the CLI and deletes its screenshot.
-            let handle = active.handle;
             let ended = tauri::async_runtime::block_on(async move {
-                tokio::time::timeout(EXIT_WAIT, handle).await
+                let deadline = tokio::time::Instant::now() + EXIT_WAIT;
+                let mut ended = true;
+                for active in running {
+                    ended &= tokio::time::timeout_at(deadline, active.handle)
+                        .await
+                        .is_ok();
+                }
+                ended
             });
-            if ended.is_ok() {
-                tracing::info!("Stopped the running request before exit");
+            if ended {
+                tracing::info!("Stopped {count} running request(s) before exit");
             } else {
                 tracing::warn!(
-                    "The running request did not stop within {} s of exit",
+                    "A running request did not stop within {} s of exit",
                     EXIT_WAIT.as_secs()
                 );
             }
@@ -291,8 +331,8 @@ impl AiState {
     }
 }
 
-/// Spawn a chat request, cancelling and replacing any request already running.
-/// The screenshot it names is claimed first: a refused claim returns its
+/// Spawn a chat request in the chat lane, cancelling and replacing the chat
+/// request already running there. The screenshot it names is claimed first: a refused claim returns its
 /// error, starts nothing and leaves a running answer alone. `Ok` means the
 /// screenshot, if any, went with the request, whatever the answer does next.
 pub(crate) fn spawn_request(
@@ -313,8 +353,14 @@ pub(crate) fn spawn_request(
         tracing::info!("Request {request_id}: refused: screenshot unavailable");
         refusal.message(params.provider.label())
     })?;
-    let handle = tauri::async_runtime::spawn(run(app.clone(), params, target, screenshot, channel));
-    app.state::<AiState>().replace_active(request_id, handle);
+    let installed = install_in(&app.state::<AiState>().chat, request_id, false, || {
+        tauri::async_runtime::spawn(run(app.clone(), params, target, screenshot, channel))
+    });
+    // A replacing install never refuses.
+    debug_assert!(
+        installed.is_ok(),
+        "the chat lane refused a replacing request"
+    );
     Ok(())
 }
 
@@ -422,7 +468,7 @@ async fn run(
     };
     crate::util::log_if_err("send the final sage event", channel.send(event));
 
-    app.state::<AiState>().clear_if(request_id);
+    release_in(&app.state::<AiState>().chat, request_id);
 }
 
 /// Forward a request's text to the overlay, coalescing bursts: everything
@@ -1181,5 +1227,169 @@ mod tests {
         for (needle, hits) in needles.iter().zip(&scan.hits) {
             assert_eq!(hits.len(), 0, "{needle} writes an error into an answer");
         }
+    }
+
+    // ---------------- request lanes ----------------
+
+    /// Sets its flag when dropped: the request holding it was cancelled.
+    struct SetOnDrop(std::sync::Arc<std::sync::atomic::AtomicBool>);
+
+    impl Drop for SetOnDrop {
+        fn drop(&mut self) {
+            self.0.store(true, std::sync::atomic::Ordering::SeqCst);
+        }
+    }
+
+    /// A request that never ends on its own, and the flag its drop sets.
+    struct Pending {
+        dropped: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    }
+
+    impl Pending {
+        fn new() -> Self {
+            Self {
+                dropped: std::sync::Arc::default(),
+            }
+        }
+
+        fn spawn(&self) -> tauri::async_runtime::JoinHandle<()> {
+            let guard = SetOnDrop(std::sync::Arc::clone(&self.dropped));
+            tauri::async_runtime::spawn(async move {
+                let _guard = guard;
+                std::future::pending::<()>().await;
+            })
+        }
+
+        fn is_dropped(&self) -> bool {
+            self.dropped.load(std::sync::atomic::Ordering::SeqCst)
+        }
+
+        /// Whether the request is dropped within a second.
+        async fn dropped_soon(&self) -> bool {
+            for _ in 0..100 {
+                if self.is_dropped() {
+                    return true;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+            self.is_dropped()
+        }
+
+        /// Whether the request still runs after a short settle.
+        async fn still_runs(&self) -> bool {
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            !self.is_dropped()
+        }
+    }
+
+    #[tokio::test]
+    async fn lanes_are_independent() {
+        let ai = AiState::default();
+        let (chat1, chat2, chat3, chat4) = (
+            Pending::new(),
+            Pending::new(),
+            Pending::new(),
+            Pending::new(),
+        );
+        let (t1, t2) = (Pending::new(), Pending::new());
+
+        install_in(&ai.chat, 1, false, || chat1.spawn()).unwrap();
+        install_in(&ai.chat, 2, false, || chat2.spawn()).unwrap();
+        println!("chat 2 installed over chat 1");
+        assert!(chat1.dropped_soon().await, "chat 2 did not replace chat 1");
+        assert!(chat2.still_runs().await, "chat 2 was dropped");
+
+        install_in(&ai.translate, 11, false, || t1.spawn()).unwrap();
+        println!("translation 11 installed");
+        assert!(chat2.still_runs().await, "a translation dropped chat 2");
+
+        install_in(&ai.chat, 3, false, || chat3.spawn()).unwrap();
+        println!("chat 3 installed");
+        assert!(chat2.dropped_soon().await, "chat 3 did not replace chat 2");
+        assert!(t1.still_runs().await, "chat 3 dropped translation 11");
+
+        install_in(&ai.translate, 12, false, || t2.spawn()).unwrap();
+        println!("translation 12 installed");
+        assert!(t1.dropped_soon().await, "translation 12 did not replace 11");
+        assert!(chat3.still_runs().await, "a translation dropped chat 3");
+
+        ai.cancel(3);
+        println!("cancelled chat 3");
+        assert!(chat3.dropped_soon().await, "cancel did not drop chat 3");
+        assert!(
+            t2.still_runs().await,
+            "cancelling a chat dropped translation 12"
+        );
+
+        install_in(&ai.chat, 4, false, || chat4.spawn()).unwrap();
+        ai.cancel(12);
+        println!("chat 4 installed, cancelled translation 12");
+        assert!(
+            t2.dropped_soon().await,
+            "cancel did not drop translation 12"
+        );
+        assert!(
+            chat4.still_runs().await,
+            "cancelling a translation dropped chat 4"
+        );
+
+        let (chat5, chat6) = (Pending::new(), Pending::new());
+        install_in(&ai.chat, 5, false, || chat5.spawn()).unwrap();
+        assert!(chat4.dropped_soon().await, "chat 5 did not replace chat 4");
+        release_in(&ai.chat, 5);
+        install_in(&ai.chat, 6, false, || chat6.spawn()).unwrap();
+        println!("chat 5 released, chat 6 installed");
+        assert!(chat5.still_runs().await, "a released request was dropped");
+
+        let mut spawned = 0;
+        let refused = install_in(&ai.chat, 7, true, || {
+            spawned += 1;
+            Pending::new().spawn()
+        });
+        println!("a refusing install in a busy lane: {refused:?}, spawned {spawned}");
+        assert!(
+            matches!(refused, Err(LaneBusy)),
+            "a busy lane was not refused"
+        );
+        assert_eq!(spawned, 0, "a refused install spawned its request");
+        assert!(chat6.still_runs().await, "a refused install dropped chat 6");
+
+        let t3 = Pending::new();
+        let accepted = install_in(&ai.translate, 13, true, || {
+            spawned += 1;
+            t3.spawn()
+        });
+        println!("a refusing install in an idle lane: {accepted:?}, spawned {spawned}");
+        assert!(accepted.is_ok(), "an idle lane refused a request");
+        assert_eq!(spawned, 1, "an accepted install did not spawn its request");
+
+        ai.cancel(6);
+        ai.cancel(13);
+        assert!(chat6.dropped_soon().await, "cancel did not drop chat 6");
+        assert!(
+            t3.dropped_soon().await,
+            "cancel did not drop translation 13"
+        );
+    }
+
+    #[test]
+    fn quitting_stops_both_lanes() {
+        let ai = AiState::default();
+        let (chat, translation) = (Pending::new(), Pending::new());
+        install_in(&ai.chat, 1, false, || chat.spawn()).unwrap();
+        install_in(&ai.translate, 2, false, || translation.spawn()).unwrap();
+
+        ai.stop_for_exit(None);
+
+        println!(
+            "after quit: chat dropped {}, translation dropped {}",
+            chat.is_dropped(),
+            translation.is_dropped()
+        );
+        assert!(chat.is_dropped(), "quitting left the chat request running");
+        assert!(
+            translation.is_dropped(),
+            "quitting left the translation running"
+        );
     }
 }

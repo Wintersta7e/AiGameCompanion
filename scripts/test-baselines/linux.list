@@ -68,8 +68,10 @@ ai::tests::identity_block_is_exact_and_fenced run
 ai::tests::identity_goes_before_the_latest_question run
 ai::tests::identity_log_values run
 ai::tests::identity_never_in_system_prompt_or_argv run
+ai::tests::lanes_are_independent run
 ai::tests::prompt_kind_selects_by_flags run
 ai::tests::provider_labels_match_the_overlay run
+ai::tests::quitting_stops_both_lanes run
 ai::tests::request_log_line_names_no_game run
 ai::tests::translate_gate_order run
 ai::tests::unlinked_target_contributes_nothing run
