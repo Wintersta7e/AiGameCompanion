@@ -10,6 +10,7 @@
 mod cli;
 mod gemini;
 mod prompt;
+pub(crate) mod search;
 
 use base64::Engine as _;
 use parking_lot::Mutex;

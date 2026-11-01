@@ -398,7 +398,7 @@ pub(crate) fn alias_mismatches(source: &str, alias: &str, serde_names: &[&str]) 
 /// code does `#[cfg(test)]`, then optional further attributes and visibility,
 /// then `mod <name> {` start a cut, which ends at the matching `}`.
 #[cfg(test)]
-fn strip_test_modules(src: &str) -> String {
+pub(crate) fn strip_test_modules(src: &str) -> String {
     let chars: Vec<char> = src.chars().collect();
     let mut kept = String::with_capacity(src.len());
     let (mut at, mut depth) = (0, 0_usize);

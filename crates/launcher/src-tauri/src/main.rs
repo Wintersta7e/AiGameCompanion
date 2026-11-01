@@ -3,6 +3,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod ai;
+mod chat_store;
 mod commands;
 mod discovery;
 mod models;
@@ -233,6 +234,9 @@ fn main() {
                 .build(app)?;
 
             app.manage(app_state);
+            app.manage(chat_store::ChatStore::new(chat_store::chats_dir(
+                app.handle(),
+            )));
             Ok(())
         })
         .on_window_event(|window, event| {
@@ -277,6 +281,7 @@ fn main() {
             commands::ai::translate_screen,
             commands::ai::set_gemini_key,
             commands::ai::recheck_clis,
+            commands::chat::load_chat,
             overlay::hide_overlay,
             overlay::link_game,
             shots::take_shot,

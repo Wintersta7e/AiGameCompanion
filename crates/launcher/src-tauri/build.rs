@@ -27,6 +27,7 @@ const APP_COMMANDS: &[&str] = &[
     "take_shot",
     "shot_png",
     "drop_shot",
+    "load_chat",
 ];
 
 fn main() -> Result<(), String> {

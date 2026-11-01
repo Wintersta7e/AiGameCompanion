@@ -19,6 +19,7 @@
     "allow-set-hints-first",
     "allow-take-shot",
     "allow-shot-png",
-    "allow-drop-shot"
+    "allow-drop-shot",
+    "allow-load-chat"
   ]
 }

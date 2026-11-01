@@ -128,6 +128,7 @@ mod tests {
         "take_shot",
         "shot_png",
         "drop_shot",
+        "load_chat",
     ];
     /// Core permissions of the main window.
     const MAIN_CORE: &[&str] = &[

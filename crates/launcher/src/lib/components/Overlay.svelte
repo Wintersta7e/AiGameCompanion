@@ -4,6 +4,7 @@
   import { invoke, Channel } from '@tauri-apps/api/core';
   import { listen } from '@tauri-apps/api/event';
   import { hashHue } from '../utils/accent';
+  import { chatViewAction, type ChatView, type SavedExchange } from '../utils/chat';
   import { ANOTHER_HINT_TURN, FULL_ANSWER_TURN, showHintChips } from '../utils/hints';
   import { sendsQuestion } from '../utils/keys';
   import { unsavedPick } from '../utils/pick';
@@ -113,6 +114,12 @@
   let prompt = $state('');
   let asking = $state(false);
   let messages = $state<Msg[]>([]);
+  // The saved chat on screen: Rust's number for it (0 = none), and whether it
+  // has arrived -- nothing is sent before it has.
+  let displayGeneration = 0;
+  let chatReady = $state(false);
+  // Only the latest load_chat call applies its result.
+  let chatLoadSeq = 0;
   // The answer whose Copy just succeeded, by index; -1 for none.
   let copiedIndex = $state(-1);
 
@@ -142,7 +149,7 @@
   );
   // Nothing about a window is sent until it is linked; the backend enforces the
   // same gate, this only keeps the controls honest.
-  const canSend = $derived(Boolean(game?.linked) && availability[provider]);
+  const canSend = $derived(Boolean(game?.linked) && availability[provider] && chatReady);
   const canTakeShot = $derived(Boolean(game?.linked) && !sendBlocked(chatShot));
   // Gemini is the only provider that translates.
   const canTranslate = $derived(
@@ -467,6 +474,61 @@
     return history;
   }
 
+  // A saved exchange as the chat shows it: the question, with the chip of a
+  // sent screenshot (never the image), and its finished answer.
+  const savedMessages = (exchange: SavedExchange): Msg[] => [
+    { role: 'user', content: exchange.question, screenshot: exchange.screenshot },
+    {
+      role: 'assistant',
+      content: exchange.answer,
+      complete: true,
+      model: exchange.model || modelLabel(exchange.provider),
+    },
+  ];
+
+  // Show the chat `load_chat` returned for the window on screen. The chat
+  // already shown only updates its status: its messages, and where the list
+  // is scrolled, stay as they are.
+  async function applyView(view: ChatView | null) {
+    const action = chatViewAction(displayGeneration, view);
+    if (action !== 'status') {
+      for (const m of messages) m.thumb?.close();
+      messages = view && action === 'replace' ? view.exchanges.flatMap(savedMessages) : [];
+      asking = false;
+      activeRequestId = 0;
+      // A late answer or thumbnail of the chat replaced here must not land in this one.
+      conversationId += 1;
+      copiedIndex = -1;
+      // Another chat opens at its latest message.
+      chatScrollTop = null;
+    }
+    displayGeneration = view?.displayGeneration ?? 0;
+    chatReady = view !== null;
+    await tick();
+    if (action !== 'status' && msglistEl) msglistEl.scrollTop = msglistEl.scrollHeight;
+    // The input was disabled until the chat arrived, so a focus at the show
+    // did not take; a staged quick ask must still send on Enter.
+    if (tab === 'chat' && document.activeElement === document.body) inputEl?.focus();
+  }
+
+  // Load the chat of the window on screen, on every show and after a link. A
+  // window that is not linked shows no chat.
+  async function reloadChat() {
+    const seq = (chatLoadSeq += 1);
+    const shown = game;
+    if (!shown?.linked) {
+      await applyView(null);
+      return;
+    }
+    const view = await invoke<ChatView | null>('load_chat', {
+      hwnd: shown.hwnd,
+      pid: shown.pid,
+    }).catch(() => null);
+    // A later show or link, or another window, makes this result stale.
+    if (seq !== chatLoadSeq || game?.hwnd !== shown.hwnd || game.pid !== shown.pid) return;
+    await applyView(view);
+  }
+
   async function send(text?: string) {
     const question = (text ?? prompt).trim();
     if (!question || asking || !canSend || sendBlocked(chatShot)) return;
@@ -599,6 +661,7 @@
     // flight: the result applies only to the window it was asked for.
     if (!linked || game?.hwnd !== shown.hwnd || game.pid !== shown.pid) return;
     game = linked;
+    await reloadChat();
     await tick();
     inputEl?.focus();
   }
@@ -714,6 +777,7 @@
         setBitmap('translate', null);
         translateShot = NO_SHOT;
         game = event.payload;
+        void reloadChat();
         // The overlay just became visible: CLI detection has had time to finish.
         if (savedProviderLoaded) void refreshProviders();
         // The window is shown and hidden, never remounted, so the input has to

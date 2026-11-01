@@ -59,6 +59,7 @@ ai::prompt::tests::budget_and_ascii run
 ai::prompt::tests::instruction_text_lives_only_here run
 ai::prompt::tests::prompt_is_compile_time_text run
 ai::prompt::tests::slots_in_order run
+ai::search::tests::search_report_mirrors_rust run
 ai::tests::answer_errors_stay_out_of_answer_text run
 ai::tests::availability_reads_only_the_cache run
 ai::tests::availability_reports_the_models_in_use run
@@ -75,7 +76,15 @@ ai::tests::quitting_stops_both_lanes run
 ai::tests::request_log_line_names_no_game run
 ai::tests::translate_gate_order run
 ai::tests::unlinked_target_contributes_nothing run
+chat_store::tests::chat_types_mirror_rust run
+chat_store::tests::file_names_hide_the_key run
+chat_store::tests::generations run
+chat_store::tests::read_only_writes_nothing run
+chat_store::tests::stored_types_hold_no_image_bytes run
+chat_store::tests::unreadable_chats_are_never_replaced run
+chat_store::tests::write_sites_are_confined run
 commands::ai::tests::a_refused_provider_pick_announces_no_change run
+commands::chat::tests::load_needs_the_shown_linked_window run
 commands::games::tests::complete_scan_carries_playtime_across run
 commands::games::tests::complete_scan_drops_uninstalled_games run
 commands::games::tests::complete_scan_keeps_other_sources run

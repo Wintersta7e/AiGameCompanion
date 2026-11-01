@@ -1,5 +1,6 @@
 NO_SHOT: a reset leaves nothing to send or wait for run
 afterSend: a shown shot becomes sent, anything else stays run
+chatViewAction: a view replaces the chat only when its generation changed run
 drawn: a stale id changes nothing run
 formatHotkeyStatus: names every hotkey that failed run
 formatHotkeyStatus: ready when nothing failed run
