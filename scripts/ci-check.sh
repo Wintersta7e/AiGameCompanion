@@ -1822,6 +1822,8 @@ declare_table() {
 	row name='pin guard (version sources and pin files)' tags=workflows category=both target=any tools=node,bash \
 		count='^pin guard( self-test)?: [0-9]+ (files|cases)' zero='^pin guard: ([0-9]+) files' \
 		cmd='node crates/launcher/scripts/pin-guard.selftest.ts && node crates/launcher/scripts/pin-guard.ts'
+	row name='cache prune self-test' tags=workflows category=both target=any tools=node \
+		count='^cache prune self-test: ' zero='cases ([0-9]+)' cmd='node crates/launcher/scripts/cache-prune.selftest.ts'
 	row name=actionlint tags=workflows category=both target=any tools=actionlint count=none cmd=actionlint
 	row name='zizmor (workflow and Dependabot files)' tags=workflows category=both target=any tools=zizmor,git \
 		count='completed |findings|No findings' zero='^workflow audit: zizmor audited ([0-9]+) of ' \
@@ -1904,6 +1906,10 @@ declare_table() {
 		cmd='source scripts/ci-check.sh && secret_scan_event .'
 	row name='pin freshness report' tags=freshness category=non-blocking target=any tools=node \
 		count='^checked [0-9]+ of [0-9]+ pins' zero='^checked ([0-9]+) of' cmd='node crates/launcher/scripts/freshness.ts'
+	# Deletes caches: CI only; the job runs only on main, never for a pull request.
+	row name='cache prune (superseded main caches)' tags=cache-prune category=non-blocking target=any tools=node,gh \
+		events=push,schedule,workflow_dispatch count='^cache prune: listed [0-9]+ caches' zero='^cache prune: listed ([0-9]+) caches' \
+		cmd='node crates/launcher/scripts/cache-prune.ts --delete'
 	row name='checker self-test' tags=hygiene category=both target=any tools=node,git \
 		count='self-test: ' zero='self-test: planted ([0-9]+)' \
 		cmd='source scripts/ci-check.sh && hygiene_self_tests'

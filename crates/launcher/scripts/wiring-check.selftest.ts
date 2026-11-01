@@ -324,8 +324,9 @@ const conditionCases: readonly Case[] = [
   },
 ];
 
-// The four jobs that never gate a merge: two beta canaries and the freshness
-// report run weekly or by hand; the coverage job runs on every event.
+// The five jobs that never gate a merge: two beta canaries and the freshness
+// report run weekly or by hand; the coverage job runs on every event; the
+// cache prune job runs on main after the jobs that save caches.
 const WEEKLY = "'23 3 * * 0'";
 const DAILY = "'23 3 * * 1-6'";
 const ifLine = (cron: string): string =>
@@ -345,14 +346,37 @@ const freshnessJob = (head: string): string =>
   swap(extraJob('freshness', 'freshness', head), FRESHNESS_CALL, `${TOKEN_ENV}${FRESHNESS_CALL}`);
 const FRESHNESS = freshnessJob(ifLine(WEEKLY));
 const COVERAGE = extraJob('coverage', 'coverage', '');
+const PRUNE_IF =
+  "    if: always() && github.ref == 'refs/heads/main' && github.event_name != 'pull_request'\n";
+const PRUNE_NEEDS = '    needs: [rust, coverage]\n';
+const READ_PERMS = '    permissions:\n      contents: read\n';
+const PRUNE_PERMS = `${READ_PERMS}      actions: write\n`;
+const PRUNE_CALL = '        run: ./scripts/ci-check.sh --job cache-prune\n';
+const pruneJob = (
+  head = `${PRUNE_IF}${PRUNE_NEEDS}`,
+  perms = PRUNE_PERMS,
+  token = TOKEN_ENV,
+): string =>
+  swap(
+    swap(extraJob('cache-prune', 'cache-prune', head), READ_PERMS, perms),
+    PRUNE_CALL,
+    `${token}${PRUNE_CALL}`,
+  );
+const PRUNE = pruneJob();
+const withWrite = (text: string): string => swap(text, READ_PERMS, PRUNE_PERMS);
 
 const fullCi = (
   linux = CANARY_LINUX,
   windows = CANARY_WINDOWS,
   freshness = FRESHNESS,
   coverage = COVERAGE,
+  prune = PRUNE,
 ): string =>
-  swap(CLEAN_CI, '  aggregate:\n', `${linux}${windows}${freshness}${coverage}  aggregate:\n`);
+  swap(
+    CLEAN_CI,
+    '  aggregate:\n',
+    `${linux}${windows}${freshness}${coverage}${prune}  aggregate:\n`,
+  );
 
 const FULL_LIST = swap(
   CLEAN_LIST,
@@ -361,7 +385,8 @@ const FULL_LIST = swap(
     row('vite build', 'rust,coverage', 'both', 'node node_modules/vite/bin/vite.js build'),
     row('coverage report', 'coverage', 'non-blocking', 'cargo llvm-cov --workspace --locked'),
     row('freshness report', 'freshness', 'non-blocking', 'node scripts/freshness.ts'),
-    'rows\t10\n',
+    row('cache prune', 'cache-prune', 'non-blocking', 'node scripts/cache-prune.ts --delete'),
+    'rows\t11\n',
   ].join('\n'),
 );
 const NEEDS =
@@ -390,7 +415,7 @@ const OTHER_WORKFLOW = [
 ].join('\n');
 
 const nonBlockingCases: readonly Case[] = [
-  full('the four non-blocking jobs pass', fullCi(), [], { counts: 'non-blocking jobs 4' }),
+  full('the five non-blocking jobs pass', fullCi(), [], { counts: 'non-blocking jobs 5' }),
   full(
     'the aggregate needing canary-linux',
     swap(fullCi(), NEEDS, swap(NEEDS, 'secrets]', 'secrets, canary-linux]')),
@@ -447,7 +472,7 @@ const nonBlockingCases: readonly Case[] = [
         `    name: Extra\n${BETA_ENV}`,
       ),
     },
-    list: swap(FULL_LIST, 'rows\t10\n', `${row('extra', 'extra', 'both', 'true')}\nrows\t11\n`),
+    list: swap(FULL_LIST, 'rows\t11\n', `${row('extra', 'extra', 'both', 'true')}\nrows\t12\n`),
   }),
   full(
     'the toolchain override for every job of ci.yml',
@@ -506,6 +531,72 @@ const nonBlockingCases: readonly Case[] = [
   full(
     'a freshness runner call without the job token',
     fullCi(undefined, undefined, extraJob('freshness', 'freshness', ifLine(WEEKLY))),
+    ['permissions'],
+  ),
+  full(
+    'the aggregate needing cache-prune',
+    swap(fullCi(), NEEDS, swap(NEEDS, 'secrets]', 'secrets, cache-prune]')),
+    ['aggregate'],
+  ),
+  full(
+    'the cache prune job without an if',
+    fullCi(undefined, undefined, undefined, undefined, pruneJob(PRUNE_NEEDS)),
+    ['job if'],
+  ),
+  full(
+    'the cache prune job with the weekly if',
+    fullCi(undefined, undefined, undefined, undefined, pruneJob(ifLine(WEEKLY))),
+    ['job if'],
+  ),
+  full(
+    'the cache prune if on the coverage job',
+    fullCi(undefined, undefined, undefined, extraJob('coverage', 'coverage', PRUNE_IF)),
+    ['job if'],
+  ),
+  full(
+    'actions: write on the coverage job',
+    fullCi(undefined, undefined, undefined, withWrite(COVERAGE)),
+    ['permissions'],
+  ),
+  full(
+    'actions: write on a needed job',
+    swap(
+      fullCi(),
+      job('secrets', 'Scan rows', 'ubuntu-24.04', 'secrets'),
+      withWrite(job('secrets', 'Scan rows', 'ubuntu-24.04', 'secrets')),
+    ),
+    ['permissions'],
+  ),
+  full(
+    'the cache prune job with contents: write',
+    fullCi(
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      pruneJob(undefined, swap(PRUNE_PERMS, 'contents: read', 'contents: write')),
+    ),
+    ['permissions'],
+  ),
+  full(
+    'the cache prune job with a second write scope',
+    fullCi(
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      pruneJob(undefined, `${PRUNE_PERMS}      pull-requests: write\n`),
+    ),
+    ['permissions'],
+  ),
+  full(
+    'the cache prune job without actions: write',
+    fullCi(undefined, undefined, undefined, undefined, pruneJob(undefined, READ_PERMS)),
+    ['permissions'],
+  ),
+  full(
+    'a cache prune runner call without the job token',
+    fullCi(undefined, undefined, undefined, undefined, pruneJob(undefined, undefined, '')),
     ['permissions'],
   ),
 ];
@@ -612,9 +703,9 @@ const constantCases = (): (string | null)[] => [
     ? null
     : 'the required job names are not the two the branch rules require',
   NON_BLOCKING_JOBS.join('|') ===
-  ['canary-linux', 'canary-windows', 'freshness', 'coverage'].join('|')
+  ['canary-linux', 'canary-windows', 'freshness', 'coverage', 'cache-prune'].join('|')
     ? null
-    : 'the non-blocking job list is not the four scheduled or measure-only jobs',
+    : 'the non-blocking job list is not the four scheduled or measure-only jobs and the cache prune',
 ];
 
 const SECRETS_JOB = job('secrets', 'Scan rows', 'ubuntu-24.04', 'secrets');
