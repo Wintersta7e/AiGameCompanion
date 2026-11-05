@@ -47,6 +47,7 @@ void test('saveStatusText: one line per save state, and none of them deletes', (
     ],
     ['failed', { state: 'failed' }, true, 'Last answer not saved — retrying with the next one'],
     ['skipped', { state: 'skipped' }, true, 'This answer is too long to save'],
+    ['off', { state: 'off' }, true, 'Not saved — kept until you quit'],
   ];
   for (const [name, save, linked, expected] of rows) {
     const text = saveStatusText(save, linked);

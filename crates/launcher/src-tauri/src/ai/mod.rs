@@ -1882,8 +1882,10 @@ mod tests {
         );
     }
 
-    const WRITABLE: crate::chat_store::StoreMode =
-        crate::chat_store::StoreMode { read_only: false };
+    const WRITABLE: crate::chat_store::StoreMode = crate::chat_store::StoreMode {
+        read_only: false,
+        saving: true,
+    };
 
     /// The fixture target's chat on screen in a fresh store holding
     /// `exchanges` saved exchanges; its folder is removed on drop.

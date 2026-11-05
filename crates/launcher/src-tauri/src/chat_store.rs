@@ -85,12 +85,17 @@ pub(crate) struct ChatSnapshot {
 pub(crate) struct StoreMode {
     /// The launcher state could not be read, so nothing is written this run.
     pub(crate) read_only: bool,
+    /// Settings has chat saving on. Off, answers stay in memory until quit and
+    /// a chat file is read only to clear it.
+    pub(crate) saving: bool,
 }
 
-/// This run's store mode: read-only whenever the launcher state is.
+/// The store mode now: read-only whenever the launcher state is, and saving as
+/// Settings has it, read at every operation so turning it off stops writes at once.
 pub(crate) fn store_mode(state: &AppState) -> StoreMode {
     StoreMode {
         read_only: state.load_error().is_some(),
+        saving: state.launcher.lock().settings.save_chats,
     }
 }
 
@@ -99,6 +104,8 @@ pub(crate) fn store_mode(state: &AppState) -> StoreMode {
 #[serde(tag = "state", rename_all = "snake_case")]
 pub(crate) enum SaveState {
     On,
+    /// Settings has chat saving off: this chat lasts until quit.
+    Off,
     ReadOnly {
         reason: ReadOnlyReason,
     },
@@ -286,6 +293,9 @@ enum KeyStatus {
     Loaded,
     /// Not read, or not kept: never replaced this run.
     Locked,
+    /// First used while saving was off, so its file was not read; it is read
+    /// before the chat is next saved or cleared.
+    Unread,
 }
 
 /// One game's chat in memory.
@@ -310,6 +320,14 @@ impl KeyEntry {
         Self {
             entries: Vec::new(),
             status: KeyStatus::Locked,
+            write_failed: false,
+        }
+    }
+
+    const fn unread() -> Self {
+        Self {
+            entries: Vec::new(),
+            status: KeyStatus::Unread,
             write_failed: false,
         }
     }
@@ -343,9 +361,18 @@ impl ChatStore {
         }
     }
 
-    /// Read `key`'s chat into memory, once. Blocks on file I/O.
+    /// Read `key`'s chat into memory, once. With saving off the file is not
+    /// read and the chat starts empty. Blocks on file I/O.
     pub(crate) fn load(&self, key: &str, mode: StoreMode) {
         if self.memory.lock().keys.contains_key(key) {
+            return;
+        }
+        if !mode.saving {
+            self.memory
+                .lock()
+                .keys
+                .entry(key.to_owned())
+                .or_insert_with(KeyEntry::unread);
             return;
         }
         let io = self.io.lock();
@@ -362,6 +389,31 @@ impl ChatStore {
             .keys
             .entry(key.to_owned())
             .or_insert(entry);
+    }
+
+    /// Read an Unread `key`'s file the way `load` does, put this session's
+    /// exchanges after the file's, and return the key's status. Nothing is
+    /// read in read-only mode. The caller holds the I/O lock.
+    fn read_unread(&self, key: &str, mode: StoreMode) -> KeyStatus {
+        let status = self
+            .memory
+            .lock()
+            .keys
+            .get(key)
+            .map_or(KeyStatus::Locked, |entry| entry.status);
+        if status != KeyStatus::Unread || mode.read_only {
+            return status;
+        }
+        let read = self
+            .dir
+            .as_deref()
+            .map_or_else(KeyEntry::empty, |dir| read_key(dir, key, mode, Utc::now()));
+        if let Some(entry) = self.memory.lock().keys.get_mut(key) {
+            let session = std::mem::replace(&mut entry.entries, read.entries);
+            entry.entries.extend(session);
+            entry.status = read.status;
+        }
+        read.status
     }
 
     /// Put `key`'s chat on screen and return it. Showing the chat already on
@@ -422,8 +474,9 @@ impl ChatStore {
     /// admitted (`clear_generation`); `None` saves nothing. Expired exchanges
     /// go first; an answer too large to keep on its own is not saved
     /// (`Skipped`), and the oldest exchanges go until the file fits. A chat
-    /// that may not be written is fitted the same way, in memory only.
-    /// Blocks on file I/O.
+    /// that may not be written, or with saving off, is fitted the same way, in
+    /// memory only. With saving on, a chat first used while it was off reads
+    /// its file first. Blocks on file I/O.
     pub(crate) fn append_exchange(
         &self,
         key: &str,
@@ -432,6 +485,9 @@ impl ChatStore {
         mode: StoreMode,
     ) -> SaveState {
         let io = self.io.lock();
+        if mode.saving {
+            self.read_unread(key, mode);
+        }
         let mut memory = self.memory.lock();
         let current = memory.generations.get(key).copied().unwrap_or(0);
         let Some(chat) = memory.keys.get_mut(key) else {
@@ -451,7 +507,11 @@ impl ChatStore {
             true
         };
         let answer_state = |state| if kept { state } else { skipped(state) };
-        if mode.read_only || chat.status == KeyStatus::Locked || (!kept && expired == 0) {
+        if mode.read_only
+            || !mode.saving
+            || chat.status != KeyStatus::Loaded
+            || (!kept && expired == 0)
+        {
             return answer_state(save_state(mode, chat.status, chat.write_failed));
         }
         // A chat left with no exchange has no file.
@@ -490,7 +550,8 @@ impl ChatStore {
     /// Start the chat on screen afresh: empty it and delete its file, `.tmp`
     /// and backups. Refused unless `key` is the game on screen and
     /// `display_generation` is the page's current one. A Locked chat's files,
-    /// and every file in read-only mode, stay as they are. Blocks on file I/O.
+    /// and every file in read-only mode, stay as they are; saving off, the
+    /// files are deleted too. Blocks on file I/O.
     pub(crate) fn clear(
         &self,
         key: Option<&str>,
@@ -520,6 +581,17 @@ impl ChatStore {
             entry.status
         });
         drop(memory);
+        // A file not read yet is read first, under the load rules: one that
+        // cannot be read or kept is Locked and stays. What it held is not shown.
+        let status = if status == KeyStatus::Unread {
+            let read = self.read_unread(key, mode);
+            if let Some(entry) = self.memory.lock().keys.get_mut(key) {
+                entry.entries.clear();
+            }
+            read
+        } else {
+            status
+        };
 
         let mut write_failed = false;
         if !mode.read_only && status == KeyStatus::Loaded {
@@ -591,6 +663,8 @@ const fn save_state(mode: StoreMode, status: KeyStatus, write_failed: bool) -> S
         SaveState::ReadOnly {
             reason: ReadOnlyReason::ChatFile,
         }
+    } else if !mode.saving {
+        SaveState::Off
     } else if write_failed {
         SaveState::Failed
     } else {
@@ -603,7 +677,7 @@ const fn save_state(mode: StoreMode, status: KeyStatus, write_failed: bool) -> S
 const fn skipped(state: SaveState) -> SaveState {
     match state {
         SaveState::On | SaveState::Failed | SaveState::Skipped => SaveState::Skipped,
-        SaveState::ReadOnly { .. } => state,
+        SaveState::Off | SaveState::ReadOnly { .. } => state,
     }
 }
 
@@ -866,8 +940,18 @@ mod tests {
     use crate::ai::search::{SearchNote, SearchReport, SearchSource};
     use std::path::Path;
 
-    const WRITABLE: StoreMode = StoreMode { read_only: false };
-    const READ_ONLY: StoreMode = StoreMode { read_only: true };
+    const WRITABLE: StoreMode = StoreMode {
+        read_only: false,
+        saving: true,
+    };
+    const READ_ONLY: StoreMode = StoreMode {
+        read_only: true,
+        saving: true,
+    };
+    const OFF: StoreMode = StoreMode {
+        read_only: false,
+        saving: false,
+    };
     const LOCKED: SaveState = SaveState::ReadOnly {
         reason: ReadOnlyReason::ChatFile,
     };
@@ -1376,18 +1460,38 @@ mod tests {
 
     /// A store that loaded and showed `key`'s chat from a file holding `exchanges`.
     fn store_holding(dir: &Path, key: &str, exchanges: &[SavedExchange]) -> ChatStore {
+        store_holding_in(dir, key, exchanges, WRITABLE)
+    }
+
+    /// `store_holding`, with the chat loaded and shown in `mode`.
+    fn store_holding_in(
+        dir: &Path,
+        key: &str,
+        exchanges: &[SavedExchange],
+        mode: StoreMode,
+    ) -> ChatStore {
         let entries: Vec<_> = exchanges.iter().map(entry).collect();
         std::fs::write(path_of(dir, key), file_text(key, &entries)).unwrap();
         let store = ChatStore::new(Some(dir.to_owned()));
-        store.load(key, WRITABLE);
-        store.show(key, WRITABLE);
+        store.load(key, mode);
+        store.show(key, mode);
         store
     }
 
     /// Save `exchange` to `key`'s chat the way a finished request does.
     fn append(store: &ChatStore, key: &str, exchange: SavedExchange) -> SaveState {
+        append_in(store, key, WRITABLE, exchange)
+    }
+
+    /// `append`, in `mode`.
+    fn append_in(
+        store: &ChatStore,
+        key: &str,
+        mode: StoreMode,
+        exchange: SavedExchange,
+    ) -> SaveState {
         let snapshot = store.snapshot(key, Provider::Gemini);
-        store.append_exchange(key, snapshot.clear_generation, Some(exchange), WRITABLE)
+        store.append_exchange(key, snapshot.clear_generation, Some(exchange), mode)
     }
 
     /// An exchange whose question and answer together are `bytes` long.
@@ -2004,6 +2108,109 @@ mod tests {
         drop(std::fs::remove_dir_all(&dir));
     }
 
+    #[test]
+    fn saving_off_writes_no_chat() {
+        let root = temp_dir("saving_off");
+
+        // An answer with saving off stays in memory: no folder, no file.
+        let dir = root.join("chats");
+        let store = ChatStore::new(Some(dir.clone()));
+        store.load("exe:off", OFF);
+        let shown = store.show("exe:off", OFF);
+        let saved = append_in(&store, "exe:off", OFF, exchange("Kept?", Utc::now()));
+        let after = store.show("exe:off", OFF);
+        println!(
+            "off: shown {:?}, saved {saved:?}, view {:?}, folder exists {}",
+            shown.save,
+            questions(&after),
+            dir.exists()
+        );
+        assert_eq!((shown.save, saved), (SaveState::Off, SaveState::Off));
+        assert_eq!(questions(&after), ["Kept?"], "the chat lasts until quit");
+        assert!(!dir.exists(), "saving off created the chats folder");
+        // Too large to keep is not news when nothing is saved anyway.
+        let huge = append_in(&store, "exe:off", OFF, sized("Huge", MAX_FILE_BYTES));
+        println!("off, too large: {huge:?}");
+        assert_eq!(huge, SaveState::Off);
+
+        let dir = root;
+        unread_files_are_read_only_to_clear(&dir);
+        turning_saving_on_merges_the_file_once(&dir);
+        drop(std::fs::remove_dir_all(&dir));
+    }
+
+    /// A file of a key first loaded while saving is off is not read, so a
+    /// damaged one gains no backup; Clear reads it first, then deletes it and
+    /// its backups -- unless the read leaves it Locked.
+    fn unread_files_are_read_only_to_clear(dir: &Path) {
+        let key = "exe:unread-corrupt";
+        let path = path_of(dir, key);
+        let corrupt = format!("{{\"key\":\"{key}\",\"entries\":[");
+        std::fs::write(&path, &corrupt).unwrap();
+        // An older copy with other bytes: a read would keep the corrupt file anew.
+        std::fs::write(path.with_extension("json.bak.3"), file_text(key, &[good()])).unwrap();
+        let store = ChatStore::new(Some(dir.to_owned()));
+        store.load(key, OFF);
+        let shown = store.show(key, OFF);
+        let before_clear = listing_of(dir, key);
+        println!("unread: {:?}, files {before_clear:?}", shown.save);
+        assert_eq!(shown.save, SaveState::Off);
+        assert!(
+            !bak_of(&path).exists(),
+            "a file that was not read gained a backup"
+        );
+        assert_eq!(before_clear.len(), 2, "the file and its old copy stay");
+        let cleared = store.clear(Some(key), shown.display_generation, OFF);
+        let left = listing_of(dir, key);
+        println!(
+            "cleared: {:?}, files left {left:?}",
+            cleared.as_ref().map(|v| v.save)
+        );
+        assert_eq!(cleared.map(|v| v.save), Ok(SaveState::Off));
+        assert_eq!(left, [], "Clear left the file or a copy");
+
+        // Read first, the file holds another key's chat: Locked, so kept.
+        let key = "exe:unread-other";
+        let path = path_of(dir, key);
+        let foreign = file_text("exe:someone-else", &[good()]);
+        std::fs::write(&path, &foreign).unwrap();
+        let store = ChatStore::new(Some(dir.to_owned()));
+        store.load(key, OFF);
+        let shown = store.show(key, OFF);
+        let cleared = store.clear(Some(key), shown.display_generation, OFF);
+        println!("other key: {:?}", cleared.as_ref().map(|v| v.save));
+        assert_eq!(cleared.map(|v| v.save), Ok(LOCKED));
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), foreign);
+    }
+
+    /// With saving turned on, the next answer of a key first loaded while it
+    /// was off puts the file's exchanges before this session's; a key loaded
+    /// while it was on already holds them.
+    fn turning_saving_on_merges_the_file_once(dir: &Path) {
+        for (key, first) in [("exe:first-off", OFF), ("exe:first-on", WRITABLE)] {
+            let store = store_holding_in(dir, key, &[exchange("Before", Utc::now())], first);
+            let path = path_of(dir, key);
+            let stored = std::fs::read_to_string(&path).unwrap();
+            let off = append_in(&store, key, OFF, exchange("During", Utc::now()));
+            let unchanged = std::fs::read_to_string(&path).unwrap() == stored;
+            let on = append_in(&store, key, WRITABLE, exchange("After", Utc::now()));
+            let file = file_questions(dir, key);
+            let shown = store.show(key, WRITABLE);
+            println!(
+                "{key}: off {off:?} (file unchanged {unchanged}), on {on:?}, file {file:?}, shown {:?}",
+                questions(&shown)
+            );
+            assert_eq!((off, on), (SaveState::Off, SaveState::On), "{key}");
+            assert!(unchanged, "{key}: saving off wrote the file");
+            assert_eq!(file, ["Before", "During", "After"], "{key}: the file");
+            assert_eq!(
+                questions(&shown),
+                ["Before", "During", "After"],
+                "{key}: shown"
+            );
+        }
+    }
+
     /// The `state` and `reason` literals of every `SaveState` equal those of
     /// chat.ts's `SaveState`.
     fn save_state_literals_match(chat: &str) {
@@ -2017,12 +2224,14 @@ mod tests {
             },
             SaveState::Failed,
             SaveState::Skipped,
+            SaveState::Off,
         ];
         let (mut rust_states, mut rust_reasons) = (Vec::new(), Vec::new());
         for state in states {
             // A new variant fails to compile here; add it to the list too.
             match state {
                 SaveState::On
+                | SaveState::Off
                 | SaveState::Failed
                 | SaveState::Skipped
                 | SaveState::ReadOnly {

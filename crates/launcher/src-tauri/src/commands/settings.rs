@@ -1,4 +1,4 @@
-use tauri::{AppHandle, Manager, State};
+use tauri::{AppHandle, Emitter as _, Manager, State};
 use tauri_plugin_autostart::ManagerExt;
 use tauri_plugin_opener::OpenerExt;
 
@@ -62,11 +62,13 @@ pub(crate) fn update_settings(
         crate::ai::validate_gemini_model(model)?;
     }
     let launch_on_startup = settings.launch_on_startup;
-    {
+    let chats_changed = {
         let mut launcher = state.launcher.lock();
         let merged = merge_settings(&launcher.settings, settings);
+        let changed = save_chats_changed(&launcher.settings, &merged);
         launcher.settings = merged;
-    }
+        changed
+    };
 
     // Sync autostart with OS. Log failures: a registry write blocked by policy
     // or AV would otherwise leave the toggle showing a state the OS does not
@@ -84,7 +86,20 @@ pub(crate) fn update_settings(
     let saved = state.save();
     // The Gemini model may have changed, and with it every model label.
     crate::ai::notify_providers_changed(&app);
+    // The chat store reads the setting from memory, which changed even when
+    // the file could not be written.
+    if chats_changed {
+        crate::util::log_if_err(
+            "Telling the overlay the saved chats changed",
+            app.emit_to("overlay", "saved-chats-changed", ()),
+        );
+    }
     saved
+}
+
+/// Whether Save turned chat saving on or off.
+const fn save_chats_changed(before: &LauncherSettings, after: &LauncherSettings) -> bool {
+    before.save_chats != after.save_chats
 }
 
 /// What Save stores: the fields the Settings modal owns, from `incoming`, with
@@ -102,6 +117,7 @@ fn merge_settings(stored: &LauncherSettings, incoming: LauncherSettings) -> Laun
         gemini_model,
         // Written only by `set_hints_first`.
         hints_first: _,
+        save_chats,
         // Written by no one here: settings a newer build stored stay as read.
         unknown: _,
     } = incoming;
@@ -110,6 +126,7 @@ fn merge_settings(stored: &LauncherSettings, incoming: LauncherSettings) -> Laun
         minimize_to_tray,
         launch_on_startup,
         gemini_model: gemini_model.trim().to_owned(),
+        save_chats,
         ..stored.clone()
     }
 }
@@ -317,6 +334,7 @@ mod tests {
             active_provider: "gemini".to_owned(),
             gemini_model: " gemini-3.8-flash ".to_owned(),
             hints_first: true,
+            save_chats: true,
             unknown: serde_json::Map::new(),
         };
         let merged = merge_settings(&stored, incoming);
@@ -405,6 +423,23 @@ mod tests {
         remove(&path);
     }
 
+    /// The overlay is told the saved chats changed exactly when Save turns
+    /// saving on or off, and Save stores the modal's choice.
+    #[test]
+    fn save_chats_change_is_detected() {
+        let with = |save_chats| LauncherSettings {
+            save_chats,
+            ..LauncherSettings::default()
+        };
+        for (before, after) in [(false, true), (true, false), (true, true), (false, false)] {
+            let changed = super::save_chats_changed(&with(before), &with(after));
+            println!("{before} -> {after}: changed {changed}");
+            assert_eq!(changed, before != after, "{before} -> {after}");
+            let merged = merge_settings(&with(before), with(after));
+            assert_eq!(merged.save_chats, after, "Save keeps what the modal sent");
+        }
+    }
+
     /// Save takes the modal's fields from what it sends and keeps every other
     /// field as stored, and its destructure names every field, so a new one
     /// does not compile until its writer is chosen.
@@ -417,6 +452,7 @@ mod tests {
             active_provider: "claude".to_owned(),
             gemini_model: "gemini-y".to_owned(),
             hints_first: false,
+            save_chats: true,
             unknown: serde_json::Map::new(),
         };
         let incoming = LauncherSettings {
@@ -426,6 +462,7 @@ mod tests {
             active_provider: "gemini".to_owned(),
             gemini_model: " gemini-x ".to_owned(),
             hints_first: true,
+            save_chats: false,
             unknown: serde_json::Map::new(),
         };
         // (field, whether the modal writes it); every other writer is a setter.
@@ -434,6 +471,7 @@ mod tests {
             ("minimize_to_tray", true),
             ("launch_on_startup", true),
             ("gemini_model", true),
+            ("save_chats", true),
             ("active_provider", false),
             ("hints_first", false),
         ];

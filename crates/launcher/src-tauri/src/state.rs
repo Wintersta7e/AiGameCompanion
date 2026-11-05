@@ -1558,6 +1558,78 @@ mod tests {
         assert_eq!(text.matches("\"scan_on_startup\"").count(), 1, "{text}");
     }
 
+    /// `save_chats` loads like every other setting: a value of the wrong type
+    /// keeps the library and the readable settings and loads saving on, and a
+    /// file from before the field existed loads saving on and is saved back
+    /// with everything this build does not know.
+    #[test]
+    fn save_chats_loads_leniently() {
+        let path = temp_state_path("save_chats_wrong_type");
+        let text =
+            format!(r#"{{{TWO_GAMES},"settings":{{"save_chats":"no","launch_on_startup":true}}}}"#);
+        std::fs::write(&path, &text).unwrap();
+        let app = AppState::load(path.clone());
+        let st = app.launcher.lock().clone();
+        let minutes: Vec<u64> = st.games.iter().map(|g| g.play_time_minutes).collect();
+        let backup = std::fs::read_to_string(path.with_extension("json.bak")).ok();
+        println!(
+            "wrong type: minutes={minutes:?} save_chats={} launch_on_startup={} load_error={:?}",
+            st.settings.save_chats,
+            st.settings.launch_on_startup,
+            app.load_error()
+        );
+        cleanup(&path);
+        assert_eq!(app.load_error(), None);
+        assert_eq!(minutes, [900, 4000], "the library is kept");
+        assert!(st.settings.launch_on_startup, "a readable setting is kept");
+        assert!(
+            st.settings.save_chats,
+            "the unreadable value is the default"
+        );
+        assert_eq!(
+            backup.as_deref(),
+            Some(text.as_str()),
+            "the file is kept as it was"
+        );
+
+        let path = temp_state_path("save_chats_older_file");
+        let older = format!(
+            r#"{{{TWO_GAMES},"settings":{{"hints_first":false,"voice_input":{{"key":"F8"}}}},"journals":[{{"text":"entry"}}]}}"#
+        );
+        std::fs::write(&path, &older).unwrap();
+        let app = AppState::load(path.clone());
+        let settings = app.launcher.lock().settings.clone();
+        app.save().unwrap();
+        let text = std::fs::read_to_string(&path).unwrap();
+        let backups: Vec<PathBuf> = backup_names(&path)
+            .into_iter()
+            .filter(|name| name.exists())
+            .collect();
+        cleanup(&path);
+        let saved: serde_json::Value = serde_json::from_str(&text).unwrap();
+        let original: serde_json::Value = serde_json::from_str(&older).unwrap();
+        println!(
+            "older file: save_chats={} saved settings={}",
+            settings.save_chats, saved["settings"]
+        );
+        assert!(settings.save_chats, "a file without the field saves chats");
+        assert!(!settings.hints_first, "the stored settings are kept");
+        for pointer in [
+            "/journals",
+            "/settings/voice_input",
+            "/games/1/play_time_minutes",
+        ] {
+            assert_eq!(
+                saved.pointer(pointer),
+                original.pointer(pointer),
+                "{pointer} changed on save"
+            );
+        }
+        assert_eq!(saved.pointer("/settings/save_chats"), Some(&true.into()));
+        assert_eq!(text.matches("\"save_chats\"").count(), 1, "{text}");
+        assert_eq!(backups, Vec::<PathBuf>::new(), "nothing was dropped");
+    }
+
     /// A game source a newer build added was rewritten as "manual" on the
     /// next save. It is now written back as stored, and this build still
     /// treats the game as one it did not scan.

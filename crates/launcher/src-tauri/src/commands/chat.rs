@@ -10,12 +10,16 @@ use crate::util;
 /// What the overlay shows when clearing the chat did not run to its end.
 const CLEAR_FAILED: &str = "The chat could not be cleared.";
 
-/// This run's store mode. Without the launcher state nothing may be written.
+/// The store mode now. Without the launcher state nothing may be written, and
+/// with the setting unknown no chat file is read.
 pub(crate) fn mode_of(app: &AppHandle) -> StoreMode {
-    app.try_state::<AppState>()
-        .map_or(StoreMode { read_only: true }, |state| {
-            chat_store::store_mode(&state)
-        })
+    app.try_state::<AppState>().map_or(
+        StoreMode {
+            read_only: true,
+            saving: false,
+        },
+        |state| chat_store::store_mode(&state),
+    )
 }
 
 /// The key of the chat the overlay may show for the window it displayed as

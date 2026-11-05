@@ -35,6 +35,7 @@
     launch_on_startup: false,
     active_provider: '',
     gemini_model: '',
+    save_chats: true,
   });
   let availability = $state<Availability>({
     gemini: false,
@@ -96,6 +97,11 @@
       key: 'launch_on_startup',
       label: 'Launch on system startup',
       sub: 'Start Sage when Windows boots',
+    },
+    {
+      key: 'save_chats',
+      label: 'Save chats',
+      sub: "Keeps each game's chat text on this PC — never screenshots. Up to the last 20 exchanges are sent with each question. Turning this off keeps saved chats until you delete them.",
     },
   ];
 

@@ -5,7 +5,8 @@ import type { SearchReport } from './search';
 
 /** Whether the chat on screen is being saved, and if not, why. */
 export type SaveState =
-  { state: 'on' | 'failed' | 'skipped' } | { state: 'read_only'; reason: 'library' | 'chat_file' };
+  | { state: 'on' | 'off' | 'failed' | 'skipped' }
+  | { state: 'read_only'; reason: 'library' | 'chat_file' };
 
 export interface SavedExchange {
   savedAt: string;
@@ -36,6 +37,12 @@ export function chatViewAction(current: number, view: ChatView | null): ChatView
   return view.displayGeneration === current ? 'status' : 'replace';
 }
 
+/** The save status line's tooltip: what is saved, where, for how long, and how to remove it. */
+export const SAVE_STATUS_TOOLTIP =
+  'Chat text for this game is saved on this PC for up to about two years — never screenshots. ' +
+  'Up to the last 20 exchanges are sent with each question. ' +
+  "New chat deletes this game's saved chat; Settings can turn saving off or delete all saved chats.";
+
 /** The chat footer's line saying whether answers are saved; `null` before the chat arrives. */
 export function saveStatusText(save: SaveState | null, linked: boolean): string {
   if (!linked) return 'No linked game — nothing saved';
@@ -43,6 +50,8 @@ export function saveStatusText(save: SaveState | null, linked: boolean): string 
   switch (save.state) {
     case 'on':
       return 'Saved on this PC';
+    case 'off':
+      return 'Not saved — kept until you quit';
     case 'failed':
       return 'Last answer not saved — retrying with the next one';
     case 'skipped':

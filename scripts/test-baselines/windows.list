@@ -95,6 +95,7 @@ chat_store::tests::generations run
 chat_store::tests::grounded_answers_go_only_to_gemini run
 chat_store::tests::read_only_writes_nothing run
 chat_store::tests::round_trip_and_stored_shape run
+chat_store::tests::saving_off_writes_no_chat run
 chat_store::tests::stored_types_hold_no_image_bytes run
 chat_store::tests::unreadable_chats_are_never_replaced run
 chat_store::tests::write_sites_are_confined run
@@ -114,6 +115,7 @@ commands::settings::tests::hints_first_setter_refuses_read_only_first run
 commands::settings::tests::merge_settings_owners run
 commands::settings::tests::no_config_button_command run
 commands::settings::tests::no_error_sends_users_to_config_toml run
+commands::settings::tests::save_chats_change_is_detected run
 commands::settings::tests::save_keeps_hints_first run
 commands::settings::tests::save_keeps_the_stored_provider run
 models::tests::game_holds_no_per_game_value run
@@ -122,6 +124,7 @@ models::tests::hints_first_defaults_on_and_round_trips run
 models::tests::launcher_settings_type_mirrors_rust run
 models::tests::new_install_has_no_saved_provider run
 models::tests::overlay_hints_default_matches_rust run
+models::tests::save_chats_defaults_on run
 npm_lock_policy::committed_lock_meets_the_policy run
 npm_lock_policy::planted_locks_are_judged_by_each_rule run
 overlay::tests::a_closed_target_is_announced_to_the_page run
@@ -191,6 +194,7 @@ state::tests::read_error_makes_state_read_only run
 state::tests::read_retries_transient_errors_only run
 state::tests::recovers_state_from_leftover_tmp_when_main_missing run
 state::tests::same_bytes_are_backed_up_once_across_starts run
+state::tests::save_chats_loads_leniently run
 state::tests::save_is_atomic_and_leaves_no_tmp run
 state::tests::save_then_load_round_trips_games run
 state::tests::settings_are_written_only_by_their_writers run

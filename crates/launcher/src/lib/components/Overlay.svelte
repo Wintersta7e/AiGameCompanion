@@ -6,6 +6,7 @@
   import { hashHue } from '../utils/accent';
   import {
     chatViewAction,
+    SAVE_STATUS_TOOLTIP,
     saveStatusText,
     type ChatView,
     type SaveState,
@@ -1238,7 +1239,7 @@
           </div>
           <div class="footer">
             <span>{modelLabel(provider)} · {asking ? 'streaming' : 'Enter to send'}</span>
-            {#if saveStatus}<span>{saveStatus}</span>{/if}
+            {#if saveStatus}<span title={SAVE_STATUS_TOOLTIP}>{saveStatus}</span>{/if}
           </div>
         </div>
       </div>
