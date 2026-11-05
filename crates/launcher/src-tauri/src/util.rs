@@ -615,7 +615,9 @@ pub(crate) fn helper() { NEEDLE(); }
         let (files, whole) = count_in_sources(needle, None);
         let per_file = count_in_sources_by_file(needle);
         let outside: usize = per_file.iter().map(|(_, count)| count).sum();
-        println!("{files} files scanned; {needle}: {whole} in whole files, {outside} outside test modules");
+        println!(
+            "{files} files scanned; {needle}: {whole} in whole files, {outside} outside test modules"
+        );
         assert_eq!(per_file.len(), files);
         assert!(whole >= 1);
         assert_eq!(outside, 0);
@@ -642,9 +644,10 @@ pub(crate) fn helper() { NEEDLE(); }
                 .count();
             println!("{kind}: {count} files");
         }
-        assert!(scan
-            .files
-            .contains(&PathBuf::from("src/lib/components/Overlay.svelte")));
+        assert!(
+            scan.files
+                .contains(&PathBuf::from("src/lib/components/Overlay.svelte"))
+        );
         assert!(scan.files.contains(&PathBuf::from("index.html")));
         for file in &scan.files {
             let source = file.starts_with("src")

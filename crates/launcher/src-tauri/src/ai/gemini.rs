@@ -459,10 +459,10 @@ fn stream_error_message(json: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::{
-        build_request, http_error_message, process_sse_lines, resolve_model, stream_error_message,
-        validate_model, ChatMessage, Part,
+        ChatMessage, Part, build_request, http_error_message, process_sse_lines, resolve_model,
+        stream_error_message, validate_model,
     };
-    use crate::ai::prompt::{assemble, PromptKind};
+    use crate::ai::prompt::{PromptKind, assemble};
 
     #[test]
     fn resolve_model_precedence() {

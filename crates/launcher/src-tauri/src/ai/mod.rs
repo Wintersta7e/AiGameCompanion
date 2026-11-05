@@ -22,12 +22,12 @@ use tauri::ipc::Channel;
 use tauri::{AppHandle, Emitter, Manager};
 
 use crate::chat_store::{ChatStore, SaveState, SavedExchange};
-use crate::overlay::{identity_text, GameInfo, Identity};
+use crate::overlay::{GameInfo, Identity, identity_text};
 use crate::shots::{ShotSlot, ShotStore};
 use crate::state::AppState;
 use search::SearchReport;
 
-pub(crate) use cli::{detect_all, sweep_shots, CliConfig};
+pub(crate) use cli::{CliConfig, detect_all, sweep_shots};
 
 /// Tells every window to re-read which providers can answer and which one is
 /// chosen. Each window keeps its own copy; without this, CLI detection that
@@ -1265,8 +1265,7 @@ mod tests {
     }
 
     /// The linked library target's block, as `target(true)` yields it.
-    const STEAM_BLOCK: &str =
-        "<game_context>\nsource: library\nname: \"Real Name\"\nsteam_app_id: 123450\n</game_context>";
+    const STEAM_BLOCK: &str = "<game_context>\nsource: library\nname: \"Real Name\"\nsteam_app_id: 123450\n</game_context>";
 
     #[test]
     fn identity_block_is_exact_and_fenced() {
@@ -1297,12 +1296,16 @@ mod tests {
             (
                 "foo",
                 &product,
-                Some("<game_context>\nsource: linked_program\nexecutable: \"foo\"\nproduct_name: \"Foo Studio Game\"\n</game_context>"),
+                Some(
+                    "<game_context>\nsource: linked_program\nexecutable: \"foo\"\nproduct_name: \"Foo Studio Game\"\n</game_context>",
+                ),
             ),
             (
                 "foo",
                 &no_product,
-                Some("<game_context>\nsource: linked_program\nexecutable: \"foo\"\n</game_context>"),
+                Some(
+                    "<game_context>\nsource: linked_program\nexecutable: \"foo\"\n</game_context>",
+                ),
             ),
             ("Real Name", &Identity::Unknown, None),
             ("\u{200b} \u{202e}", &other, None),
@@ -1516,15 +1519,42 @@ mod tests {
         let mut lines = Vec::new();
         for (text, expected) in [
             (
-                line(3, Provider::Claude, true, 3, true, IdentitySource::Library, true, false),
+                line(
+                    3,
+                    Provider::Claude,
+                    true,
+                    3,
+                    true,
+                    IdentitySource::Library,
+                    true,
+                    false,
+                ),
                 "Request 3: provider claude, screenshot requested: yes, linked target: yes, turns: 3, identity: library, search: no, hints: yes, recap: no",
             ),
             (
-                line(9, Provider::Gemini, false, 5, true, IdentitySource::Program, false, true),
+                line(
+                    9,
+                    Provider::Gemini,
+                    false,
+                    5,
+                    true,
+                    IdentitySource::Program,
+                    false,
+                    true,
+                ),
                 "Request 9: provider gemini, screenshot requested: no, linked target: yes, turns: 5, identity: program, search: no, hints: no, recap: yes",
             ),
             (
-                line(3, Provider::Claude, true, 1, false, IdentitySource::Absent, false, false),
+                line(
+                    3,
+                    Provider::Claude,
+                    true,
+                    1,
+                    false,
+                    IdentitySource::Absent,
+                    false,
+                    false,
+                ),
                 "Request 3: provider claude, screenshot requested: yes, linked target: no, turns: 1, identity: none, search: no, hints: no, recap: no",
             ),
         ] {

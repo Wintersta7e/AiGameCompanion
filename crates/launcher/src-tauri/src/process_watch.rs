@@ -46,17 +46,17 @@ mod imp {
     use std::time::{Duration, Instant};
 
     use tauri::{AppHandle, Emitter, Manager};
-    use windows::core::PCWSTR;
     use windows::Win32::Foundation::WAIT_OBJECT_0;
     use windows::Win32::Foundation::{CloseHandle, ERROR_SUCCESS};
     use windows::Win32::System::Diagnostics::ToolHelp::{
-        CreateToolhelp32Snapshot, Process32FirstW, Process32NextW, PROCESSENTRY32W,
+        CreateToolhelp32Snapshot, PROCESSENTRY32W, Process32FirstW, Process32NextW,
         TH32CS_SNAPPROCESS,
     };
-    use windows::Win32::System::Registry::{RegGetValueW, HKEY_CURRENT_USER, RRF_RT_REG_DWORD};
+    use windows::Win32::System::Registry::{HKEY_CURRENT_USER, RRF_RT_REG_DWORD, RegGetValueW};
     use windows::Win32::System::Threading::{
-        OpenProcess, WaitForSingleObject, PROCESS_SYNCHRONIZE,
+        OpenProcess, PROCESS_SYNCHRONIZE, WaitForSingleObject,
     };
+    use windows::core::PCWSTR;
 
     use crate::state::AppState;
 

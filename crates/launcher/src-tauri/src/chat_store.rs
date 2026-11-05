@@ -19,10 +19,10 @@ use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Manager};
 
-use crate::ai::search::{resend_answer, SearchReport, MAX_SEARCH_REPORT_BYTES};
+use crate::ai::search::{MAX_SEARCH_REPORT_BYTES, SearchReport, resend_answer};
 use crate::ai::{ChatMessage, Provider};
 use crate::state::{
-    back_up, read_with_retry, should_promote_tmp, AppState, READ_ATTEMPTS, READ_RETRY_DELAY,
+    AppState, READ_ATTEMPTS, READ_RETRY_DELAY, back_up, read_with_retry, should_promote_tmp,
 };
 
 /// Exchanges older than this are removed when a chat is loaded or written.

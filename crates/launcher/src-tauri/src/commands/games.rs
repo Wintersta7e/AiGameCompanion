@@ -240,7 +240,7 @@ pub(crate) fn open_game_logs(app: tauri::AppHandle) -> Result<(), String> {
 mod tests {
     #![allow(let_underscore_drop, reason = "test cleanup is best-effort")]
 
-    use super::{merge_scan, ScanOutcome};
+    use super::{ScanOutcome, merge_scan};
     use crate::models::{Game, GameSource};
 
     fn game(id: &str, name: &str, minutes: u64) -> Game {
