@@ -1915,9 +1915,9 @@ mod tests {
         println!("result: {result:?}");
         println!("log:\n{log}");
         let shown = result.expect_err("a failed CLI is an error");
-        for secret in ["SECRET-QUESTION", "Invented Game", "my save"] {
-            assert!(!log.contains(secret), "{secret} reached the log");
-            assert!(!shown.contains(secret), "{secret} reached the error");
+        for chat_text in ["SECRET-QUESTION", "Invented Game", "my save"] {
+            assert!(!log.contains(chat_text), "{chat_text} reached the log");
+            assert!(!shown.contains(chat_text), "{chat_text} reached the error");
         }
         assert_eq!(
             shown,
