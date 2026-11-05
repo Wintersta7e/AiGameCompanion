@@ -110,6 +110,12 @@ const cases: readonly Case[] = [
     says: `FAIL crates/launcher/package-lock.json unsound-crate 1.0.0 ${RUST_ID}`,
   },
   {
+    name: 'npm id and package from Cargo.lock',
+    report: report([{ name: 'merge-package', vulns: [{ id: NPM_ID }] }], []),
+    expect: 1,
+    says: `FAIL Cargo.lock merge-package 1.0.0 ${NPM_ID}`,
+  },
+  {
     name: 'unowned',
     report: report(
       [{ name: 'certs', vulns: [{ id: 'RUSTSEC-2026-0001', aliases: ['CVE-1'] }] }],
