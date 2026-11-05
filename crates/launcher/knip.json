@@ -16,6 +16,8 @@
     "scripts/osv-scan.ts!",
     "scripts/pin-guard.selftest.ts!",
     "scripts/pin-guard.ts!",
+    "scripts/scorecard-summary.selftest.ts!",
+    "scripts/scorecard-summary.ts!",
     "scripts/test-ids.selftest.ts!",
     "scripts/test-ids.ts!",
     "scripts/wiring-check.selftest.ts!",

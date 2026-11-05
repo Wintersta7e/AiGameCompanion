@@ -1918,6 +1918,12 @@ declare_table() {
 		cmd='source scripts/ci-check.sh && secret_scan_event .'
 	row name='pin freshness report' tags=freshness category=non-blocking target=any tools=node \
 		count='^checked [0-9]+ of [0-9]+ pins' zero='^checked ([0-9]+) of' cmd='node crates/launcher/scripts/freshness.ts'
+	row name='scorecard summary self-test' tags=scorecard,workflows category=both target=any tools=node \
+		count='^scorecard summary self-test: ' zero='cases ([0-9]+)' cmd='node crates/launcher/scripts/scorecard-summary.selftest.ts'
+	# Reads the results file the Scorecard action writes in its CI job.
+	row name='scorecard summary' tags=scorecard category=non-blocking target=any tools=node \
+		count='^scorecard summary: checks [0-9]+' zero='^scorecard summary: checks ([0-9]+)' \
+		cmd='node crates/launcher/scripts/scorecard-summary.ts scorecard.json'
 	# Deletes caches: CI only; the job runs only on main, never for a pull request.
 	row name='cache prune (superseded main caches)' tags=cache-prune category=non-blocking target=any tools=node,gh \
 		events=push,schedule,workflow_dispatch count='^cache prune: listed [0-9]+ caches' zero='^cache prune: listed ([0-9]+) caches' \

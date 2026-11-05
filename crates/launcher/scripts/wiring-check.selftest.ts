@@ -377,6 +377,14 @@ const pruneJob = (
   );
 const PRUNE = pruneJob();
 const withWrite = (text: string): string => swap(text, READ_PERMS, PRUNE_PERMS);
+const SCORECARD_PERMS = `${READ_PERMS}      actions: read\n`;
+const scorecardJob = (head = ifLine(WEEKLY), perms = SCORECARD_PERMS): string =>
+  swap(extraJob('scorecard', 'scorecard', head), READ_PERMS, perms);
+const withActionsRead = swap(
+  job('secrets', 'Scan rows', 'ubuntu-24.04', 'secrets'),
+  READ_PERMS,
+  SCORECARD_PERMS,
+);
 
 const fullCi = (
   linux = CANARY_LINUX,
@@ -384,11 +392,12 @@ const fullCi = (
   freshness = FRESHNESS,
   coverage = COVERAGE,
   prune = PRUNE,
+  scorecard = scorecardJob(),
 ): string =>
   swap(
     CLEAN_CI,
     '  aggregate:\n',
-    `${linux}${windows}${freshness}${coverage}${prune}  aggregate:\n`,
+    `${linux}${windows}${freshness}${coverage}${prune}${scorecard}  aggregate:\n`,
   );
 
 const FULL_LIST = swap(
@@ -399,7 +408,9 @@ const FULL_LIST = swap(
     row('coverage report', 'coverage', 'non-blocking', 'cargo llvm-cov --workspace --locked'),
     row('freshness report', 'freshness', 'non-blocking', 'node scripts/freshness.ts'),
     row('cache prune', 'cache-prune', 'non-blocking', 'node scripts/cache-prune.ts --delete'),
-    'rows\t11\n',
+    row('scorecard self-test', 'scorecard,workflows', 'both', 'node scripts/s.selftest.ts'),
+    row('scorecard summary', 'scorecard', 'non-blocking', 'node scripts/s.ts scorecard.json'),
+    'rows\t13\n',
   ].join('\n'),
 );
 const NEEDS =
@@ -428,7 +439,58 @@ const OTHER_WORKFLOW = [
 ].join('\n');
 
 const nonBlockingCases: readonly Case[] = [
-  full('the five non-blocking jobs pass', fullCi(), [], { counts: 'non-blocking jobs 5' }),
+  full('the six non-blocking jobs pass', fullCi(), [], { counts: 'non-blocking jobs 6' }),
+  full(
+    'the aggregate needing scorecard',
+    swap(fullCi(), NEEDS, swap(NEEDS, 'secrets]', 'secrets, scorecard]')),
+    ['aggregate'],
+  ),
+  full(
+    'scorecard without an if',
+    fullCi(undefined, undefined, undefined, undefined, undefined, scorecardJob('')),
+    ['job if'],
+  ),
+  full(
+    'scorecard whose if is another expression',
+    fullCi(
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      scorecardJob("    if: github.event_name == 'schedule'\n"),
+    ),
+    ['job if'],
+  ),
+  full(
+    'scorecard with id-token: write',
+    fullCi(
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      scorecardJob(undefined, `${SCORECARD_PERMS}      id-token: write\n`),
+    ),
+    ['permissions'],
+  ),
+  full(
+    'scorecard without actions: read',
+    fullCi(
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      scorecardJob(undefined, READ_PERMS),
+    ),
+    ['permissions'],
+  ),
+  full(
+    'actions: read on a job that is not scorecard',
+    swap(fullCi(), job('secrets', 'Scan rows', 'ubuntu-24.04', 'secrets'), withActionsRead),
+    ['permissions'],
+  ),
   full(
     'the aggregate needing canary-linux',
     swap(fullCi(), NEEDS, swap(NEEDS, 'secrets]', 'secrets, canary-linux]')),
@@ -485,7 +547,7 @@ const nonBlockingCases: readonly Case[] = [
         `    name: Extra\n${BETA_ENV}`,
       ),
     },
-    list: swap(FULL_LIST, 'rows\t11\n', `${row('extra', 'extra', 'both', 'true')}\nrows\t12\n`),
+    list: swap(FULL_LIST, 'rows\t13\n', `${row('extra', 'extra', 'both', 'true')}\nrows\t14\n`),
   }),
   full(
     'the toolchain override for every job of ci.yml',
@@ -716,9 +778,9 @@ const constantCases = (): (string | null)[] => [
     ? null
     : 'the required job names are not the two the branch rules require',
   NON_BLOCKING_JOBS.join('|') ===
-  ['canary-linux', 'canary-windows', 'freshness', 'coverage', 'cache-prune'].join('|')
+  ['canary-linux', 'canary-windows', 'freshness', 'coverage', 'cache-prune', 'scorecard'].join('|')
     ? null
-    : 'the non-blocking job list is not the four scheduled or measure-only jobs and the cache prune',
+    : 'the non-blocking job list is not the four scheduled or measure-only jobs, the cache prune and the Scorecard report',
 ];
 
 const SECRETS_JOB = job('secrets', 'Scan rows', 'ubuntu-24.04', 'secrets');

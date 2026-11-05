@@ -80,6 +80,7 @@ export const NON_BLOCKING_JOBS: readonly string[] = [
   'freshness',
   'coverage',
   'cache-prune',
+  'scorecard',
 ];
 export const AGGREGATE_JOB = 'aggregate';
 // The one job with a write scope: it deletes the main branch's superseded
@@ -521,11 +522,11 @@ const crons = (ci: Workflow | undefined): string[] =>
     (item) => asText(asMapping(item).get('cron')) ?? '',
   );
 
-const WEEKLY_JOBS = ['canary-linux', 'canary-windows', 'freshness'];
+const WEEKLY_JOBS = ['canary-linux', 'canary-windows', 'freshness', 'scorecard'];
 const WEEKLY_IF =
   /^github\.event_name == 'workflow_dispatch' \|\| github\.event\.schedule == '([^']*)'$/u;
 
-// Only the canaries and the freshness job carry a job-level if:, and each
+// Only the canaries, the freshness and the Scorecard jobs carry a job-level if:, and each
 // does: the dispatch-or-schedule form naming one line of on.schedule whose
 // day-of-week field is a single day, the same line for all of them. The cache
 // prune job carries exactly CACHE_PRUNE_IF.
@@ -949,7 +950,7 @@ const checkLocked = (
 
 // Permissions: {} at the top, contents: read for a job with a checkout and {}
 // for one without, no write scope (the cache prune job adds exactly
-// actions: write), persist-credentials: false on every
+// actions: write, the Scorecard job actions: read), persist-credentials: false on every
 // checkout, no secrets. expression, and the job token only in the env of the
 // runner call of the workflow-lint or freshness job. The freshness job's call
 // always has it: its report reads GitHub's release API, which limits
@@ -966,18 +967,27 @@ const permissionText = (value: YamlValue | undefined): string => {
   return 'a list';
 };
 
+// The one scope each named ci.yml job adds: the cache prune deletes caches,
+// the Scorecard report reads the workflow runs.
+const ADDED_SCOPES: ReadonlyMap<string, string> = new Map([
+  [CACHE_PRUNE_JOB, 'actions: write'],
+  ['scorecard', 'actions: read'],
+]);
+
+const wantedPermissions = (workflow: Workflow, job: Job): string => {
+  const added = baseName(workflow.file) === 'ci.yml' ? ADDED_SCOPES.get(job.id) : undefined;
+  const scopes = [
+    ...(job.steps.some(isCheckout) ? ['contents: read'] : []),
+    ...(added === undefined ? [] : [added]),
+  ];
+  return `{${scopes.join(', ')}}`;
+};
+
 const checkJobPermissions = (workflow: Workflow, job: Job): Failure[] => {
   const where = `${baseName(workflow.file)} job ${job.id}`;
   const value = job.map.get('permissions');
   const prune = baseName(workflow.file) === 'ci.yml' && job.id === CACHE_PRUNE_JOB;
-  const checkout = job.steps.some(isCheckout);
-  const wanted = prune
-    ? checkout
-      ? '{contents: read, actions: write}'
-      : '{actions: write}'
-    : checkout
-      ? '{contents: read}'
-      : '{}';
+  const wanted = wantedPermissions(workflow, job);
   const failures: Failure[] = [];
   const text = permissionText(value);
   if (text !== wanted)

@@ -524,6 +524,41 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: ./scripts/ci-check.sh --job freshness
 
+  # Reports the OpenSSF Scorecard checks of the repository, weekly or by hand.
+  # The aggregate job does not need it: it reports and never gates, since
+  # some checks cannot reach full marks under this project's release and
+  # review rules. The result is not published.
+  scorecard:
+    name: OpenSSF Scorecard report
+    if: github.event_name == 'workflow_dispatch' || github.event.schedule == '23 3 * * 0'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      actions: read # Scorecard reads the workflow runs and their settings
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Register problem matchers
+        run: echo "::add-matcher::.github/problem-matchers.json"
+      - name: Set up Node
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version-file: .nvmrc
+      - name: Run the Scorecard checks
+        uses: ossf/scorecard-action@fa7117db83c52d787ae5a89f350999701505d78e # v2.5.0
+        with:
+          results_file: scorecard.json
+          results_format: json
+          publish_results: false
+      - name: Report the Scorecard result
+        run: ./scripts/ci-check.sh --job scorecard
+
   # Deletes each main-branch cache that a newer cache of the same family
   # supersedes; otherwise every superseded set stays until GitHub's idle
   # eviction. It runs after every job that saves a cache, also when one of
