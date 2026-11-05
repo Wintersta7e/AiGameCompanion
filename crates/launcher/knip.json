@@ -10,6 +10,8 @@
     "scripts/hygiene-scan.ts!",
     "scripts/npm-audit.selftest.ts!",
     "scripts/npm-audit.ts!",
+    "scripts/osv-scan.selftest.ts!",
+    "scripts/osv-scan.ts!",
     "scripts/pin-guard.selftest.ts!",
     "scripts/pin-guard.ts!",
     "scripts/test-ids.selftest.ts!",

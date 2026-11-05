@@ -1046,7 +1046,6 @@ const RETIRED = joined('mach', 'ete');
 const NOT_ADOPTED = [
   joined('dependency-review-', 'action'),
   joined('cargo ', 'audit'),
-  joined('osv-', 'scanner'),
   joined('lockfile-', 'lint'),
   joined('npm audit ', 'signatures'),
 ];

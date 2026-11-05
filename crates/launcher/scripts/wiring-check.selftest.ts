@@ -895,7 +895,6 @@ const bannedCases: readonly Case[] = [
     hit,
   ),
   banned('an advisory tool in a script', { 'scripts/extra.sh': j('cargo ', 'audit\n') }, hit),
-  banned('a scanner in a script', { 'scripts/extra.sh': j('osv-', 'scanner scan\n') }, hit),
   banned(
     'a lockfile linter in a workflow',
     { '.github/workflows/extra.yml': j('run: lockfile-', 'lint\n') },

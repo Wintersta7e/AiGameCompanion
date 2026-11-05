@@ -27,6 +27,7 @@ export const TOOL_SOURCES: readonly ToolSource[] = [
   { key: 'CARGO_LLVM_COV', repo: 'taiki-e/cargo-llvm-cov', manifest: 'cargo-llvm-cov' },
   { key: 'ZIZMOR', repo: 'zizmorcore/zizmor', manifest: 'zizmor' },
   { key: 'TYPOS', repo: 'crate-ci/typos', manifest: 'typos' },
+  { key: 'OSV_SCANNER', repo: 'google/osv-scanner', manifest: 'osv-scanner' },
   { key: 'GITLEAKS', repo: 'gitleaks/gitleaks', manifest: null },
   { key: 'ACTIONLINT', repo: 'rhysd/actionlint', manifest: null },
 ];

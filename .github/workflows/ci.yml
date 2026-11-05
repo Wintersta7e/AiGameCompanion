@@ -202,7 +202,7 @@ jobs:
           key: xwin-sdk-${{ steps.pins.outputs.image }}-${{ steps.pins.outputs.CARGO_XWIN }}-${{ steps.pins.outputs.XWIN_SDK_VERSION }}-${{ steps.pins.outputs.XWIN_CRT_VERSION }}
 
   supply-chain:
-    name: Rust dependencies (cargo-deny)
+    name: Dependencies (cargo-deny, osv-scanner)
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     permissions:
@@ -222,10 +222,19 @@ jobs:
         run: grep -E '^[A-Z][A-Z0-9_]*=' scripts/ci-tools.env >> "$GITHUB_OUTPUT"
       - name: Install the Rust toolchain
         run: rustup toolchain install --no-self-update
+      - name: Set up Node
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version-file: .nvmrc
       - name: Install cargo-deny
         uses: taiki-e/install-action@1e29709c0ec63babbe8f266397a465f29a825f91 # v2.87.31
         with:
           tool: cargo-deny@${{ steps.pins.outputs.CARGO_DENY }}
+          fallback: none
+      - name: Install osv-scanner
+        uses: taiki-e/install-action@1e29709c0ec63babbe8f266397a465f29a825f91 # v2.87.31
+        with:
+          tool: osv-scanner@${{ steps.pins.outputs.OSV_SCANNER }}
           fallback: none
       - name: Run the supply-chain rows of ci-check.sh
         run: ./scripts/ci-check.sh --job supply-chain

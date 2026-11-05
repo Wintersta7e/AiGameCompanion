@@ -352,6 +352,7 @@ install_hint() {
 	case "$1" in
 	gitleaks | actionlint) printf 'install the %s %s release archive\n' "$1" "$2" ;;
 	typos) printf 'run cargo install --locked typos-cli@%s\n' "$2" ;;
+	osv-scanner) printf 'install the osv-scanner %s release binary\n' "$2" ;;
 	*) printf 'run cargo install --locked %s@%s\n' "$1" "$2" ;;
 	esac
 }
@@ -1889,6 +1890,12 @@ declare_table() {
 	row name=cargo-deny tags=supply-chain category=both target=any tools=rust,cargo-deny \
 		count='gathered [0-9]+ crates|^advisories (ok|FAILED)' zero='gathered ([0-9]+) crates' \
 		cmd='cargo deny --locked -L info check --show-stats'
+	row name='osv scan self-test' tags=supply-chain category=both target=any tools=node \
+		count='^osv scan self-test: ' zero='cases ([0-9]+)' cmd='node crates/launcher/scripts/osv-scan.selftest.ts'
+	# osv-scanner exits 1 on any finding, accepted or not; the checker owns the verdict.
+	row name='osv scan' tags=supply-chain category=both target=any tools=osv-scanner,node \
+		count='^osv scan: lockfiles [0-9]+' zero='^osv scan: lockfiles [0-9]+ packages ([0-9]+)' \
+		cmd='node crates/launcher/scripts/osv-scan.ts .'
 	row name='binary audit self-test' tags=release-audit category=both target=any \
 		tools=strings,iconv,llvm-readobj,sha256sum count='^self-test: ' zero='planted ([0-9]+)' \
 		cmd='scripts/binary-audit.sh self-test'
