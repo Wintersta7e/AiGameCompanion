@@ -1,7 +1,7 @@
 [package]
 name = "launcher"
 version = "2.1.0"
-edition = "2021"
+edition = "2024"
 license = "MIT"
 description = "Desktop launcher and in-game AI companion overlay."
 repository = "https://github.com/Wintersta7e/AiGameCompanion"

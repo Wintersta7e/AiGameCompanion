@@ -195,19 +195,18 @@ fn build_request(
         })
         .collect();
 
-    if let Some(data) = screenshot {
-        if let Some(last_user) = contents
+    if let Some(data) = screenshot
+        && let Some(last_user) = contents
             .iter_mut()
             .rev()
             .find(|content| content.role == "user")
-        {
-            last_user.parts.push(Part::InlineData {
-                inline_data: InlineData {
-                    mime_type: "image/png".to_owned(),
-                    data,
-                },
-            });
-        }
+    {
+        last_user.parts.push(Part::InlineData {
+            inline_data: InlineData {
+                mime_type: "image/png".to_owned(),
+                data,
+            },
+        });
     }
 
     let system_instruction = if system_prompt.trim().is_empty() {

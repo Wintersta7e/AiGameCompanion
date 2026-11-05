@@ -131,17 +131,17 @@ pub(crate) fn hide(app: &AppHandle) {
     if let Some(game) = live_game(app) {
         focus_window(game.hwnd);
     }
-    if let (Some(shown), Some(now), Some(scale)) = (shown, now, scale) {
-        if placement::user_moved(shown.applied, now) {
-            remember_placement(
-                app,
-                OverlayPlacement {
-                    panel: now,
-                    reference: shown.reference,
-                    scale,
-                },
-            );
-        }
+    if let (Some(shown), Some(now), Some(scale)) = (shown, now, scale)
+        && placement::user_moved(shown.applied, now)
+    {
+        remember_placement(
+            app,
+            OverlayPlacement {
+                panel: now,
+                reference: shown.reference,
+                scale,
+            },
+        );
     }
 }
 

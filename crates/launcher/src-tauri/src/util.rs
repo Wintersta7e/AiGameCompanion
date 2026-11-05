@@ -403,12 +403,12 @@ pub(crate) fn strip_test_modules(src: &str) -> String {
     let mut kept = String::with_capacity(src.len());
     let (mut at, mut depth) = (0, 0_usize);
     while at < chars.len() {
-        if depth == 0 {
-            if let Some(body) = test_module_body(&chars, at) {
-                depth = 1;
-                at = body;
-                continue;
-            }
+        if depth == 0
+            && let Some(body) = test_module_body(&chars, at)
+        {
+            depth = 1;
+            at = body;
+            continue;
         }
         let end = token_end(&chars, at);
         if depth == 0 {
