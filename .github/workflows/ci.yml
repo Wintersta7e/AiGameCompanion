@@ -507,6 +507,38 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: ./scripts/ci-check.sh --job freshness
 
+  # Deletes each main-branch cache that a newer cache of the same family
+  # supersedes; otherwise every superseded set stays until GitHub's idle
+  # eviction. It runs after every job that saves a cache, also when one of
+  # them failed. A failed delete fails this job, which no merge waits on.
+  cache-prune:
+    name: Prune superseded main caches
+    if: always() && github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+    needs: [rust, rust-host, frontend, release-audit, coverage, canary-linux, canary-windows]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      actions: write # deletes superseded caches by id
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Register problem matchers
+        run: echo "::add-matcher::.github/problem-matchers.json"
+      - name: Set up Node
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version-file: .nvmrc
+      - name: Delete superseded caches
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: ./scripts/ci-check.sh --job cache-prune
+
   aggregate:
     name: Result of the needed CI jobs
     if: always()
