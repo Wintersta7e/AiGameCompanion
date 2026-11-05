@@ -16,6 +16,9 @@
     "allow-hide-overlay",
     "allow-link-game",
     "allow-open-url",
-    "allow-set-hints-first"
+    "allow-set-hints-first",
+    "allow-take-shot",
+    "allow-shot-png",
+    "allow-drop-shot"
   ]
 }

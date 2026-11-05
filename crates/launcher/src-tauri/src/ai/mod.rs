@@ -55,6 +55,23 @@ impl Provider {
             Self::Openai => "openai",
         }
     }
+
+    /// Whether a request to this provider may carry a screenshot. Codex takes
+    /// one through a file, the others inline.
+    pub(crate) const fn takes_screenshot(self) -> bool {
+        match self {
+            Self::Gemini | Self::Claude | Self::Openai => true,
+        }
+    }
+
+    /// The name the overlay shows for this provider.
+    const fn label(self) -> &'static str {
+        match self {
+            Self::Gemini => "Gemini",
+            Self::Claude => "Claude",
+            Self::Openai => "OpenAI",
+        }
+    }
 }
 
 /// One chat turn sent from the overlay UI.
@@ -136,7 +153,8 @@ pub(crate) struct RequestParams {
     pub conversation_id: u64,
     pub provider: Provider,
     pub messages: Vec<ChatMessage>,
-    pub attach_screenshot: bool,
+    /// The held chat screenshot the page showed, to send with the question.
+    pub shot_id: Option<u64>,
     /// Hints first, as the page showed it when the question was sent.
     pub hints: bool,
 }
@@ -214,34 +232,67 @@ impl AiState {
 }
 
 /// Spawn a chat request, cancelling and replacing any request already running.
-pub(crate) fn spawn_request(app: &AppHandle, params: RequestParams, channel: Channel<SageEvent>) {
+/// The screenshot it names is claimed first: a refused claim returns its
+/// error, starts nothing and leaves a running answer alone. `Ok` means the
+/// screenshot, if any, went with the request, whatever the answer does next.
+pub(crate) fn spawn_request(
+    app: &AppHandle,
+    params: RequestParams,
+    channel: Channel<SageEvent>,
+) -> Result<(), String> {
     let request_id = params.request_id;
-    let handle = tauri::async_runtime::spawn(run(app.clone(), params, channel));
+    let target = crate::overlay::linked_game(app);
+    let claimed = app.state::<crate::shots::ShotStore>().claim_for_request(
+        crate::shots::ShotSlot::Chat,
+        params.shot_id,
+        crate::shots::capture_target(target.as_ref()),
+        None,
+        params.provider.takes_screenshot(),
+    );
+    let screenshot = claimed.map_err(|refusal| {
+        tracing::info!("Request {request_id}: refused: screenshot unavailable");
+        refusal.message(params.provider.label())
+    })?;
+    let handle = tauri::async_runtime::spawn(run(app.clone(), params, target, screenshot, channel));
     app.state::<AiState>().replace_active(request_id, handle);
+    Ok(())
 }
 
-/// Drive one request end to end: build the system prompt + optional screenshot,
-/// stream the provider through a coalescing buffer, and emit terminal events.
-async fn run(app: AppHandle, params: RequestParams, channel: Channel<SageEvent>) {
+/// Drive one request end to end: build the system prompt, stream the provider
+/// with the claimed screenshot (if any) through a coalescing buffer, and emit
+/// terminal events. `target` is the linked game the claim was checked against.
+async fn run(
+    app: AppHandle,
+    params: RequestParams,
+    target: Option<GameInfo>,
+    screenshot: Option<Vec<u8>>,
+    channel: Channel<SageEvent>,
+) {
     let RequestParams {
         request_id,
         conversation_id,
         provider,
         messages,
-        attach_screenshot,
         hints,
+        ..
     } = params;
 
     // Read shared state up front so no state guard is held across an await.
-    // Only a linked, still-live target contributes an identity or a capture target.
-    let ctx = request_context(crate::overlay::linked_game(&app).as_ref());
+    // Only a linked target contributes an identity.
+    let ctx = request_context(target.as_ref());
     let turns = messages.len();
-    let log_line = request_log_line(request_id, provider, attach_screenshot, turns, &ctx, hints);
+    let log_line = request_log_line(
+        request_id,
+        provider,
+        screenshot.is_some(),
+        turns,
+        &ctx,
+        hints,
+    );
     tracing::info!("{log_line}");
     let identity = ctx.identity_block.as_deref();
     let system_prompt = prompt::assemble(prompt_kind(hints));
     let (system_prompt, messages) = payload(PayloadKind::Chat, system_prompt, messages, identity);
-    let capture_target = ctx.capture;
     let cli_cfg = app.state::<AiState>().cli.lock().clone();
     let settings_model = app
         .state::<AppState>()
@@ -251,23 +302,13 @@ async fn run(app: AppHandle, params: RequestParams, channel: Channel<SageEvent>)
         .gemini_model
         .clone();
     // Codex reads a screenshot from a file, so it needs somewhere to put one.
-    let shots = (provider == Provider::Openai && attach_screenshot)
+    let shots = (provider == Provider::Openai && screenshot.is_some())
         .then(|| prepare_shots_dir(&app))
         .flatten();
 
-    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<String>();
-    let chan_stream = channel.clone();
+    let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<String>();
 
     let producer = async move {
-        // Capture INSIDE the timed section. A blocked GDI/WGC call cannot be
-        // cancelled once spawned, so awaiting it before the timeout wrapper
-        // left the UI stuck on "Streaming" with no done, no error and a leaked
-        // blocking-pool thread.
-        let screenshot = if attach_screenshot {
-            capture_png(capture_target).await
-        } else {
-            None
-        };
         let on_chunk = move |text: String| {
             tx.send(text)
                 .map_err(|_| "overlay window closed".to_owned())
@@ -299,34 +340,13 @@ async fn run(app: AppHandle, params: RequestParams, channel: Channel<SageEvent>)
                 .await
             }
             Provider::Openai => {
-                let shot = shots.as_deref().zip(screenshot.as_deref());
-                cli::stream_codex(&cli_cfg, &system_prompt, &messages, shot, on_chunk).await
+                let (dir, png) = (shots.as_deref(), screenshot.as_deref());
+                cli::stream_codex(&cli_cfg, &system_prompt, &messages, dir, png, on_chunk).await
             }
         }
     };
 
-    // Coalesce bursts: drain everything queued into a single Channel message so a
-    // fast per-token provider (Claude deltas) does not flood the IPC boundary.
-    let consumer = async move {
-        while let Some(first) = rx.recv().await {
-            let mut batch = first;
-            while let Ok(more) = rx.try_recv() {
-                batch.push_str(&more);
-            }
-            // A send failure means the overlay webview is gone. Swallowing it
-            // kept the loop running and the CLI subprocess streaming (and
-            // billing) to nobody. Closing `rx` makes the producer's next
-            // `tx.send` fail, which ends the request and drops the child.
-            if chan_stream
-                .send(SageEvent::chunk(request_id, conversation_id, batch))
-                .is_err()
-            {
-                tracing::info!("Overlay channel closed; ending request {request_id}");
-                rx.close();
-                return;
-            }
-        }
-    };
+    let consumer = forward_chunks(rx, channel.clone(), request_id, conversation_id);
 
     // Backstop timeout: a hung CLI (no output, never closing stdout) would
     // otherwise leave the join pending forever, stranding the UI on "Streaming".
@@ -345,23 +365,31 @@ async fn run(app: AppHandle, params: RequestParams, channel: Channel<SageEvent>)
     app.state::<AiState>().clear_if(request_id);
 }
 
-/// Capture the linked game window as PNG bytes for an AI request. Capture
-/// failures are non-fatal: the request proceeds without the screenshot.
-async fn capture_png(target: Option<(i64, u32)>) -> Option<Vec<u8>> {
-    let (hwnd, pid) = target?;
-    match tokio::task::spawn_blocking(move || {
-        crate::overlay_capture::capture_live_window_png(hwnd, pid)
-    })
-    .await
-    {
-        Ok(Ok(png)) => Some(png),
-        Ok(Err(error)) => {
-            tracing::warn!("screenshot capture failed: {error}");
-            None
+/// Forward a request's text to the overlay, coalescing bursts: everything
+/// queued is drained into a single Channel message so a fast per-token
+/// provider (Claude deltas) does not flood the IPC boundary.
+async fn forward_chunks(
+    mut rx: tokio::sync::mpsc::UnboundedReceiver<String>,
+    channel: Channel<SageEvent>,
+    request_id: u64,
+    conversation_id: u64,
+) {
+    while let Some(first) = rx.recv().await {
+        let mut batch = first;
+        while let Ok(more) = rx.try_recv() {
+            batch.push_str(&more);
         }
-        Err(error) => {
-            tracing::warn!("screenshot capture task failed: {error}");
-            None
+        // A send failure means the overlay webview is gone. Swallowing it
+        // kept the loop running and the CLI subprocess streaming (and
+        // billing) to nobody. Closing `rx` makes the producer's next
+        // `tx.send` fail, which ends the request and drops the child.
+        if channel
+            .send(SageEvent::chunk(request_id, conversation_id, batch))
+            .is_err()
+        {
+            tracing::info!("Overlay channel closed; ending request {request_id}");
+            rx.close();
+            return;
         }
     }
 }
@@ -383,13 +411,14 @@ pub(crate) fn shots_dir(app: &AppHandle) -> Option<std::path::PathBuf> {
     }
 }
 
-/// The screenshot folder, created if needed. `None` sends Codex no image.
+/// The screenshot folder, created if needed. `None` ends a Codex request that
+/// carries a screenshot.
 fn prepare_shots_dir(app: &AppHandle) -> Option<std::path::PathBuf> {
     let dir = shots_dir(app)?;
     match std::fs::create_dir_all(&dir) {
         Ok(()) => Some(dir),
         Err(e) => {
-            tracing::warn!("Codex request continues without the screenshot: {e}");
+            tracing::warn!("Could not create the screenshot folder: {e}");
             None
         }
     }
@@ -560,21 +589,90 @@ pub(crate) fn validate_gemini_model(model: &str) -> Result<(), String> {
     gemini::validate_model(model)
 }
 
-/// Capture the linked game window and translate any foreign text in it to
+/// Why a translation is refused before its screenshot is claimed.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum TranslateBlock {
+    /// No linked game to translate.
+    NotLinked,
+    /// The translating provider cannot be used.
+    Unavailable,
+    /// The translating provider takes no screenshots.
+    NoScreenshots,
+}
+
+impl TranslateBlock {
+    /// The name its log line gives the refusal.
+    pub(crate) const fn code(self) -> &'static str {
+        match self {
+            Self::NotLinked => "no linked game",
+            Self::Unavailable => "unavailable",
+            Self::NoScreenshots => "no screenshots",
+        }
+    }
+}
+
+/// Whether a translation may go ahead: the first failing check, in order.
+pub(crate) const fn translate_gate(
+    linked: bool,
+    available: bool,
+    takes_screenshot: bool,
+) -> Result<(), TranslateBlock> {
+    if !linked {
+        Err(TranslateBlock::NotLinked)
+    } else if !available {
+        Err(TranslateBlock::Unavailable)
+    } else if !takes_screenshot {
+        Err(TranslateBlock::NoScreenshots)
+    } else {
+        Ok(())
+    }
+}
+
+/// Translate any foreign text in the held translate screenshot `shot_id` to
 /// English via Gemini. A one-shot call, independent of the chat request slot.
-/// `settings_model` is the Gemini model chosen in Settings (empty for none).
-pub(crate) async fn translate_capture(
-    hwnd: i64,
-    pid: u32,
-    settings_model: String,
-) -> Result<String, String> {
-    let png = tokio::task::spawn_blocking(move || {
-        crate::overlay_capture::capture_live_window_png(hwnd, pid)
-    })
-    .await
-    .map_err(|error| format!("capture task failed: {error}"))??;
-    let screenshot = base64::engine::general_purpose::STANDARD.encode(png);
-    let cfg = gemini::load_config()?;
+/// The screenshot is claimed first: a refusal sends nothing and keeps it held.
+pub(crate) async fn translate_held(app: &AppHandle, shot_id: u64) -> Result<String, String> {
+    let provider = Provider::Gemini;
+    let game = crate::overlay::linked_game(app);
+    let target = crate::shots::capture_target(game.as_ref());
+    let key = gemini::load_config();
+    if let Err(block) = translate_gate(target.is_some(), key.is_ok(), provider.takes_screenshot()) {
+        tracing::info!("Translate: refused: {}", block.code());
+        return Err(match block {
+            TranslateBlock::NotLinked => crate::overlay::NO_LINKED_GAME.to_owned(),
+            TranslateBlock::Unavailable => key.err().unwrap_or_default(),
+            TranslateBlock::NoScreenshots => format!(
+                "{} can't receive screenshots, so it can't translate.",
+                provider.label()
+            ),
+        });
+    }
+    let cfg = key?;
+    let region = crate::region::linked_region(app, game.as_ref());
+    let png = app
+        .state::<crate::shots::ShotStore>()
+        .claim_for_request(
+            crate::shots::ShotSlot::Translate,
+            Some(shot_id),
+            target,
+            region.as_ref(),
+            provider.takes_screenshot(),
+        )
+        // A named screenshot is claimed or refused, never skipped: treat no
+        // bytes as gone.
+        .and_then(|png| png.ok_or(crate::shots::ShotRefusal::Gone))
+        .map_err(|refusal| {
+            tracing::info!("Translate: refused: screenshot unavailable");
+            refusal.message(provider.label())
+        })?;
+    let screenshot = encode_png(&png);
+    let settings_model = app
+        .state::<AppState>()
+        .launcher
+        .lock()
+        .settings
+        .gemini_model
+        .clone();
     let model = gemini::resolve_model(&settings_model, &gemini::file_model());
     let (system, messages) = payload(
         PayloadKind::Translate,
@@ -617,6 +715,7 @@ mod tests {
                 game_id: "g1".into(),
                 steam_app_id: Some(123_450),
             },
+            game_key: "library:g1".into(),
         }
     }
 
@@ -779,7 +878,8 @@ mod tests {
                 ("block", block.as_str()),
                 ("log line", line.as_str()),
             ] {
-                for withheld in ["SECRET-TITLE", r"C:\Games\Foo", r"c:\games\foo"] {
+                let key = target(true).game_key;
+                for withheld in ["SECRET-TITLE", r"C:\Games\Foo", r"c:\games\foo", &key] {
                     assert!(!text.contains(withheld), "{what} contains {withheld}");
                 }
             }
@@ -896,13 +996,66 @@ mod tests {
         assert_eq!(count, 6, "a provider change that no window hears about");
     }
 
+    /// Every provider. A new variant fails to compile in the match; add it to
+    /// the list too.
+    fn all_providers() -> [Provider; 3] {
+        let all = [Provider::Gemini, Provider::Claude, Provider::Openai];
+        for provider in all {
+            match provider {
+                Provider::Gemini | Provider::Claude | Provider::Openai => {}
+            }
+        }
+        all
+    }
+
     #[test]
-    fn captures_go_through_the_liveness_check() {
-        let needle = concat!("capture_window_png", "(");
-        let (files, count) = crate::util::count_in_sources(needle, Some("overlay_capture.rs"));
-        println!("scanned {files} files, found {count} occurrence(s) of {needle}");
-        assert!(files > 0, "the source scan found no files");
-        assert_eq!(count, 0, "capture only through capture_live_window_png");
+    fn every_provider_takes_screenshots() {
+        for provider in all_providers() {
+            println!("{}: {}", provider.as_str(), provider.takes_screenshot());
+            assert!(provider.takes_screenshot(), "{}", provider.as_str());
+        }
+    }
+
+    #[test]
+    fn provider_labels_match_the_overlay() {
+        let source = include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../src/lib/stores/companion.svelte.ts"
+        ));
+        for provider in all_providers() {
+            let entry = format!("{}: {{ label: '{}'", provider.as_str(), provider.label());
+            println!("{entry}");
+            assert!(source.contains(&entry), "PROVIDERS lacks {entry}");
+        }
+    }
+
+    #[test]
+    fn translate_gate_order() {
+        for bits in 0..8_u8 {
+            let (linked, available, takes) = (bits & 4 != 0, bits & 2 != 0, bits & 1 != 0);
+            let expected = if !linked {
+                Err(TranslateBlock::NotLinked)
+            } else if !available {
+                Err(TranslateBlock::Unavailable)
+            } else if !takes {
+                Err(TranslateBlock::NoScreenshots)
+            } else {
+                Ok(())
+            };
+            let got = translate_gate(linked, available, takes);
+            println!(
+                "linked {linked}, available {available}, takes {takes}: {:?}",
+                got.map_err(TranslateBlock::code)
+            );
+            assert_eq!(got, expected);
+        }
+        let codes = [
+            TranslateBlock::NotLinked,
+            TranslateBlock::Unavailable,
+            TranslateBlock::NoScreenshots,
+        ]
+        .map(TranslateBlock::code);
+        assert_eq!(codes, ["no linked game", "unavailable", "no screenshots"]);
     }
 
     #[test]

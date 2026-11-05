@@ -12,7 +12,9 @@ mod overlay;
 mod overlay_capture;
 mod placement;
 mod process_watch;
+mod region;
 mod secrets;
+mod shots;
 mod state;
 mod trust;
 mod util;
@@ -105,15 +107,16 @@ fn main() {
                     if shortcut == &toggle {
                         overlay::toggle(app);
                     } else if shortcut == &translate {
-                        overlay::trigger(app, "translate-request");
+                        overlay::trigger(app, shots::ShotSlot::Translate);
                     } else if shortcut == &quick_ask {
-                        overlay::trigger(app, "quick-ask");
+                        overlay::trigger(app, shots::ShotSlot::Chat);
                     }
                 })
                 .build(),
         )
         .manage(OverlayState::default())
         .manage(AiState::default())
+        .manage(shots::ShotStore::default())
         .manage(HotkeyStatus::default())
         .setup(move |app| {
             // Under `windows_subsystem = "windows"` there is no console and no
@@ -274,6 +277,9 @@ fn main() {
             commands::ai::recheck_clis,
             overlay::hide_overlay,
             overlay::link_game,
+            shots::take_shot,
+            shots::shot_png,
+            shots::drop_shot,
         ])
         .run(context);
 

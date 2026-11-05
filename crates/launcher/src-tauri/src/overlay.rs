@@ -14,6 +14,9 @@ use crate::models::{Game, GameSource};
 use crate::placement::{self, MonitorArea, OverlayPlacement, Placed, Rect};
 use crate::state::AppState;
 
+/// Shown when a screenshot or a translation needs a linked game and there is none.
+pub(crate) const NO_LINKED_GAME: &str = "No linked game -- link the window in the overlay first.";
+
 /// What a linked request may tell a provider about the game, besides its name.
 /// Rust-only: never sent to the page.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -50,6 +53,11 @@ pub(crate) struct GameInfo {
     /// What a linked request may say about the game; never sent to the page.
     #[serde(skip)]
     pub(crate) identity: Identity,
+    /// The key the game's stored values are kept under; empty when the exe
+    /// path could not be read. It may hold a local path: never sent to the
+    /// page or a provider, never logged.
+    #[serde(skip)]
+    pub(crate) game_key: String,
 }
 
 /// Remembers the game window that had focus before the overlay was shown, so
@@ -106,6 +114,9 @@ pub(crate) fn hide_overlay(app: AppHandle) {
 /// A panel the user dragged or resized since the show is remembered; an
 /// unmoved one writes nothing, so a default is never frozen into the record.
 pub(crate) fn hide(app: &AppHandle) {
+    if let Some(shots) = app.try_state::<crate::shots::ShotStore>() {
+        shots.clear();
+    }
     let Some(overlay) = app.get_webview_window("overlay") else {
         return;
     };
@@ -159,36 +170,106 @@ fn record_placement(state: &AppState, record: OverlayPlacement) -> bool {
     true
 }
 
-/// Show the overlay (if hidden) and fire an action event to the overlay UI, e.g.
-/// `translate-request` or `quick-ask` from a global hotkey.
-pub(crate) fn trigger(app: &AppHandle, event: &str) {
+/// A capture hotkey for `slot`: take the linked game's screenshot while it
+/// still has focus, then show (or focus) the overlay and send the slot's
+/// action event. Only the link decides whether a screenshot is taken.
+pub(crate) fn trigger(app: &AppHandle, slot: crate::shots::ShotSlot) {
     let Some(overlay) = app.get_webview_window("overlay") else {
         return;
     };
-    if overlay.is_visible().unwrap_or(false) {
+    let visible = overlay.is_visible().unwrap_or(false);
+    let game = if visible { None } else { detect(app) };
+    let linked = linked_game(app);
+    let Some(target) = crate::shots::capture_target(linked.as_ref()) else {
+        finish(app, visible, game, slot, None);
+        return;
+    };
+    let region = match slot {
+        crate::shots::ShotSlot::Translate => crate::region::linked_region(app, linked.as_ref()),
+        crate::shots::ShotSlot::Chat => None,
+    };
+    crate::shots::take_for_hotkey(app.clone(), slot, target, region, move |app, take| {
+        finish(app, visible, game, slot, Some(take))
+    });
+}
+
+/// The end of a capture hotkey, on the main thread: focus the visible overlay
+/// or show the hidden one, then send `slot`'s action event with the number of
+/// the take it started, if any. Returns `false`, dropping every held
+/// screenshot, when the overlay could not be shown.
+///
+/// Visibility is read here, not at the key press: an earlier hotkey's finish
+/// may have shown the overlay since, and showing it again would reset the
+/// screenshot that hotkey is still taking. `game` was detected at the press
+/// only when the overlay was hidden then.
+fn finish(
+    app: &AppHandle,
+    pressed_visible: bool,
+    game: Option<GameInfo>,
+    slot: crate::shots::ShotSlot,
+    take: Option<u64>,
+) -> bool {
+    let visible = app
+        .get_webview_window("overlay")
+        .is_some_and(|overlay| overlay.is_visible().unwrap_or(false));
+    if visible {
         // Already visible does not mean focused: the overlay is always-on-top,
         // so it stays on screen after the user clicks back into the game.
         // Without this the quick-ask input appears while keystrokes still go to
         // the game as movement keys.
-        crate::util::log_if_err("focus overlay", overlay.set_focus());
+        if let Some(overlay) = app.get_webview_window("overlay") {
+            crate::util::log_if_err("focus overlay", overlay.set_focus());
+        }
     } else {
-        show_overlay(app);
+        // Hidden since the press: detect now, as a plain show does.
+        let game = if pressed_visible { detect(app) } else { game };
+        if !present(app, game) {
+            if let Some(shots) = app.try_state::<crate::shots::ShotStore>() {
+                shots.clear();
+            }
+            return false;
+        }
     }
-    crate::util::log_if_err("emit overlay action", app.emit_to("overlay", event, ()));
+    let action = crate::shots::HotkeyAction { take };
+    crate::util::log_if_err(
+        "emit overlay action",
+        app.emit_to("overlay", slot.hotkey_event(), action),
+    );
+    true
 }
 
-/// Capture the current foreground window (the game) BEFORE the overlay steals
-/// focus, store it, then show + focus the overlay and report detection to the UI.
+/// Detect the foreground game BEFORE the overlay steals focus, then show and
+/// focus the overlay and report detection to the UI.
 fn show_overlay(app: &AppHandle) {
+    present(app, detect(app));
+}
+
+/// Show and focus the overlay, then report `game` to the UI. Returns `false`,
+/// reporting nothing, when the overlay could not be shown.
+fn present(app: &AppHandle, game: Option<GameInfo>) -> bool {
     let Some(overlay) = app.get_webview_window("overlay") else {
-        return;
+        return false;
     };
+    if !show_placed(app, &overlay, game.as_ref()) {
+        return false;
+    }
+    // A null payload tells the overlay UI "no game detected".
+    crate::util::log_if_err(
+        "emit overlay-status",
+        app.emit_to("overlay", "overlay-status", game),
+    );
+    true
+}
+
+/// The current foreground window (the game), classified and stored as the
+/// target; the game to report.
+fn detect(app: &AppHandle) -> Option<GameInfo> {
     let detected = foreground_game(std::process::id());
     // A detection miss must not erase what we already had -- alt-tabbing to the
     // launcher itself returns None, and clobbering on that left the user unable
     // to translate a game still running on another monitor. Keep the previous
     // target when it is still alive, drop it when it is not.
-    let game = match detected {
+    match detected {
         Some(mut game) => {
             if let Some(state) = app.try_state::<OverlayState>() {
                 // One lock at a time: the linked pairs are copied out before
@@ -208,6 +289,7 @@ fn show_overlay(app: &AppHandle) {
                 game.name = classification.name;
                 game.linked = classification.linked;
                 game.identity = classification.identity;
+                game.game_key = classification.game_key;
                 // Read from the exe file, with no lock held.
                 if let Identity::Program { product_name } = &mut game.identity {
                     *product_name =
@@ -218,25 +300,22 @@ fn show_overlay(app: &AppHandle) {
             Some(game)
         }
         None => live_game(app),
-    };
-    show_placed(app, &overlay, game.as_ref());
-    // A null payload tells the overlay UI "no game detected".
-    crate::util::log_if_err(
-        "emit overlay-status",
-        app.emit_to("overlay", "overlay-status", game),
-    );
+    }
 }
 
 /// Show and focus the overlay, first placed for `game` when a reference rect
 /// is found. Position before size: a move onto a monitor of another DPI keeps
 /// the logical size, which the size then overrides. A read-back that differs
-/// from the target is applied once more, never in a loop.
-fn show_placed(app: &AppHandle, overlay: &tauri::WebviewWindow, game: Option<&GameInfo>) {
+/// from the target is applied once more, never in a loop. Returns `false`
+/// when the window could not be shown.
+fn show_placed(app: &AppHandle, overlay: &tauri::WebviewWindow, game: Option<&GameInfo>) -> bool {
     let target = placement_target(app, game);
     if let Some((_, _, placed)) = &target {
         apply_rect(overlay, placed.rect);
     }
-    crate::util::log_if_err("show overlay", overlay.show());
+    let showed = overlay.show();
+    let visible = showed.is_ok();
+    crate::util::log_if_err("show overlay", showed);
     crate::util::log_if_err("focus overlay", overlay.set_focus());
     raise_topmost(overlay);
     let shown = target.map(|(reference, scale, placed)| {
@@ -263,6 +342,7 @@ fn show_placed(app: &AppHandle, overlay: &tauri::WebviewWindow, game: Option<&Ga
     if let Some(state) = app.try_state::<OverlayState>() {
         *state.shown.lock() = shown;
     }
+    visible
 }
 
 fn apply_rect(overlay: &tauri::WebviewWindow, rect: Rect) {
@@ -346,6 +426,7 @@ struct Classification {
     name: String,
     linked: bool,
     identity: Identity,
+    game_key: String,
 }
 
 /// Name the detected window, decide whether requests may use it and what they
@@ -353,7 +434,7 @@ struct Classification {
 /// identified by its id and Steam app id; any other window is named by its exe
 /// stem, identified as a program and linked only if the user linked this
 /// (pid, exe) this session. A window whose exe path could not be read is never
-/// linked and has no identity.
+/// linked and has no identity and no key.
 fn classify(
     exe: &str,
     pid: u32,
@@ -365,8 +446,10 @@ fn classify(
             name: String::new(),
             linked: false,
             identity: Identity::Unknown,
+            game_key: String::new(),
         };
     }
+    let exe_key = || format!("exe:{}", normalize_path(exe));
     if let Some(game) = library_match(exe, games) {
         return Classification {
             name: identity_text(&game.name),
@@ -375,13 +458,30 @@ fn classify(
                 game_id: game.id.clone(),
                 steam_app_id: steam_app_id(game),
             },
+            game_key: if game.id.is_empty() {
+                exe_key()
+            } else {
+                library_key(&game.id)
+            },
         };
     }
     Classification {
         name: identity_text(&exe_stem(exe)),
         linked: user_linked.contains(&(pid, exe.to_owned())),
         identity: Identity::Program { product_name: None },
+        game_key: exe_key(),
     }
+}
+
+/// The key a library game's stored values are kept under.
+pub(crate) fn library_key(game_id: &str) -> String {
+    format!("library:{game_id}")
+}
+
+/// The key `target`'s stored values are kept under: only for a linked target
+/// with a key.
+pub(crate) fn game_key(target: &GameInfo) -> Option<String> {
+    (target.linked && !target.game_key.is_empty()).then(|| target.game_key.clone())
 }
 
 /// A Steam game's app id: its `source_id` when that is 1-10 ASCII digits
@@ -624,6 +724,12 @@ pub(crate) fn live_game(app: &AppHandle) -> Option<GameInfo> {
     tracing::info!("Stored target window {} is gone; clearing", game.hwnd);
     *slot = None;
     None
+}
+
+/// The stored target as it is, not checked to be alive: only to tell why a
+/// checked read found none.
+pub(crate) fn stored_game(app: &AppHandle) -> Option<GameInfo> {
+    app.try_state::<OverlayState>()?.game.lock().clone()
 }
 
 /// The stored target, revalidated, when requests may use it. Every provider
@@ -993,24 +1099,9 @@ mod tests {
             "no GameInfo type found in Overlay.svelte"
         );
 
-        let missing: Vec<String> = rust
-            .iter()
-            .filter(|(key, ty)| {
-                !typescript
-                    .iter()
-                    .any(|(name, ts_ty, _)| name == key && ts_ty == ty)
-            })
-            .map(|(key, ty)| format!("{key}: {ty}"))
-            .collect();
-        let extra_required: Vec<&str> = typescript
-            .iter()
-            .filter(|(name, _, optional)| !optional && !rust.iter().any(|(key, _)| key == name))
-            .map(|(name, _, _)| name.as_str())
-            .collect();
-        assert!(
-            missing.is_empty() && extra_required.is_empty(),
-            "missing or mistyped in TypeScript: {missing:?}; not sent by Rust but required: {extra_required:?}"
-        );
+        // GameInfo has no Option field, so the same list stands for both.
+        let mismatches = crate::util::mirror_mismatches(&typescript, &rust, &rust, source);
+        assert!(mismatches.is_empty(), "{mismatches:#?}");
     }
 
     fn game(name: &str, install_dir: &str, exe_path: Option<&str>) -> Game {
@@ -1072,11 +1163,12 @@ mod tests {
         }
     }
 
-    fn program(name: &str, linked: bool) -> Classification {
+    fn program(name: &str, linked: bool, game_key: &str) -> Classification {
         Classification {
             name: name.to_owned(),
             linked,
             identity: Identity::Program { product_name: None },
+            game_key: game_key.to_owned(),
         }
     }
 
@@ -1093,8 +1185,14 @@ mod tests {
                     game_id: "steam_123450".to_owned(),
                     steam_app_id: Some(123_450),
                 },
+                game_key: "library:steam_123450".to_owned(),
             }
         );
+        let no_id = [game("Real Name", r"C:\Games\Foo", None)];
+        let found = classify(r"C:\Games\Foo\bin\Foo.exe", 7, &no_id, &nothing_linked);
+        println!("library game with no id: {:?}", found.game_key);
+        assert_eq!(found.game_key, r"exe:c:\games\foo\bin\foo.exe");
+        assert!(found.linked, "still a library game");
         for (source_id, app_id) in [
             ("62a", None),
             ("", None),
@@ -1134,21 +1232,22 @@ mod tests {
         );
         assert_eq!(
             classify(r"C:\a\b\Game.EXE", 7, &library, &nothing_linked),
-            program("Game", false)
+            program("Game", false, r"exe:c:\a\b\game.exe")
         );
 
         let linked = HashSet::from([(7, r"C:\a\b\Game.EXE".to_owned())]);
         assert_eq!(
             classify(r"C:\a\b\Game.EXE", 7, &library, &linked),
-            program("Game", true)
+            program("Game", true, r"exe:c:\a\b\game.exe"),
+            "linking keeps the key"
         );
         assert_eq!(
             classify(r"C:\a\b\Other.exe", 7, &library, &linked),
-            program("Other", false)
+            program("Other", false, r"exe:c:\a\b\other.exe")
         );
         assert_eq!(
             classify(r"C:\a\b\Game.EXE", 8, &library, &linked),
-            program("Game", false)
+            program("Game", false, r"exe:c:\a\b\game.exe")
         );
 
         let linked_empty = HashSet::from([(7, String::new())]);
@@ -1158,6 +1257,7 @@ mod tests {
                 name: String::new(),
                 linked: false,
                 identity: Identity::Unknown,
+                game_key: String::new(),
             }
         );
 
@@ -1169,11 +1269,35 @@ mod tests {
     }
 
     #[test]
+    fn game_key_only_for_linked_targets() {
+        let target = |linked: bool, game_key: &str| GameInfo {
+            hwnd: 42,
+            pid: 7,
+            exe: r"C:\Games\Foo\foo.exe".to_owned(),
+            linked,
+            game_key: game_key.to_owned(),
+            ..GameInfo::default()
+        };
+        let cases = [
+            ("unlinked", target(false, "library:x"), None),
+            ("linked, no key", target(true, ""), None),
+            ("linked", target(true, "library:x"), Some("library:x")),
+        ];
+        for (case, game, expected) in cases {
+            let got = game_key(&game);
+            println!("{case}: {got:?}");
+            assert_eq!(got.as_deref(), expected, "{case}");
+        }
+        assert_eq!(library_key("x"), "library:x");
+    }
+
+    #[test]
     fn game_info_sends_no_identity() {
         let identified = GameInfo {
             identity: Identity::Program {
                 product_name: Some("Foo Studio Game".to_owned()),
             },
+            game_key: r"exe:c:\games\foo\foo.exe".to_owned(),
             ..GameInfo::default()
         };
         for target in [GameInfo::default(), identified] {

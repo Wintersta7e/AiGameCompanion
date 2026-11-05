@@ -64,7 +64,9 @@ a working tool you can build and run, not a polished consumer app.
 - Streaming "Sage" replies over a Tauri channel, multi-turn chat, Stop / New chat.
 - Screenshot vision for all three providers via **Windows.Graphics.Capture** --
   capture the game frame with no injection.
-- Translate (**Ctrl+Shift+T**) and quick-ask (**Ctrl+Shift+A**) hotkeys that wait for Enter.
+- Translate (**Ctrl+Shift+T**) and quick-ask (**Ctrl+Shift+A**) hotkeys that take a
+  screenshot of the linked game and show it in the panel; nothing is sent until
+  you press Enter or click.
 - Desktop launcher (Tauri 2 + Svelte 5) -- Steam library discovery, cover art,
   one-click launch, tray, launch-on-startup, and play-time via an external process
   watcher.
@@ -115,11 +117,17 @@ fall back to one another silently.
 
 ### Screenshot vision & translation
 
-Attach the current frame to a question (any provider) -- captured via
-Windows.Graphics.Capture, no injection. The hotkeys stage a request and wait:
+Ask about the current frame with any provider -- captured via
+Windows.Graphics.Capture, no injection. A screenshot is taken with the image
+button, or by Ctrl+Shift+A / Ctrl+Shift+T for a linked game. It is shown in the
+panel, kept only in memory, and sent only when you press Enter or click.
+**Retake** takes it again, **Remove** discards it, and hiding Sage drops it. You
+see every screenshot before it is sent.
 
-- **Ctrl+Shift+T** opens the translate tab; Enter (or a click) captures and translates.
-- **Ctrl+Shift+A** stages a preset question with the screenshot on; Enter sends it.
+- **Ctrl+Shift+T** takes a screenshot and opens the translate tab; Enter (or
+  **Translate**) sends it for translation.
+- **Ctrl+Shift+A** takes a screenshot and stages a preset question about it;
+  Enter sends both.
 
 Sage only uses a _linked_ window: games in your library link automatically, and
 any other window shows a one-click **Link** control for that session. Until a
@@ -152,9 +160,10 @@ default provider, hotkey reference, launcher toggles).
    key (stored in the Windows Credential Manager). Claude / OpenAI are detected
    automatically if their CLIs are installed.
 3. **Play.** With a game in the foreground, press **Ctrl+Shift+G** to open Sage,
-   type a question, and optionally attach the current frame. A window outside your
-   library opens unlinked: click **Link** once to use it for the session.
-   **Ctrl+Shift+T** (translate) and **Ctrl+Shift+A** (preset question) wait for Enter.
+   type a question, and optionally take a screenshot with the image button. A
+   window outside your library opens unlinked: click **Link** once to use it for
+   the session. **Ctrl+Shift+T** (translate) and **Ctrl+Shift+A** (preset
+   question) take a screenshot of the linked game and show it; Enter sends it.
 
 ## Layout
 

@@ -227,26 +227,168 @@ pub(crate) fn ts_fields(source: &str, opener: &str) -> Vec<(String, String, bool
         .collect()
 }
 
-/// Each field of a serialised JSON object with the TypeScript type it maps to:
-/// `string`, `number` or `boolean`, else `unsupported`. Empty for a non-object.
+/// Each field of a serialised JSON object with the kind it has on the wire:
+/// `string`, `number`, `boolean`, `null`, `object`, an array of one of those
+/// (`string[]`, `number[]`, `boolean[]`, `object[]`), or `array` for an empty
+/// or mixed array, whose element type the sample cannot tell. Empty for a
+/// non-object.
 #[cfg(test)]
 pub(crate) fn json_fields(value: &serde_json::Value) -> Vec<(String, &'static str)> {
+    use serde_json::Value;
+    fn scalar(value: &Value) -> &'static str {
+        match value {
+            Value::String(_) => "string",
+            Value::Number(_) => "number",
+            Value::Bool(_) => "boolean",
+            Value::Null => "null",
+            Value::Object(_) => "object",
+            Value::Array(_) => "array",
+        }
+    }
     value.as_object().map_or_default(|object| {
         object
             .iter()
             .map(|(key, value)| {
-                let ty = match value {
-                    serde_json::Value::String(_) => "string",
-                    serde_json::Value::Number(_) => "number",
-                    serde_json::Value::Bool(_) => "boolean",
-                    serde_json::Value::Null
-                    | serde_json::Value::Array(_)
-                    | serde_json::Value::Object(_) => "unsupported",
+                let Value::Array(items) = value else {
+                    return (key.clone(), scalar(value));
                 };
-                (key.clone(), ty)
+                let first = items.first().map(scalar);
+                let kind = match first {
+                    Some(kind) if items.iter().all(|item| scalar(item) == kind) => match kind {
+                        "string" => "string[]",
+                        "number" => "number[]",
+                        "boolean" => "boolean[]",
+                        "object" => "object[]",
+                        _ => "array",
+                    },
+                    _ => "array",
+                };
+                (key.clone(), kind)
             })
             .collect()
     })
+}
+
+/// Every way the TypeScript fields `ts` (from `ts_fields`) fail to mirror what
+/// Rust sends; empty when they mirror it.
+///
+/// `full` is `json_fields` of the Rust value with every `Option` set, `empty`
+/// of the same value with every `Option` unset (the same list twice for a type
+/// without one). A field `null` in `empty` must be `<T> | null` in TypeScript;
+/// one absent from `empty` (skipped when unset) must be optional. An `object`
+/// matches a type name (that type is checked by its own call), `object[]` a
+/// type name's array, and a `string` also a literal alias declared in `source`
+/// (its values are checked by `alias_mismatches`). A field Rust never sends
+/// must be optional.
+#[cfg(test)]
+pub(crate) fn mirror_mismatches(
+    ts: &[(String, String, bool)],
+    full: &[(String, &str)],
+    empty: &[(String, &str)],
+    source: &str,
+) -> Vec<String> {
+    let mut found = Vec::new();
+    for (key, kind) in full {
+        let Some((_, ts_ty, optional)) = ts.iter().find(|(name, _, _)| name == key) else {
+            found.push(format!("missing or mistyped in TypeScript: {key}: {kind}"));
+            continue;
+        };
+        let when_unset = empty.iter().find(|(name, _)| name == key).map(|(_, k)| *k);
+        let ty = match when_unset {
+            Some("null") => {
+                let Some(inner) = ts_ty.strip_suffix(" | null") else {
+                    found.push(format!(
+                        "nullable in Rust, so `| null` in TypeScript: {key}: {ts_ty}"
+                    ));
+                    continue;
+                };
+                inner
+            }
+            None if !optional => {
+                found.push(format!(
+                    "skipped when unset in Rust, so optional in TypeScript: {key}"
+                ));
+                continue;
+            }
+            _ => ts_ty.as_str(),
+        };
+        if *kind == "array" {
+            found.push(format!(
+                "empty or mixed array in the Rust sample, element type unchecked: {key}"
+            ));
+        } else if !kind_matches(kind, ty, source) {
+            found.push(format!("missing or mistyped in TypeScript: {key}: {kind}"));
+        }
+    }
+    for (name, _, optional) in ts {
+        if !optional && !full.iter().any(|(key, _)| key == name) {
+            found.push(format!("not sent by Rust but required: {name}"));
+        }
+    }
+    found
+}
+
+/// The literal union alias `name` declared in `source` as
+/// `type <name> = '...' | '...';`, as its literals.
+#[cfg(test)]
+fn literal_alias(source: &str, name: &str) -> Option<Vec<String>> {
+    let (_, rest) = source.split_once(&format!("type {name} ="))?;
+    let (body, _) = rest.split_once(';')?;
+    body.split('|')
+        .map(|part| {
+            let part = part.trim();
+            part.strip_prefix('\'')
+                .and_then(|p| p.strip_suffix('\''))
+                .or_else(|| part.strip_prefix('"').and_then(|p| p.strip_suffix('"')))
+                .map(str::to_owned)
+        })
+        .collect()
+}
+
+/// Whether the TypeScript type `ty` can hold a JSON value of `kind`.
+#[cfg(test)]
+fn kind_matches(kind: &str, ty: &str, source: &str) -> bool {
+    const PRIMITIVES: [&str; 9] = [
+        "string",
+        "number",
+        "boolean",
+        "null",
+        "undefined",
+        "unknown",
+        "any",
+        "object",
+        "never",
+    ];
+    let type_name = |name: &str| {
+        name.chars().next().is_some_and(char::is_alphabetic)
+            && name.chars().all(|c| c.is_alphanumeric() || c == '_')
+            && !PRIMITIVES.contains(&name)
+    };
+    match kind {
+        "object" => type_name(ty),
+        "object[]" => ty.strip_suffix("[]").is_some_and(type_name),
+        "string" => ty == "string" || literal_alias(source, ty).is_some_and(|l| !l.is_empty()),
+        _ => ty == kind,
+    }
+}
+
+/// Every difference between the literals of the alias `alias` in `source` and
+/// `serde_names`, the serialised names of the Rust enum it mirrors; one entry
+/// when the alias is absent.
+#[cfg(test)]
+pub(crate) fn alias_mismatches(source: &str, alias: &str, serde_names: &[&str]) -> Vec<String> {
+    let Some(literals) = literal_alias(source, alias) else {
+        return vec![format!("no literal alias in TypeScript: {alias}")];
+    };
+    let missing = serde_names
+        .iter()
+        .filter(|name| !literals.iter().any(|lit| lit == *name))
+        .map(|name| format!("missing from TypeScript alias {alias}: {name}"));
+    let extra = literals
+        .iter()
+        .filter(|lit| !serde_names.contains(&lit.as_str()))
+        .map(|lit| format!("extra in TypeScript alias {alias}, not a Rust variant: {lit}"));
+    missing.chain(extra).collect()
 }
 
 /// `src` without its `#[cfg(test)]` inline modules.
@@ -849,5 +991,193 @@ pub(crate) fn helper() { NEEDLE(); }
         failures.extend(app_program(&root));
         failures.extend(knip_entries(&root));
         assert!(failures.is_empty(), "{failures:#?}");
+    }
+
+    /// `(name, kind)` pairs as `json_fields` returns them.
+    type Kinds = &'static [(&'static str, &'static str)];
+
+    /// One `mirror_mismatches` fixture: case, TypeScript source, `full`,
+    /// `empty` (`None`: the same as `full`), and the field its one mismatch
+    /// names (`None`: no mismatch).
+    type MirrorCase = (
+        &'static str,
+        &'static str,
+        Kinds,
+        Option<Kinds>,
+        Option<&'static str>,
+    );
+
+    const ALIAS_SOURCE: &str = "type Slot = 'a' | 'b';\ntype T = { slot: Slot; };";
+    const NULLABLE_FULL: Kinds = &[("shot", "object"), ("label", "string")];
+    const NULLABLE_EMPTY: Kinds = &[("shot", "null"), ("label", "null")];
+    const ID: Kinds = &[("id", "number")];
+
+    const MIRROR_CASES: [MirrorCase; 14] = [
+        (
+            "nullable without | null",
+            "type T = { shot: ShotInfo; label: string | null; };",
+            NULLABLE_FULL,
+            Some(NULLABLE_EMPTY),
+            Some("shot"),
+        ),
+        (
+            "nullable with | null",
+            "type T = { shot: ShotInfo | null; label: string | null; };",
+            NULLABLE_FULL,
+            Some(NULLABLE_EMPTY),
+            None,
+        ),
+        (
+            "skipped when None, not optional",
+            "type T = { id: number; };",
+            ID,
+            Some(&[]),
+            Some("id"),
+        ),
+        (
+            "skipped when None, optional",
+            "type T = { id?: number; };",
+            ID,
+            Some(&[]),
+            None,
+        ),
+        (
+            "object against a type name",
+            "type T = { inner: Foo; };",
+            &[("inner", "object")],
+            None,
+            None,
+        ),
+        (
+            "object against string",
+            "type T = { inner: string; };",
+            &[("inner", "object")],
+            None,
+            Some("inner"),
+        ),
+        (
+            "object[] against Foo[]",
+            "type T = { items: Foo[]; };",
+            &[("items", "object[]")],
+            None,
+            None,
+        ),
+        (
+            "string[] against string[]",
+            "type T = { names: string[]; };",
+            &[("names", "string[]")],
+            None,
+            None,
+        ),
+        (
+            "string[] against number[]",
+            "type T = { names: number[]; };",
+            &[("names", "string[]")],
+            None,
+            Some("names"),
+        ),
+        (
+            "empty array sample",
+            "type T = { names: string[]; };",
+            &[("names", "array")],
+            None,
+            Some("names"),
+        ),
+        (
+            "extra required TS field",
+            "type T = { id: number; extra: string; };",
+            ID,
+            None,
+            Some("extra"),
+        ),
+        (
+            "extra optional TS field",
+            "type T = { id: number; extra?: string; };",
+            ID,
+            None,
+            None,
+        ),
+        (
+            "string typed by a same-source alias",
+            ALIAS_SOURCE,
+            &[("slot", "string")],
+            None,
+            None,
+        ),
+        (
+            "string typed by an unknown name",
+            "type T = { slot: Slot; };",
+            &[("slot", "string")],
+            None,
+            Some("slot"),
+        ),
+    ];
+
+    /// Every rule of `mirror_mismatches` and `alias_mismatches`, on inline
+    /// sources, each with the outcome it must give.
+    #[test]
+    fn mirror_helper_fixtures() {
+        fn kinds(list: Kinds) -> Vec<(String, &'static str)> {
+            list.iter().map(|&(n, k)| (n.to_owned(), k)).collect()
+        }
+        for (case, ts_source, full, empty, expect) in MIRROR_CASES {
+            let ts = super::ts_fields(ts_source, "type T = {");
+            assert!(!ts.is_empty(), "{case}: no TS fields parsed");
+            let found = super::mirror_mismatches(
+                &ts,
+                &kinds(full),
+                &kinds(empty.unwrap_or(full)),
+                ts_source,
+            );
+            println!("{case}: {found:?}");
+            match expect {
+                None => assert!(found.is_empty(), "{case}: expected none, got {found:?}"),
+                Some(name) => assert!(
+                    found.len() == 1 && found[0].contains(name),
+                    "{case}: expected one mismatch naming {name}, got {found:?}"
+                ),
+            }
+        }
+
+        let aliases = super::alias_mismatches(ALIAS_SOURCE, "Slot", &["a", "c"]);
+        println!("alias Slot against [a, c]: {aliases:?}");
+        assert_eq!(aliases.len(), 2, "{aliases:?}");
+        assert!(
+            aliases
+                .iter()
+                .any(|m| m.contains("missing") && m.ends_with(": c")),
+            "{aliases:?}"
+        );
+        assert!(
+            aliases
+                .iter()
+                .any(|m| m.contains("extra") && m.ends_with(": b")),
+            "{aliases:?}"
+        );
+        let exact = super::alias_mismatches(ALIAS_SOURCE, "Slot", &["a", "b"]);
+        println!("alias Slot against [a, b]: {exact:?}");
+        assert!(exact.is_empty(), "{exact:?}");
+        let absent = super::alias_mismatches(ALIAS_SOURCE, "Other", &["a"]);
+        println!("alias Other: {absent:?}");
+        assert_eq!(absent.len(), 1, "{absent:?}");
+
+        let value = serde_json::json!({
+            "n": null, "o": {}, "s": ["x"], "u": [1], "b": [true], "os": [{}], "e": [],
+        });
+        let mut json = super::json_fields(&value);
+        json.sort_unstable();
+        println!("json_fields: {json:?}");
+        assert_eq!(
+            json,
+            kinds(&[
+                ("b", "boolean[]"),
+                ("e", "array"),
+                ("n", "null"),
+                ("o", "object"),
+                ("os", "object[]"),
+                ("s", "string[]"),
+                ("u", "number[]"),
+            ])
+        );
     }
 }

@@ -6,8 +6,23 @@ All notable changes to this project are documented here. The format is based on
 
 ## Unreleased
 
+### Added
+
+- **You see every screenshot before it is sent.** The image button takes a
+  screenshot and shows it in the panel with **Retake** and **Remove**; it is
+  kept only in memory and sent only when you press Enter or click. Translate
+  sends the screenshot shown in its tab.
+- **Ctrl+Shift+A and Ctrl+Shift+T take a screenshot of the linked game before
+  the panel takes focus,** so it shows the game, not the panel. Nothing is sent
+  until you press Enter or click.
+
 ### Fixed
 
+- **A screenshot that cannot be taken is shown as an error** instead of the
+  question being sent without it.
+- **Large screenshots stay under provider size limits.**
+- **A Codex question whose screenshot cannot be written now stops with an
+  error** instead of being answered without the screenshot.
 - **A Steam game keeps its playtime when a scan cannot read its details.** A
   game whose Steam manifest was being rewritten, was cut short by a crash or had
   no name yet was dropped by the scan, and came back with zero playtime.

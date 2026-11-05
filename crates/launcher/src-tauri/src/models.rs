@@ -3,6 +3,7 @@ use std::collections::BTreeMap;
 use serde::{Deserialize, Serialize};
 
 use crate::placement::OverlayPlacement;
+use crate::region::TranslateRegion;
 
 /// Fields a newer build wrote that this one does not know, kept as read so the
 /// next save writes them back: going back to an older release must not erase
@@ -159,6 +160,10 @@ where
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub(crate) struct GamePrefs {
+    /// The part of the window a translation keeps. A stored value that is not
+    /// a region inside the window fails the whole entry rather than loading
+    /// as none, which would send the whole window.
+    pub(crate) translate_region: Option<TranslateRegion>,
     #[serde(flatten)]
     pub unknown: UnknownFields,
 }
@@ -251,15 +256,10 @@ mod tests {
             !rust.is_empty() && !typescript.is_empty(),
             "no LauncherSettings fields found"
         );
-        let missing: Vec<String> = rust
-            .iter()
-            .filter(|(key, ty)| {
-                !typescript
-                    .iter()
-                    .any(|(name, ts_ty, _)| name == key && ts_ty == ty)
-            })
-            .map(|(key, ty)| format!("{key}: {ty}"))
-            .collect();
+        // LauncherSettings has no Option field, so the same list stands for both.
+        let mismatches = crate::util::mirror_mismatches(&typescript, &rust, &rust, source);
+        // Stricter than the mirror rule: even an optional extra field would be
+        // sent back by Save and dropped by serde.
         let extra: Vec<&str> = typescript
             .iter()
             .filter(|(name, _, _)| !rust.iter().any(|(key, _)| key == name))
@@ -267,12 +267,12 @@ mod tests {
             .collect();
         println!(
             "checked {} of {} fields",
-            rust.len() - missing.len(),
+            rust.len().saturating_sub(mismatches.len()),
             rust.len()
         );
         assert!(
-            missing.is_empty() && extra.is_empty(),
-            "missing or mistyped in TypeScript: {missing:?}; not in Rust: {extra:?}"
+            mismatches.is_empty() && extra.is_empty(),
+            "{mismatches:#?}; not in Rust: {extra:?}"
         );
 
         let scan = crate::util::count_in_frontend(&[

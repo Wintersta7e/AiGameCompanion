@@ -24,6 +24,9 @@ const APP_COMMANDS: &[&str] = &[
     "recheck_clis",
     "hide_overlay",
     "link_game",
+    "take_shot",
+    "shot_png",
+    "drop_shot",
 ];
 
 fn main() -> Result<(), String> {

@@ -38,12 +38,13 @@ tracing-subscriber = "0.3"
 reqwest = { version = "0.13", default-features = false, features = ["json", "rustls", "stream"] }
 toml = "1.1"
 base64 = "0.23"
+# Encodes the screenshots sent to a provider; the sizing and encoding are
+# platform-independent, so their tests run on Linux too.
+png = "0.18"
 
 # Win32 foreground-window detection + focus handoff (overlay companion). Only
 # compiled for Windows targets; the launcher's pure-logic tests run on Linux.
 [target.'cfg(windows)'.dependencies]
-# Encodes the overlay's screen captures; only the Windows capture code uses it.
-png = "0.18"
 # OS secret storage (Credential Manager) for the Gemini API key. Windows-only so
 # the Linux test build does not pull the secret-service (dbus) backend.
 # Deliberately held at 3.x. Upstream turned 4.x into a sample CLI app and states
@@ -57,6 +58,7 @@ windows = { version = "0.62", features = [
     "Win32_Foundation",
     "Win32_Graphics_Direct3D",
     "Win32_Graphics_Direct3D11",
+    "Win32_Graphics_Dwm",
     "Win32_Graphics_Dxgi",
     "Win32_Graphics_Dxgi_Common",
     "Win32_Storage_FileSystem",

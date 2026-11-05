@@ -68,8 +68,16 @@
   ];
   const HOTKEYS = [
     { title: 'Toggle overlay', sub: 'Show or hide Sage over the game', keys: 'G' },
-    { title: 'Translate screen', sub: 'Open Translate; Enter captures and translates', keys: 'T' },
-    { title: 'Quick ask', sub: 'Stage the preset question; Enter sends it', keys: 'A' },
+    {
+      title: 'Translate screen',
+      sub: 'Take a screenshot and open Translate; Enter translates it',
+      keys: 'T',
+    },
+    {
+      title: 'Quick ask',
+      sub: 'Take a screenshot and stage the preset question; Enter sends both',
+      keys: 'A',
+    },
   ];
   const TOGGLES: { key: keyof LauncherSettings; label: string; sub: string }[] = [
     {

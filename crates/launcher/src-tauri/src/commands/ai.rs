@@ -2,7 +2,7 @@
 //! and persisting the selected provider.
 
 use tauri::ipc::Channel;
-use tauri::{AppHandle, Manager, State};
+use tauri::{AppHandle, State};
 
 use crate::ai::{AiState, ChatMessage, Provider, ProviderAvailability, RequestParams, SageEvent};
 use crate::state::AppState;
@@ -27,7 +27,8 @@ pub(crate) fn available_providers(
 }
 
 /// Start a streaming chat request. Tokens arrive on `channel`; issuing a newer
-/// request cancels this one.
+/// request cancels this one. A refused screenshot is the command's error, so
+/// the overlay knows on return whether the screenshot went.
 #[tauri::command]
 #[expect(
     clippy::needless_pass_by_value,
@@ -43,10 +44,10 @@ pub(crate) fn ask_sage(
     conversation_id: u64,
     provider: Provider,
     messages: Vec<ChatMessage>,
-    attach_screenshot: bool,
+    shot_id: Option<u64>,
     hints: bool,
     channel: Channel<SageEvent>,
-) {
+) -> Result<(), String> {
     crate::ai::spawn_request(
         &app,
         RequestParams {
@@ -54,11 +55,11 @@ pub(crate) fn ask_sage(
             conversation_id,
             provider,
             messages,
-            attach_screenshot,
+            shot_id,
             hints,
         },
         channel,
-    );
+    )
 }
 
 /// Cancel the in-flight request if it matches `request_id` (Stop button).
@@ -93,16 +94,15 @@ pub(crate) struct TranslateResult {
     pub text: String,
 }
 
-/// Capture the linked game window and translate its on-screen foreign text to
-/// English. One-shot (not part of the streaming chat slot).
+/// Translate the on-screen foreign text of the translate screenshot `shot_id`,
+/// the one the overlay shows, to English. One-shot (not part of the streaming
+/// chat slot).
 #[tauri::command]
-pub(crate) async fn translate_screen(app: AppHandle) -> Result<TranslateResult, String> {
-    // Linked and revalidated, not just read: an unlinked window is never
-    // captured, and a recycled handle would screenshot an unrelated window.
-    let game = crate::overlay::linked_game(&app)
-        .ok_or_else(|| "No linked game -- link the window in the overlay first.".to_owned())?;
-    let model = settings_model(&app.state::<AppState>());
-    let text = crate::ai::translate_capture(game.hwnd, game.pid, model).await?;
+pub(crate) async fn translate_screen(
+    app: AppHandle,
+    shot_id: u64,
+) -> Result<TranslateResult, String> {
+    let text = crate::ai::translate_held(&app, shot_id).await?;
     Ok(TranslateResult { text })
 }
 
