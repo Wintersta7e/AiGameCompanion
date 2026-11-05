@@ -52,6 +52,33 @@ pub(crate) enum SearchNote {
     Failed,
 }
 
+/// The largest search report kept with an answer, in bytes of compact JSON.
+pub(crate) const MAX_SEARCH_REPORT_BYTES: usize = 32 * 1024;
+
+/// What a saved answer drawn from a web search is sent again as, to a
+/// provider other than the one that searched.
+pub(crate) const OMITTED_ANSWER: &str = "[answer omitted]";
+
+/// Whether an answer came from a Gemini web search: only such an answer is
+/// shown with its search suggestion.
+pub(crate) const fn is_grounded(report: &SearchReport) -> bool {
+    !report.suggestion_html.is_empty()
+}
+
+/// The text a saved answer is sent again as: Gemini's search results go back
+/// to Gemini only, so another provider gets `OMITTED_ANSWER` in their place.
+pub(crate) fn resend_answer<'a>(
+    next: Provider,
+    answer: &'a str,
+    report: Option<&SearchReport>,
+) -> &'a str {
+    if matches!(next, Provider::Gemini) || !report.is_some_and(is_grounded) {
+        answer
+    } else {
+        OMITTED_ANSWER
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -76,6 +103,55 @@ mod tests {
                         );
                     }
                 }
+            }
+        }
+    }
+
+    fn report(searched: bool, suggestion_html: &str) -> SearchReport {
+        SearchReport {
+            searched,
+            queries: Vec::new(),
+            sources: Vec::new(),
+            suggestion_html: suggestion_html.to_owned(),
+            note: SearchNote::None,
+            hints: false,
+        }
+    }
+
+    #[test]
+    fn grounded_answers_resend_only_to_gemini() {
+        let grounded = report(true, "<div>foo</div>");
+        let searched_without_suggestion = report(true, "");
+        let not_searched = report(false, "");
+        assert!(
+            is_grounded(&grounded),
+            "a suggestion makes a report grounded"
+        );
+        assert!(
+            !is_grounded(&searched_without_suggestion),
+            "no suggestion: not grounded"
+        );
+        assert!(!is_grounded(&not_searched), "no search: not grounded");
+
+        let answer = "Go north.";
+        for next in [Provider::Gemini, Provider::Claude, Provider::Openai] {
+            for (name, report) in [
+                ("grounded", Some(&grounded)),
+                (
+                    "searched, no suggestion",
+                    Some(&searched_without_suggestion),
+                ),
+                ("not searched", Some(&not_searched)),
+                ("no report", None),
+            ] {
+                let sent = resend_answer(next, answer, report);
+                println!("{next:?}, {name}: {sent:?}");
+                let expected = if name == "grounded" && !matches!(next, Provider::Gemini) {
+                    OMITTED_ANSWER
+                } else {
+                    answer
+                };
+                assert_eq!(sent, expected, "{next:?}, {name}");
             }
         }
     }

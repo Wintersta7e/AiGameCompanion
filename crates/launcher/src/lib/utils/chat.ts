@@ -5,7 +5,7 @@ import type { SearchReport } from './search';
 
 /** Whether the chat on screen is being saved, and if not, why. */
 export type SaveState =
-  { state: 'on' | 'failed' } | { state: 'read_only'; reason: 'library' | 'chat_file' };
+  { state: 'on' | 'failed' | 'skipped' } | { state: 'read_only'; reason: 'library' | 'chat_file' };
 
 export interface SavedExchange {
   savedAt: string;
@@ -45,6 +45,8 @@ export function saveStatusText(save: SaveState | null, linked: boolean): string 
       return 'Saved on this PC';
     case 'failed':
       return 'Last answer not saved — retrying with the next one';
+    case 'skipped':
+      return 'This answer is too long to save';
     case 'read_only':
       return save.reason === 'library'
         ? "Not saving — the library can't be read; saved chats are untouched"

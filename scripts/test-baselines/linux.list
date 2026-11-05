@@ -60,6 +60,7 @@ ai::prompt::tests::instruction_text_lives_only_here run
 ai::prompt::tests::prompt_is_compile_time_text run
 ai::prompt::tests::recap_prompt_holds_the_recap_line run
 ai::prompt::tests::slots_in_order run
+ai::search::tests::grounded_answers_resend_only_to_gemini run
 ai::search::tests::search_gate_table run
 ai::search::tests::search_report_mirrors_rust run
 ai::tests::answer_errors_stay_out_of_answer_text run
@@ -87,11 +88,13 @@ ai::tests::sage_event_mirrors_rust run
 ai::tests::send_names_a_closed_linked_window run
 ai::tests::translate_gate_order run
 ai::tests::unlinked_target_contributes_nothing run
+chat_store::tests::caps_and_expiry run
 chat_store::tests::chat_types_mirror_rust run
 chat_store::tests::clear_removes_backups run
 chat_store::tests::delete_all_empties_the_store run
 chat_store::tests::file_names_hide_the_key run
 chat_store::tests::generations run
+chat_store::tests::grounded_answers_go_only_to_gemini run
 chat_store::tests::read_only_writes_nothing run
 chat_store::tests::round_trip_and_stored_shape run
 chat_store::tests::stored_types_hold_no_image_bytes run

@@ -46,6 +46,7 @@ void test('saveStatusText: one line per save state, and none of them deletes', (
       "Not saving — this game's saved chat can't be read; kept until you quit",
     ],
     ['failed', { state: 'failed' }, true, 'Last answer not saved — retrying with the next one'],
+    ['skipped', { state: 'skipped' }, true, 'This answer is too long to save'],
   ];
   for (const [name, save, linked, expected] of rows) {
     const text = saveStatusText(save, linked);

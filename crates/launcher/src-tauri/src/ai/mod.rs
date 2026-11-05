@@ -514,7 +514,7 @@ pub(crate) fn admit_chat(
             crate::overlay::NO_LINKED_GAME,
         ));
     };
-    let snapshot = store.snapshot(&key);
+    let snapshot = store.snapshot(&key, args.provider);
     if !snapshot.displayed {
         return Err(refuse(RefusalCode::GameChanged, GAME_CHANGED));
     }
@@ -1904,7 +1904,7 @@ mod tests {
             store.load(&key, WRITABLE);
             store.show(&key, WRITABLE);
             for n in 0..exchanges {
-                let snapshot = store.snapshot(&key);
+                let snapshot = store.snapshot(&key, Provider::Gemini);
                 let save = store.append_exchange(
                     &key,
                     snapshot.clear_generation,
@@ -2429,7 +2429,7 @@ mod tests {
         ];
         for (case, fixture, game, request, code, message) in rows {
             let files = fixture.listing();
-            let memory = fixture.store.snapshot(&fixture.key);
+            let memory = fixture.store.snapshot(&fixture.key, Provider::Gemini);
             let (admission, spawned) = drive(request, game, &ai, fixture, &shots);
             println!("{case}:");
             refusal_event(admission, fixture, code, message);
@@ -2445,7 +2445,7 @@ mod tests {
             );
             assert_eq!(fixture.listing(), files, "{case}: the chats folder changed");
             assert_eq!(
-                fixture.store.snapshot(&fixture.key),
+                fixture.store.snapshot(&fixture.key, Provider::Gemini),
                 memory,
                 "{case}: the store changed"
             );

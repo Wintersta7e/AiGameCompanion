@@ -19,14 +19,20 @@ use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Manager};
 
-use crate::ai::search::SearchReport;
+use crate::ai::search::{resend_answer, SearchReport, MAX_SEARCH_REPORT_BYTES};
 use crate::ai::{ChatMessage, Provider};
 use crate::state::{
     back_up, read_with_retry, should_promote_tmp, AppState, READ_ATTEMPTS, READ_RETRY_DELAY,
 };
 
-/// Exchanges older than this are removed when a chat is loaded.
+/// Exchanges older than this are removed when a chat is loaded or written.
 const EXPIRY_DAYS: i64 = 700;
+/// The most exchanges sent again with a question.
+const MAX_TAIL_EXCHANGES: usize = 20;
+/// The most question and answer bytes sent again with a question.
+const MAX_TAIL_BYTES: usize = 32 * 1024;
+/// The largest chat file, in bytes of compact JSON; the oldest entries go first.
+const MAX_FILE_BYTES: usize = 256 * 1024;
 
 const CLEAR_REFUSED: &str = "The game changed -- the chat was not cleared.";
 const DELETE_REFUSED_READ_ONLY: &str = "Nothing can be deleted while the library cannot be read.";
@@ -98,6 +104,8 @@ pub(crate) enum SaveState {
     },
     /// The last change to this chat's files failed; the chat is kept in memory.
     Failed,
+    /// This answer alone is too large to keep, so it was not saved.
+    Skipped,
 }
 
 /// Why a chat is not saved.
@@ -385,9 +393,9 @@ impl ChatStore {
         }
     }
 
-    /// What a request for `key` sends again and checks, under one hold of the
-    /// memory lock and without I/O.
-    pub(crate) fn snapshot(&self, key: &str) -> ChatSnapshot {
+    /// What a request for `key` to `provider` sends again and checks, under one
+    /// hold of the memory lock and without I/O.
+    pub(crate) fn snapshot(&self, key: &str, provider: Provider) -> ChatSnapshot {
         let memory = self.memory.lock();
         let clear_generation = memory.generations.get(key).copied().unwrap_or(0);
         ChatSnapshot {
@@ -400,7 +408,7 @@ impl ChatStore {
             tail: memory
                 .keys
                 .get(key)
-                .map_or_else(Vec::new, |chat| resend_tail(&chat.entries)),
+                .map_or_else(Vec::new, |chat| resend_tail(&chat.entries, provider)),
         }
     }
 
@@ -411,8 +419,11 @@ impl ChatStore {
 
     /// Save a finished answer to `key`'s chat and return the chat's status.
     /// Dropped when the chat was cleared or deleted since the request was
-    /// admitted (`clear_generation`); `None` saves nothing. A chat that may
-    /// not be written keeps the answer in memory only. Blocks on file I/O.
+    /// admitted (`clear_generation`); `None` saves nothing. Expired exchanges
+    /// go first; an answer too large to keep on its own is not saved
+    /// (`Skipped`), and the oldest exchanges go until the file fits. A chat
+    /// that may not be written is fitted the same way, in memory only.
+    /// Blocks on file I/O.
     pub(crate) fn append_exchange(
         &self,
         key: &str,
@@ -429,26 +440,29 @@ impl ChatStore {
         let Some(entry) = entry.filter(|_| current == clear_generation) else {
             return save_state(mode, chat.status, chat.write_failed);
         };
-        chat.entries.push(entry);
-        if mode.read_only || chat.status == KeyStatus::Locked {
-            return save_state(mode, chat.status, chat.write_failed);
-        }
-        let stored = StoredChat {
-            key,
-            entries: chat
-                .entries
-                .iter()
-                .cloned()
-                .map(ChatEntry::Exchange)
-                .collect(),
-        };
-        let text = serde_json::to_string(&stored).map_err(std::io::Error::from);
-        drop(memory);
         let hash = file_hash(key);
-        let written = self
-            .dir
-            .as_deref()
-            .map(|dir| text.and_then(|text| write_chat(dir, &hash, &text)));
+        let expired = prune_expired(&mut chat.entries, Utc::now());
+        let kept = if let Some(bytes) = too_large(key, &entry) {
+            log_skipped(&hash, bytes);
+            false
+        } else {
+            chat.entries.push(entry);
+            fit_file(key, &mut chat.entries);
+            true
+        };
+        let answer_state = |state| if kept { state } else { skipped(state) };
+        if mode.read_only || chat.status == KeyStatus::Locked || (!kept && expired == 0) {
+            return answer_state(save_state(mode, chat.status, chat.write_failed));
+        }
+        // A chat left with no exchange has no file.
+        let text = (!chat.entries.is_empty()).then(|| file_json(key, &chat.entries));
+        drop(memory);
+        let written = self.dir.as_deref().map(|dir| {
+            text.map_or_else(
+                || remove_chat(dir, &hash),
+                |text| text.and_then(|text| write_chat(dir, &hash, &text)),
+            )
+        });
         let failed = match written {
             Some(Ok(())) => false,
             Some(Err(e)) => {
@@ -461,11 +475,11 @@ impl ChatStore {
             chat.write_failed = failed;
         }
         drop(io);
-        if failed {
+        answer_state(if failed {
             SaveState::Failed
         } else {
             SaveState::On
-        }
+        })
     }
 
     /// No chat is on screen.
@@ -584,20 +598,113 @@ const fn save_state(mode: StoreMode, status: KeyStatus, write_failed: bool) -> S
     }
 }
 
-/// The exchanges a request sends again, oldest first: each question as a
-/// user turn and its answer as an assistant turn.
-fn resend_tail(entries: &[SavedExchange]) -> Vec<ChatMessage> {
-    entries
+/// What a save reports when its answer was not kept: `Skipped`, unless the
+/// chat is not saved at all.
+const fn skipped(state: SaveState) -> SaveState {
+    match state {
+        SaveState::On | SaveState::Failed | SaveState::Skipped => SaveState::Skipped,
+        SaveState::ReadOnly { .. } => state,
+    }
+}
+
+/// The size of `value` as compact JSON; one that cannot be written counts as
+/// too large for any limit.
+fn compact_len<T: Serialize + ?Sized>(value: &T) -> usize {
+    serde_json::to_vec(value)
+        .as_ref()
+        .map_or(usize::MAX, Vec::len)
+}
+
+/// The size that keeps `entry` from being saved at all: a search report over
+/// `MAX_SEARCH_REPORT_BYTES`, or a file holding only it over `MAX_FILE_BYTES`.
+fn too_large(key: &str, entry: &SavedExchange) -> Option<usize> {
+    let report = entry.search.as_ref().map_or(0, compact_len);
+    if report > MAX_SEARCH_REPORT_BYTES {
+        return Some(report);
+    }
+    let alone = compact_len(&StoredChat {
+        key,
+        entries: vec![ChatEntry::Exchange(entry.clone())],
+    });
+    (alone > MAX_FILE_BYTES).then_some(alone)
+}
+
+/// Drop the oldest of `entries` until their file is at most `MAX_FILE_BYTES`.
+/// The newest always stays: `too_large` let it in.
+fn fit_file(key: &str, entries: &mut Vec<SavedExchange>) {
+    let sizes: Vec<usize> = entries
         .iter()
-        .flat_map(|exchange| {
+        .map(|exchange| compact_len(&ChatEntry::Exchange(exchange.clone())))
+        .collect();
+    // Compact JSON: the empty file, every entry, and a comma between two.
+    let empty = compact_len(&StoredChat {
+        key,
+        entries: Vec::new(),
+    });
+    let mut total = sizes.iter().fold(
+        empty.saturating_add(sizes.len().saturating_sub(1)),
+        |total, size| total.saturating_add(*size),
+    );
+    let mut dropped = 0;
+    for size in sizes.iter().take(sizes.len().saturating_sub(1)) {
+        if total <= MAX_FILE_BYTES {
+            break;
+        }
+        total = total.saturating_sub(size.saturating_add(1));
+        dropped += 1;
+    }
+    entries.drain(..dropped);
+}
+
+/// `key`'s chat file holding `entries`, as written.
+fn file_json(key: &str, entries: &[SavedExchange]) -> std::io::Result<String> {
+    let stored = StoredChat {
+        key,
+        entries: entries.iter().cloned().map(ChatEntry::Exchange).collect(),
+    };
+    serde_json::to_string(&stored).map_err(std::io::Error::from)
+}
+
+/// Remove `hash`'s chat file and its `.tmp` from `dir`; its backups stay.
+fn remove_chat(dir: &Path, hash: &ChatHash) -> std::io::Result<()> {
+    let path = chat_file(dir, hash);
+    for file in [path.with_extension("json.tmp"), path] {
+        match std::fs::remove_file(file) {
+            Err(e) if e.kind() != ErrorKind::NotFound => return Err(e),
+            Ok(()) | Err(_) => {}
+        }
+    }
+    Ok(())
+}
+
+/// The exchanges a request to `provider` sends again, oldest first: each
+/// question as a user turn and its answer as an assistant turn. The newest
+/// `MAX_TAIL_EXCHANGES` at most, and only while their text stays within
+/// `MAX_TAIL_BYTES`, so a newest exchange over it sends no history.
+fn resend_tail(entries: &[SavedExchange], provider: Provider) -> Vec<ChatMessage> {
+    let mut bytes = 0_usize;
+    let mut sent = Vec::new();
+    for exchange in entries.iter().rev().take(MAX_TAIL_EXCHANGES) {
+        let answer = resend_answer(provider, &exchange.answer, exchange.search.as_ref());
+        bytes = bytes
+            .saturating_add(exchange.question.len())
+            .saturating_add(answer.len());
+        if bytes > MAX_TAIL_BYTES {
+            break;
+        }
+        sent.push((exchange.question.as_str(), answer));
+    }
+    sent.into_iter()
+        .rev()
+        .flat_map(|(question, answer)| {
             [
                 ChatMessage {
                     role: "user".to_owned(),
-                    content: exchange.question.clone(),
+                    content: question.to_owned(),
                 },
                 ChatMessage {
                     role: "assistant".to_owned(),
-                    content: exchange.answer.clone(),
+                    content: answer.to_owned(),
                 },
             ]
         })
@@ -745,6 +852,10 @@ fn log_write_failed(hash: &ChatHash, kind: ErrorKind) {
     tracing::warn!("Chat {hash}: the answer could not be saved ({kind}); kept until you quit");
 }
 
+fn log_skipped(hash: &ChatHash, bytes: usize) {
+    tracing::info!("Chat {hash}: an answer of {bytes} bytes is too large to save; not kept");
+}
+
 fn log_deleted_all(deleted: u32, failed: usize) {
     tracing::info!("Saved chats: deleted {deleted} chat(s); {failed} file(s) could not be deleted");
 }
@@ -811,7 +922,7 @@ mod tests {
         let store = ChatStore::new(Some(dir.to_owned()));
         store.load(key, mode);
         store.show(key, mode);
-        let snapshot = store.snapshot(key);
+        let snapshot = store.snapshot(key, Provider::Gemini);
         store.append_exchange(
             key,
             snapshot.clear_generation,
@@ -1175,14 +1286,14 @@ mod tests {
             "delete all"
         );
         // An answer is kept in memory and sent again, and written nowhere.
-        let snapshot = store.snapshot(readable);
+        let snapshot = store.snapshot(readable, Provider::Gemini);
         let saved = store.append_exchange(
             readable,
             snapshot.clear_generation,
             Some(exchange("Kept?", Utc::now())),
             READ_ONLY,
         );
-        let tail = store.snapshot(readable).tail;
+        let tail = store.snapshot(readable, Provider::Gemini).tail;
         println!("an answer: {saved:?}, tail {tail:?}");
         assert_eq!(
             saved,
@@ -1245,7 +1356,7 @@ mod tests {
         let store = ChatStore::new(Some(dir.clone()));
         store.load("exe:a", WRITABLE);
         let shown = store.show("exe:a", WRITABLE);
-        let asked = store.snapshot("exe:a");
+        let asked = store.snapshot("exe:a", Provider::Gemini);
         store
             .clear(Some("exe:a"), shown.display_generation, WRITABLE)
             .expect("clearing the chat on screen was refused");
@@ -1256,10 +1367,343 @@ mod tests {
             Some(exchange("Late?", Utc::now())),
             WRITABLE,
         );
-        let tail = store.snapshot("exe:a").tail;
+        let tail = store.snapshot("exe:a", Provider::Gemini).tail;
         println!("a save after a clear: {saved:?}, tail {tail:?}");
         assert_eq!(listing(&dir), files, "a save after a clear wrote a file");
         assert!(tail.is_empty(), "a save after a clear reached the chat");
+        drop(std::fs::remove_dir_all(&dir));
+    }
+
+    /// A store that loaded and showed `key`'s chat from a file holding `exchanges`.
+    fn store_holding(dir: &Path, key: &str, exchanges: &[SavedExchange]) -> ChatStore {
+        let entries: Vec<_> = exchanges.iter().map(entry).collect();
+        std::fs::write(path_of(dir, key), file_text(key, &entries)).unwrap();
+        let store = ChatStore::new(Some(dir.to_owned()));
+        store.load(key, WRITABLE);
+        store.show(key, WRITABLE);
+        store
+    }
+
+    /// Save `exchange` to `key`'s chat the way a finished request does.
+    fn append(store: &ChatStore, key: &str, exchange: SavedExchange) -> SaveState {
+        let snapshot = store.snapshot(key, Provider::Gemini);
+        store.append_exchange(key, snapshot.clear_generation, Some(exchange), WRITABLE)
+    }
+
+    /// An exchange whose question and answer together are `bytes` long.
+    fn sized(question: &str, bytes: usize) -> SavedExchange {
+        SavedExchange {
+            answer: "a".repeat(bytes - question.len()),
+            ..exchange(question, Utc::now())
+        }
+    }
+
+    fn report(searched: bool, suggestion_html: &str) -> SearchReport {
+        SearchReport {
+            searched,
+            queries: Vec::new(),
+            sources: Vec::new(),
+            suggestion_html: suggestion_html.to_owned(),
+            note: SearchNote::None,
+            hints: false,
+        }
+    }
+
+    /// A report whose compact JSON is exactly `bytes` long.
+    fn report_of(bytes: usize) -> SearchReport {
+        let mut report = report(true, "");
+        let empty = serde_json::to_string(&report).unwrap().len();
+        report.suggestion_html = "s".repeat(bytes - empty);
+        assert_eq!(
+            serde_json::to_string(&report).unwrap().len(),
+            bytes,
+            "the report's size"
+        );
+        report
+    }
+
+    /// The questions `key`'s tail sends to `provider`, oldest first.
+    fn tail_questions(store: &ChatStore, key: &str, provider: Provider) -> Vec<String> {
+        store
+            .snapshot(key, provider)
+            .tail
+            .into_iter()
+            .filter(|turn| turn.role == "user")
+            .map(|turn| turn.content)
+            .collect()
+    }
+
+    /// The questions saved in `key`'s file, oldest first.
+    fn file_questions(dir: &Path, key: &str) -> Vec<String> {
+        let text = std::fs::read_to_string(path_of(dir, key)).unwrap();
+        parse_chat_file(&text, key)
+            .entries
+            .into_iter()
+            .map(|exchange| exchange.question)
+            .collect()
+    }
+
+    #[test]
+    fn caps_and_expiry() {
+        let dir = temp_dir("caps");
+        let key = "exe:caps";
+        tail_caps(&dir, key);
+        file_cap(&dir, key);
+        entries_too_large(&dir, key);
+        expiry(&dir, key);
+        drop(std::fs::remove_dir_all(&dir));
+    }
+
+    fn tail_caps(dir: &Path, key: &str) {
+        let now = Utc::now();
+        // At most 20 exchanges are sent: the newest ones.
+        let many: Vec<_> = (0..25).map(|n| exchange(&format!("Q{n}"), now)).collect();
+        let store = store_holding(dir, key, &many);
+        let sent = tail_questions(&store, key, Provider::Gemini);
+        println!(
+            "25 stored: {} sent, {:?} .. {:?}",
+            sent.len(),
+            sent.first(),
+            sent.last()
+        );
+        assert_eq!(sent.len(), 20, "exchanges sent of 25");
+        assert_eq!(sent.first().map(String::as_str), Some("Q5"), "oldest sent");
+        assert_eq!(sent.last().map(String::as_str), Some("Q24"), "newest sent");
+
+        // A newest exchange of exactly 32 KiB is sent alone; a byte more sends no history.
+        for (bytes, expected) in [(32_768, vec!["Newest"]), (32_769, vec![])] {
+            let store = store_holding(dir, key, &[exchange("Older", now), sized("Newest", bytes)]);
+            let sent = tail_questions(&store, key, Provider::Gemini);
+            println!("newest of {bytes} bytes: sent {sent:?}");
+            assert_eq!(sent, expected, "newest exchange of {bytes} bytes");
+        }
+    }
+
+    fn file_cap(dir: &Path, key: &str) {
+        let path = path_of(dir, key);
+        // Appending to a full file drops its oldest entries until the file fits.
+        let full: Vec<_> = (0..25)
+            .map(|n| sized(&format!("Old{n}"), 10 * 1024))
+            .collect();
+        let store = store_holding(dir, key, &full);
+        let before = std::fs::metadata(&path).unwrap().len();
+        let saved = append(&store, key, sized("New", 20 * 1024));
+        let after = std::fs::metadata(&path).unwrap().len();
+        let in_file = file_questions(dir, key);
+        let in_memory: Vec<String> = questions(&store.show(key, WRITABLE))
+            .into_iter()
+            .map(str::to_owned)
+            .collect();
+        println!(
+            "full file: {before} -> {after} bytes, {} -> {} entries, {saved:?}",
+            full.len(),
+            in_file.len()
+        );
+        assert_eq!(saved, SaveState::On, "appending to a full file");
+        assert!(
+            before > 250 * 1024,
+            "the file was not nearly full: {before}"
+        );
+        assert!(after <= 262_144, "the file grew past 256 KiB: {after}");
+        assert_eq!(
+            in_file.last().map(String::as_str),
+            Some("New"),
+            "the new entry is last"
+        );
+        assert!(in_file.len() < full.len(), "no old entry was dropped");
+        assert_eq!(
+            in_file.first(),
+            Some(&format!("Old{}", full.len() + 1 - in_file.len())),
+            "the oldest entries go first"
+        );
+        assert_eq!(in_memory, in_file, "memory and file differ");
+    }
+
+    fn entries_too_large(dir: &Path, key: &str) {
+        let path = path_of(dir, key);
+        let now = Utc::now();
+        // An answer that cannot fit is stored nowhere; a report of exactly 32 KiB is kept.
+        let searched = |bytes| SavedExchange {
+            search: Some(report_of(bytes)),
+            ..exchange("Searched", now)
+        };
+        for (name, exchange_in, expected) in [
+            (
+                "lone entry over 256 KiB",
+                sized("Huge", 262_144),
+                SaveState::Skipped,
+            ),
+            (
+                "report of 32,769 bytes",
+                searched(32_769),
+                SaveState::Skipped,
+            ),
+            ("report of 32,768 bytes", searched(32_768), SaveState::On),
+        ] {
+            let store = store_holding(dir, key, &[exchange("Kept", now)]);
+            let file = std::fs::read(&path).unwrap();
+            let saved = append(&store, key, exchange_in);
+            let shown = store.show(key, WRITABLE);
+            let sent = tail_questions(&store, key, Provider::Gemini);
+            let in_file = file_questions(dir, key);
+            println!(
+                "{name}: {saved:?}, shown {:?}, sent {sent:?}",
+                questions(&shown)
+            );
+            assert_eq!(saved, expected, "{name}");
+            if expected == SaveState::Skipped {
+                assert_eq!(questions(&shown), ["Kept"], "{name}: kept in memory");
+                assert_eq!(sent, ["Kept"], "{name}: sent again");
+                assert_eq!(
+                    std::fs::read(&path).unwrap(),
+                    file,
+                    "{name}: the file changed"
+                );
+            } else {
+                assert_eq!(in_file, ["Kept", "Searched"], "{name}: not saved");
+            }
+        }
+    }
+
+    fn expiry(dir: &Path, key: &str) {
+        let path = path_of(dir, key);
+        let now = Utc::now();
+        // Older than 700 days is removed at load; exactly 700 days stays.
+        let mut boundary = vec![
+            exchange("701 days", now - TimeDelta::days(701)),
+            exchange("700 days", now - TimeDelta::days(700)),
+        ];
+        prune_expired(&mut boundary, now);
+        let kept: Vec<&str> = boundary.iter().map(|x| x.question.as_str()).collect();
+        assert_eq!(kept, ["700 days"], "the expiry boundary");
+        let store = store_holding(
+            dir,
+            key,
+            &[
+                exchange("Expired", now - TimeDelta::days(701)),
+                // The test's own run time must not push it past the boundary.
+                exchange("Kept", now - TimeDelta::days(700) + TimeDelta::minutes(5)),
+            ],
+        );
+        let shown = store.show(key, WRITABLE);
+        let sent = tail_questions(&store, key, Provider::Gemini);
+        println!(
+            "expiry at load: shown {:?}, sent {sent:?}",
+            questions(&shown)
+        );
+        assert_eq!(questions(&shown), ["Kept"], "expiry at load: shown");
+        assert_eq!(sent, ["Kept"], "expiry at load: sent");
+
+        // The last entry expiring by the time of a write deletes the file and its `.tmp`.
+        let store = store_holding(dir, key, &[exchange("Expiring", now)]);
+        std::fs::write(tmp_of(&path), "{}").unwrap();
+        store.memory.lock().keys.get_mut(key).unwrap().entries[0].saved_at =
+            now - TimeDelta::days(701);
+        let saved = append(&store, key, sized("Huge", 262_144));
+        println!(
+            "last entry expired at write: {saved:?}, files {:?}",
+            listing(dir)
+        );
+        assert_eq!(saved, SaveState::Skipped, "last entry expired at write");
+        assert!(!path.exists(), "the emptied chat's file was kept");
+        assert!(!tmp_of(&path).exists(), "the emptied chat's .tmp was kept");
+        assert!(
+            store.show(key, WRITABLE).exchanges.is_empty(),
+            "an expired entry is still shown"
+        );
+    }
+
+    #[test]
+    fn grounded_answers_go_only_to_gemini() {
+        let dir = temp_dir("grounded");
+        let key = "exe:grounded";
+        let now = Utc::now();
+        let stored = [
+            SavedExchange {
+                answer: "Grounded answer.".to_owned(),
+                search: Some(report(true, "<div>foo</div>")),
+                ..exchange("Searched?", now)
+            },
+            SavedExchange {
+                answer: "Plain answer.".to_owned(),
+                ..exchange("Plain?", now)
+            },
+            SavedExchange {
+                answer: "Unsearched answer.".to_owned(),
+                search: Some(report(false, "")),
+                ..exchange("Unsearched?", now)
+            },
+            SavedExchange {
+                answer: "Claude answer.".to_owned(),
+                provider: Provider::Claude,
+                ..exchange("Claude?", now)
+            },
+        ];
+        let store = store_holding(&dir, key, &stored);
+        for provider in [Provider::Gemini, Provider::Claude, Provider::Openai] {
+            let tail = store.snapshot(key, provider).tail;
+            println!("{provider:?}: {tail:?}");
+            let first = if matches!(provider, Provider::Gemini) {
+                "Grounded answer."
+            } else {
+                "[answer omitted]"
+            };
+            let expected = [
+                ("user", "Searched?"),
+                ("assistant", first),
+                ("user", "Plain?"),
+                ("assistant", "Plain answer."),
+                ("user", "Unsearched?"),
+                ("assistant", "Unsearched answer."),
+                ("user", "Claude?"),
+                ("assistant", "Claude answer."),
+            ];
+            let turns: Vec<(&str, &str)> = tail
+                .iter()
+                .map(|turn| (turn.role.as_str(), turn.content.as_str()))
+                .collect();
+            assert_eq!(turns, expected, "{provider:?}");
+            let omitted = turns
+                .iter()
+                .filter(|(_, text)| *text == "[answer omitted]")
+                .count();
+            assert_eq!(
+                omitted,
+                usize::from(!matches!(provider, Provider::Gemini)),
+                "{provider:?}"
+            );
+        }
+
+        // A grounded answer too long to send fits once it is omitted.
+        let long = SavedExchange {
+            answer: "g".repeat(40 * 1024),
+            search: Some(report(true, "<div>foo</div>")),
+            ..exchange("Long search?", now)
+        };
+        let store = store_holding(&dir, key, &[exchange("Before?", now), long]);
+        for provider in [Provider::Gemini, Provider::Claude, Provider::Openai] {
+            let tail = store.snapshot(key, provider).tail;
+            let turns: Vec<(&str, usize)> = tail
+                .iter()
+                .map(|turn| {
+                    (
+                        turn.content.get(..20).unwrap_or(&turn.content),
+                        turn.content.len(),
+                    )
+                })
+                .collect();
+            println!("long grounded, {provider:?}: {turns:?}");
+            if matches!(provider, Provider::Gemini) {
+                assert!(tail.is_empty(), "Gemini: an answer over 32 KiB was sent");
+            } else {
+                let texts: Vec<&str> = tail.iter().map(|turn| turn.content.as_str()).collect();
+                assert_eq!(
+                    texts,
+                    ["Before?", "Go north.", "Long search?", "[answer omitted]"],
+                    "{provider:?}"
+                );
+            }
+        }
         drop(std::fs::remove_dir_all(&dir));
     }
 
@@ -1294,7 +1738,7 @@ mod tests {
             },
         ];
         for exchange in &saved {
-            let snapshot = store.snapshot(key);
+            let snapshot = store.snapshot(key, Provider::Gemini);
             let status = store.append_exchange(
                 key,
                 snapshot.clear_generation,
@@ -1572,6 +2016,7 @@ mod tests {
                 reason: ReadOnlyReason::ChatFile,
             },
             SaveState::Failed,
+            SaveState::Skipped,
         ];
         let (mut rust_states, mut rust_reasons) = (Vec::new(), Vec::new());
         for state in states {
@@ -1579,6 +2024,7 @@ mod tests {
             match state {
                 SaveState::On
                 | SaveState::Failed
+                | SaveState::Skipped
                 | SaveState::ReadOnly {
                     reason: ReadOnlyReason::Library | ReadOnlyReason::ChatFile,
                 } => {}
