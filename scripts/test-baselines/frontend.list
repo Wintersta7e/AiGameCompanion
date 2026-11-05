@@ -19,6 +19,7 @@ heldShot: a hotkey take reported by shot-held lands like a button take run
 heldShot: a report after a newer take is stale and changes nothing run
 heldShot: a report of an older hotkey take never lands on a newer one run
 isActionableLink: only a complete https link opens run
+recapOffer: the line after a four-hour break, the chip only when a question can be sent run
 received: a stale seq or a slot not taking returns the same object run
 renderAnswer: plain past the size cap, markdown below it run
 renderMode: long, slow or failed renders stay plain run

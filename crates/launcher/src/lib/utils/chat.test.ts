@@ -2,9 +2,12 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import {
   chatViewAction,
+  recapOffer,
+  RECAP_OFFER_AFTER_MS,
   saveStatusText,
   type ChatView,
   type ChatViewAction,
+  type RecapOfferInput,
   type SaveState,
 } from './chat.ts';
 
@@ -55,5 +58,35 @@ void test('saveStatusText: one line per save state, and none of them deletes', (
     assert.equal(text, expected, name);
     const words = ['delete', 'deleted', 'deleting', 'deletion'];
     if (save?.state === 'read_only') assert.ok(!words.some((w) => text.includes(w)), name);
+  }
+});
+
+void test('recapOffer: the line after a four-hour break, the chip only when a question can be sent', (t) => {
+  const now = Date.parse('2026-01-02T12:00:00Z');
+  const input = (changes: Partial<RecapOfferInput>): RecapOfferInput => ({
+    exchanges: 2,
+    newestAnswerAt: now - RECAP_OFFER_AFTER_MS,
+    now,
+    canSend: true,
+    asking: false,
+    ...changes,
+  });
+  const rows: [string, RecapOfferInput, { line: boolean; chip: boolean }][] = [
+    ['exactly 4 h', input({}), { line: true, chip: true }],
+    [
+      '4 h - 1 ms',
+      input({ newestAnswerAt: now - RECAP_OFFER_AFTER_MS + 1 }),
+      { line: false, chip: false },
+    ],
+    ['asking', input({ asking: true }), { line: true, chip: false }],
+    ['cannot send', input({ canSend: false }), { line: true, chip: false }],
+    ['no exchanges', input({ exchanges: 0 }), { line: false, chip: false }],
+    ['no answer time', input({ newestAnswerAt: null }), { line: false, chip: false }],
+  ];
+  assert.equal(RECAP_OFFER_AFTER_MS, 4 * 60 * 60 * 1000);
+  for (const [name, given, expected] of rows) {
+    const offer = recapOffer(given);
+    t.diagnostic(`${name}: line ${offer.line}, chip ${offer.chip}`);
+    assert.deepEqual(offer, expected, name);
   }
 });

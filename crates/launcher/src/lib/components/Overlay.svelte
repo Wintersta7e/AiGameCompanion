@@ -6,12 +6,14 @@
   import { hashHue } from '../utils/accent';
   import {
     chatViewAction,
+    recapOffer,
     SAVE_STATUS_TOOLTIP,
     saveStatusText,
     type ChatView,
     type SaveState,
     type SavedExchange,
   } from '../utils/chat';
+  import { formatLastPlayed } from '../utils/format';
   import type { SearchReport } from '../utils/search';
   import { ANOTHER_HINT_TURN, FULL_ANSWER_TURN, showHintChips } from '../utils/hints';
   import { sendsQuestion } from '../utils/keys';
@@ -78,6 +80,9 @@
     streaming?: boolean;
     // Set only when the answer finished ("done"); stopped and failed ones never are.
     complete?: boolean;
+    // When a complete answer finished, in ms since the epoch: when it was saved
+    // for a loaded one.
+    completedAt?: number;
     // Set once the answer is too long or too slow to format; it then stays plain text.
     plain?: boolean;
     // Why the answer failed; shown on its own line, never part of `content`.
@@ -88,6 +93,7 @@
 
   const PROVIDER_ORDER: Provider[] = ['gemini', 'claude', 'openai'];
   const SUGGESTIONS = ['Where do I go next?', "What's this enemy weak to?", 'Explain this screen'];
+  const RECAP_QUESTION = 'Where was I?';
 
   let game = $state<GameInfo>(null);
   let availability = $state<Availability>({
@@ -132,6 +138,9 @@
   // has arrived -- nothing is sent before it has.
   let displayGeneration = 0;
   let chatReady = $state(false);
+  // When the recap offer was last checked: as a chat is shown and as an answer
+  // completes, never by a timer.
+  let offerCheckedAt = $state(0);
   // Whether the chat on screen is saved; null until it arrives.
   let saveState = $state<SaveState | null>(null);
   // Only the latest load_chat or clear_chat call applies its result.
@@ -179,6 +188,25 @@
     Boolean(game?.linked) && !translateBusy && !sendBlocked(translateShot),
   );
   const hintChips = $derived(showHintChips(messages, hintsFirst, asking, canSend));
+  // The resume line after a break, and its recap chip.
+  const recap = $derived.by(() => {
+    const answers = messages.filter((m) => m.role === 'assistant' && m.complete === true);
+    const times = answers.flatMap((m) =>
+      m.completedAt === undefined || Number.isNaN(m.completedAt) ? [] : [m.completedAt],
+    );
+    const newestAnswerAt = times.length > 0 ? Math.max(...times) : null;
+    const offer = recapOffer({
+      exchanges: answers.length,
+      newestAnswerAt,
+      now: offerCheckedAt,
+      canSend,
+      asking,
+    });
+    return {
+      ...offer,
+      since: newestAnswerAt === null ? '' : new Date(newestAnswerAt).toISOString(),
+    };
+  });
   // The exe's file name, for the link control ("Link foo.exe ...").
   const exeFile = $derived(game?.exe.split(/[\\/]/u).pop() ?? '');
   // The linked window as the screenshot controls name it.
@@ -495,6 +523,7 @@
       role: 'assistant',
       content: exchange.answer,
       complete: true,
+      completedAt: Date.parse(exchange.savedAt),
       model: exchange.model || modelLabel(exchange.provider),
     },
   ];
@@ -519,6 +548,7 @@
     displayGeneration = view?.displayGeneration ?? 0;
     chatReady = view !== null;
     saveState = view?.save ?? null;
+    offerCheckedAt = Date.now();
     await tick();
     if (action !== 'status' && msglistEl) msglistEl.scrollTop = msglistEl.scrollHeight;
     // The input was disabled until the chat arrived, so a focus at the show
@@ -609,6 +639,8 @@
       } else if (event.kind === 'done') {
         bubble.streaming = false;
         bubble.complete = true;
+        bubble.completedAt = Date.now();
+        offerCheckedAt = bubble.completedAt;
         asking = false;
         if (event.save) saveState = event.save;
       } else {
@@ -1113,6 +1145,18 @@
                 <button class="chip" onclick={() => send(FULL_ANSWER_TURN)} type="button"
                   >Full answer</button
                 >
+              </div>
+            {/if}
+            {#if recap.line}
+              <div class="chips recap">
+                <span class="recap-when">Last answer {formatLastPlayed(recap.since)}</span>
+                {#if recap.chip}
+                  <button
+                    class="chip"
+                    onclick={() => send(RECAP_QUESTION, { recap: true })}
+                    type="button">{RECAP_QUESTION}</button
+                  >
+                {/if}
               </div>
             {/if}
           {/if}
@@ -1864,6 +1908,13 @@
   .chip:hover {
     color: var(--color-t-hi);
     border-color: color-mix(in oklab, var(--accent) 34%, transparent);
+  }
+  .recap {
+    align-items: center;
+  }
+  .recap-when {
+    font-size: 12px;
+    color: var(--color-t-lo);
   }
 
   /* input row + footer */
