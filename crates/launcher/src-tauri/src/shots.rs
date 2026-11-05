@@ -18,7 +18,7 @@ const TIMED_OUT: &str = "Taking the screenshot timed out.";
 const CLOSED: &str = "The overlay was closed before the screenshot was ready.";
 const GONE: &str = "The screenshot is no longer available; nothing was sent.";
 const NOT_HELD: &str = "The screenshot is no longer available.";
-const WINDOW_CLOSED: &str = "The linked window is no longer open.";
+pub(crate) const WINDOW_CLOSED: &str = "The linked window is no longer open.";
 const OTHER_WINDOW: &str = "This command is only available in the Sage overlay.";
 const CHAT_HAS_NO_REGION: &str = "A chat screenshot has no region.";
 const REGION_UNUSABLE: &str = "The saved region cannot be applied -- edit or clear it.";
@@ -1202,7 +1202,7 @@ mod tests {
         let checks: [(&str, &[&str]); 6] = [
             (request_kind, &hotkey),
             (ai_path, &["shots.rs", "region.rs"]),
-            (concat!("spawn", "_request("), &["overlay.rs"]),
+            (concat!("admit", "_chat("), &["overlay.rs"]),
             (concat!("translate", "::start"), &["overlay.rs"]),
             (concat!("ask", "_sage"), &["overlay.rs"]),
             (concat!("translate", "_screen"), &["overlay.rs"]),

@@ -2083,7 +2083,7 @@ mod tests {
             println!("the request ended: {ended:?}");
         });
         let ai = super::super::AiState::default();
-        ai.replace_active(1, handle);
+        super::super::install_in(&ai.chat, 1, false, || handle).unwrap();
         let pid = pid_rx
             .recv_timeout(std::time::Duration::from_secs(10))
             .expect("the CLI started");

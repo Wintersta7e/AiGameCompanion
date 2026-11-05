@@ -5,6 +5,7 @@ export interface LauncherSettings {
   launch_on_startup: boolean;
   active_provider: string;
   gemini_model: string;
+  save_chats: boolean;
   // Shown and switched only in the overlay; Save keeps the stored value.
   hints_first?: boolean;
 }

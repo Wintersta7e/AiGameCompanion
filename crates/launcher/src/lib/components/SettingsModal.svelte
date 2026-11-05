@@ -35,6 +35,7 @@
     launch_on_startup: false,
     active_provider: '',
     gemini_model: '',
+    save_chats: true,
   });
   let availability = $state<Availability>({
     gemini: false,
@@ -59,6 +60,8 @@
   let rechecking = $state(false);
   let saving = $state(false);
   let saveError = $state<string | null>(null);
+  let deleting = $state(false);
+  let deleteResult = $state('');
 
   const NAV: { key: typeof section; label: string }[] = [
     { key: 'providers', label: 'Providers' },
@@ -94,6 +97,11 @@
       key: 'launch_on_startup',
       label: 'Launch on system startup',
       sub: 'Start Sage when Windows boots',
+    },
+    {
+      key: 'save_chats',
+      label: 'Save chats',
+      sub: "Keeps each game's chat text on this PC — never screenshots. Up to the last 20 exchanges are sent with each question. Turning this off keeps saved chats until you delete them.",
     },
   ];
 
@@ -201,9 +209,24 @@
     settings.active_provider = p;
   }
 
+  // Runs at once, not on Save; the result shows under the button.
+  async function deleteSavedChats() {
+    if (deleting) return;
+    deleting = true;
+    try {
+      const n = await invoke<number>('delete_saved_chats');
+      deleteResult = `Deleted ${n} saved ${n === 1 ? 'chat' : 'chats'}.`;
+    } catch (e) {
+      deleteResult = String(e);
+    } finally {
+      deleting = false;
+    }
+  }
+
   $effect(() => {
     if (open) {
       section = 'providers';
+      deleteResult = '';
       void load();
     }
   });
@@ -606,6 +629,18 @@
                 </button>
               </div>
             {/each}
+            <div class="py-[15px]">
+              <button
+                style="background: var(--color-ink-2);"
+                class="px-[14px] py-[9px] rounded-[10px] border border-line text-[12.5px] text-t-mid cursor-pointer transition-colors hover:text-t-hi disabled:opacity-50 disabled:cursor-default"
+                disabled={deleting}
+                onclick={deleteSavedChats}
+                type="button">Delete all saved chats</button
+              >
+              {#if deleteResult}
+                <div class="mt-2 text-[12px] text-t-mid">{deleteResult}</div>
+              {/if}
+            </div>
           {:else}
             <div class="flex items-center gap-[14px] mb-4">
               <span

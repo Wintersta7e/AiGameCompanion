@@ -4,6 +4,17 @@
   import { invoke, Channel } from '@tauri-apps/api/core';
   import { listen } from '@tauri-apps/api/event';
   import { hashHue } from '../utils/accent';
+  import {
+    chatViewAction,
+    recapOffer,
+    SAVE_STATUS_TOOLTIP,
+    saveStatusText,
+    type ChatView,
+    type SaveState,
+    type SavedExchange,
+  } from '../utils/chat';
+  import { formatLastPlayed } from '../utils/format';
+  import type { SearchReport } from '../utils/search';
   import { ANOTHER_HINT_TURN, FULL_ANSWER_TURN, showHintChips } from '../utils/hints';
   import { sendsQuestion } from '../utils/keys';
   import { unsavedPick } from '../utils/pick';
@@ -46,12 +57,18 @@
     openai: boolean;
     gemini_fallback_model: string;
   }
+  type SageKind = 'chunk' | 'done' | 'error';
   interface SageEvent {
-    kind: 'chunk' | 'done' | 'error';
+    kind: SageKind;
     requestId: number;
     conversationId: number;
+    // The number of the chat on screen the request was admitted for.
+    displayGeneration: number;
     text?: string;
     message?: string;
+    // Whether the finished answer was saved.
+    save?: SaveState;
+    search?: SearchReport;
   }
   interface Msg {
     role: 'user' | 'assistant';
@@ -63,6 +80,9 @@
     streaming?: boolean;
     // Set only when the answer finished ("done"); stopped and failed ones never are.
     complete?: boolean;
+    // When a complete answer finished, in ms since the epoch: when it was saved
+    // for a loaded one.
+    completedAt?: number;
     // Set once the answer is too long or too slow to format; it then stays plain text.
     plain?: boolean;
     // Why the answer failed; shown on its own line, never part of `content`.
@@ -73,6 +93,7 @@
 
   const PROVIDER_ORDER: Provider[] = ['gemini', 'claude', 'openai'];
   const SUGGESTIONS = ['Where do I go next?', "What's this enemy weak to?", 'Explain this screen'];
+  const RECAP_QUESTION = 'Where was I?';
 
   let game = $state<GameInfo>(null);
   let availability = $state<Availability>({
@@ -113,6 +134,20 @@
   let prompt = $state('');
   let asking = $state(false);
   let messages = $state<Msg[]>([]);
+  // The saved chat on screen: Rust's number for it (0 = none), and whether it
+  // has arrived -- nothing is sent before it has.
+  let displayGeneration = 0;
+  let chatReady = $state(false);
+  // When the recap offer was last checked: as a chat is shown and as an answer
+  // completes, never by a timer.
+  let offerCheckedAt = $state(0);
+  // Whether the chat on screen is saved; null until it arrives.
+  let saveState = $state<SaveState | null>(null);
+  // Only the latest load_chat or clear_chat call applies its result.
+  let chatLoadSeq = 0;
+  // Why New chat did not clear the saved chat; shown above the messages until
+  // another chat is shown or a question is sent.
+  let chatNotice = $state('');
   // The answer whose Copy just succeeded, by index; -1 for none.
   let copiedIndex = $state(-1);
 
@@ -142,7 +177,8 @@
   );
   // Nothing about a window is sent until it is linked; the backend enforces the
   // same gate, this only keeps the controls honest.
-  const canSend = $derived(Boolean(game?.linked) && availability[provider]);
+  const canSend = $derived(Boolean(game?.linked) && availability[provider] && chatReady);
+  const saveStatus = $derived(saveStatusText(saveState, Boolean(game?.linked)));
   const canTakeShot = $derived(Boolean(game?.linked) && !sendBlocked(chatShot));
   // Gemini is the only provider that translates.
   const canTranslate = $derived(
@@ -152,6 +188,25 @@
     Boolean(game?.linked) && !translateBusy && !sendBlocked(translateShot),
   );
   const hintChips = $derived(showHintChips(messages, hintsFirst, asking, canSend));
+  // The resume line after a break, and its recap chip.
+  const recap = $derived.by(() => {
+    const answers = messages.filter((m) => m.role === 'assistant' && m.complete === true);
+    const times = answers.flatMap((m) =>
+      m.completedAt === undefined || Number.isNaN(m.completedAt) ? [] : [m.completedAt],
+    );
+    const newestAnswerAt = times.length > 0 ? Math.max(...times) : null;
+    const offer = recapOffer({
+      exchanges: answers.length,
+      newestAnswerAt,
+      now: offerCheckedAt,
+      canSend,
+      asking,
+    });
+    return {
+      ...offer,
+      since: newestAnswerAt === null ? '' : new Date(newestAnswerAt).toISOString(),
+    };
+  });
   // The exe's file name, for the link control ("Link foo.exe ...").
   const exeFile = $derived(game?.exe.split(/[\\/]/u).pop() ?? '');
   // The linked window as the screenshot controls name it.
@@ -268,12 +323,29 @@
     messages = [];
     copiedIndex = -1;
     prompt = '';
+    // The saved chat on screen is deleted too; nothing is sent until the
+    // emptied chat arrives. A later show or link makes the result stale.
+    const shown = game?.linked && chatReady ? game : null;
+    const seq = shown ? (chatLoadSeq += 1) : 0;
+    const generation = displayGeneration;
+    if (shown) chatReady = false;
     if (inflight !== 0) {
       try {
         await invoke('cancel_sage', { requestId: inflight });
       } catch {
         /* best effort */
       }
+    }
+    if (!shown) return;
+    const stale = () => seq !== chatLoadSeq || game?.hwnd !== shown.hwnd || game.pid !== shown.pid;
+    try {
+      const view = await invoke<ChatView>('clear_chat', { displayGeneration: generation });
+      if (!stale()) await applyView(view);
+    } catch (err) {
+      if (stale()) return;
+      // Show the chat as it is, then why it was not cleared.
+      await reloadChat();
+      chatNotice = String(err);
     }
   }
 
@@ -443,47 +515,83 @@
     }
   }
 
-  // The history a request carries: each question with the answer that followed
-  // it, only when that answer finished and has text. A stopped, failed or empty
-  // answer is left out together with its question, so no error text or half
-  // answer is sent back as if the model had said it.
-  function completedHistory(msgs: Msg[]): { role: Msg['role']; content: string }[] {
-    const history: { role: Msg['role']; content: string }[] = [];
-    for (let i = 0; i + 1 < msgs.length; i += 2) {
-      const question = msgs[i];
-      const answer = msgs[i + 1];
-      if (
-        question?.role === 'user' &&
-        answer?.role === 'assistant' &&
-        answer.complete === true &&
-        answer.content.trim() !== ''
-      ) {
-        history.push(
-          { role: 'user', content: question.content },
-          { role: 'assistant', content: answer.content },
-        );
-      }
+  // A saved exchange as the chat shows it: the question, with the chip of a
+  // sent screenshot (never the image), and its finished answer.
+  const savedMessages = (exchange: SavedExchange): Msg[] => [
+    { role: 'user', content: exchange.question, screenshot: exchange.screenshot },
+    {
+      role: 'assistant',
+      content: exchange.answer,
+      complete: true,
+      completedAt: Date.parse(exchange.savedAt),
+      model: exchange.model || modelLabel(exchange.provider),
+    },
+  ];
+
+  // Show the chat `load_chat` returned for the window on screen. The chat
+  // already shown only updates its status: its messages, and where the list
+  // is scrolled, stay as they are.
+  async function applyView(view: ChatView | null) {
+    const action = chatViewAction(displayGeneration, view);
+    if (action !== 'status') {
+      for (const m of messages) m.thumb?.close();
+      messages = view && action === 'replace' ? view.exchanges.flatMap(savedMessages) : [];
+      asking = false;
+      activeRequestId = 0;
+      // A late answer or thumbnail of the chat replaced here must not land in this one.
+      conversationId += 1;
+      copiedIndex = -1;
+      chatNotice = '';
+      // Another chat opens at its latest message.
+      chatScrollTop = null;
     }
-    return history;
+    displayGeneration = view?.displayGeneration ?? 0;
+    chatReady = view !== null;
+    saveState = view?.save ?? null;
+    offerCheckedAt = Date.now();
+    await tick();
+    if (action !== 'status' && msglistEl) msglistEl.scrollTop = msglistEl.scrollHeight;
+    // The input was disabled until the chat arrived, so a focus at the show
+    // did not take; a staged quick ask must still send on Enter.
+    if (tab === 'chat' && document.activeElement === document.body) inputEl?.focus();
   }
 
-  async function send(text?: string) {
+  // Load the chat of the window on screen, on every show and after a link. A
+  // window that is not linked shows no chat.
+  async function reloadChat() {
+    const seq = (chatLoadSeq += 1);
+    const shown = game;
+    if (!shown?.linked) {
+      await applyView(null);
+      return;
+    }
+    const view = await invoke<ChatView | null>('load_chat', {
+      hwnd: shown.hwnd,
+      pid: shown.pid,
+    }).catch(() => null);
+    // A later show or link, or another window, makes this result stale.
+    if (seq !== chatLoadSeq || game?.hwnd !== shown.hwnd || game.pid !== shown.pid) return;
+    await applyView(view);
+  }
+
+  // Send a question, or a recap of the chat so far; Rust adds the saved chat
+  // as its history.
+  async function send(text?: string, opts: { recap?: boolean } = {}) {
+    const isRecap = opts.recap === true;
     const question = (text ?? prompt).trim();
-    if (!question || asking || !canSend || sendBlocked(chatShot)) return;
+    if (!question || asking || !canSend || (!isRecap && sendBlocked(chatShot))) return;
 
     const id = (nextRequestId += 1);
     const convo = conversationId;
     activeRequestId = id;
-    // Only a drawn screenshot goes; its preview becomes the chip's thumbnail.
-    const shotId = sendableShot(chatShot);
+    chatNotice = '';
+    // Only a drawn screenshot goes, never with a recap; its preview becomes
+    // the chip's thumbnail. A recap leaves the held screenshot as it is.
+    const shotId = isRecap ? null : sendableShot(chatShot);
     const full = shotId === null ? null : chatBitmap;
     if (full) chatBitmap = null;
-    chatShot = afterSend(chatShot);
+    if (!isRecap) chatShot = afterSend(chatShot);
     const thumb = full ? makeThumb(full) : null;
-
-    // History for the backend: finished exchanges + this question.
-    const outgoing = completedHistory(messages);
-    outgoing.push({ role: 'user', content: question });
 
     messages = [
       ...messages,
@@ -493,7 +601,7 @@
         content: '',
         model: modelLabel(provider),
         streaming: true,
-        hinted: hintsFirst,
+        hinted: hintsFirst && !isRecap,
       },
     ];
     const idx = messages.length - 1;
@@ -501,9 +609,9 @@
     prompt = '';
     asking = true;
 
-    // The chip says whether the screenshot went: `ask_sage` returns once the
-    // screenshot is claimed for the request and rejects when it is refused,
-    // so a failed or stopped answer still shows the chip. A thumbnail that
+    // The chip says whether the screenshot went: `ask_sage` returns whether
+    // the request started, and so whether its screenshot was claimed, so a
+    // failed or stopped answer still shows the chip. A thumbnail that
     // arrives after New chat is freed.
     const asked = messages[idx - 1];
     const settleShot = (sent: boolean) => {
@@ -516,6 +624,12 @@
 
     const channel = new Channel<SageEvent>();
     channel.onmessage = (event) => {
+      // An event for another chat than the one on screen is dropped; when it
+      // is the running request's, the chat on screen is stale, so reload it.
+      if (event.displayGeneration !== displayGeneration) {
+        if (event.requestId === activeRequestId) void reloadChat();
+        return;
+      }
       // Ignore output from a superseded request or cleared conversation.
       if (event.requestId !== activeRequestId || event.conversationId !== convo) return;
       const bubble = messages[idx];
@@ -525,7 +639,10 @@
       } else if (event.kind === 'done') {
         bubble.streaming = false;
         bubble.complete = true;
+        bubble.completedAt = Date.now();
+        offerCheckedAt = bubble.completedAt;
         asking = false;
+        if (event.save) saveState = event.save;
       } else {
         bubble.error = event.message ?? 'Unknown error';
         bubble.streaming = false;
@@ -534,16 +651,19 @@
     };
 
     try {
-      await invoke('ask_sage', {
+      // A refused request reports why on the channel, as its one error.
+      const started = await invoke('ask_sage', {
         requestId: id,
         conversationId: convo,
         provider,
-        messages: outgoing,
-        shotId,
-        hints: hintsFirst,
         channel,
+        question,
+        shotId,
+        search: false,
+        hints: hintsFirst,
+        recap: isRecap,
       });
-      settleShot(true);
+      settleShot(started === true);
     } catch (err) {
       settleShot(false);
       // Same guard as the channel handler: a rejection that lands after New chat
@@ -599,6 +719,7 @@
     // flight: the result applies only to the window it was asked for.
     if (!linked || game?.hwnd !== shown.hwnd || game.pid !== shown.pid) return;
     game = linked;
+    await reloadChat();
     await tick();
     inputEl?.focus();
   }
@@ -714,6 +835,7 @@
         setBitmap('translate', null);
         translateShot = NO_SHOT;
         game = event.payload;
+        void reloadChat();
         // The overlay just became visible: CLI detection has had time to finish.
         if (savedProviderLoaded) void refreshProviders();
         // The window is shown and hidden, never remounted, so the input has to
@@ -728,6 +850,9 @@
       }),
       listen('providers-changed', () => {
         void loadSavedProvider();
+      }),
+      listen('saved-chats-changed', () => {
+        void reloadChat();
       }),
       listen<HotkeyAction>('translate-request', (event) => {
         // Stage only: Enter on the focused button, or a click, runs it.
@@ -766,7 +891,7 @@
           class="icon-btn"
           aria-label="New chat"
           onclick={newChat}
-          title="New chat"
+          title="New chat — deletes this game's saved chat"
           type="button"
         >
           <svg
@@ -926,6 +1051,9 @@
       <!-- chat body -->
       <div class="body">
         <div bind:this={msglistEl} class="msglist" use:keepBottom>
+          {#if chatNotice}
+            <div style="color: var(--color-err);" class="chat-notice">{chatNotice}</div>
+          {/if}
           {#if available.length === 0}
             <div class="msg sage">
               <span class="avatar"></span>
@@ -1017,6 +1145,18 @@
                 <button class="chip" onclick={() => send(FULL_ANSWER_TURN)} type="button"
                   >Full answer</button
                 >
+              </div>
+            {/if}
+            {#if recap.line}
+              <div class="chips recap">
+                <span class="recap-when">Last answer {formatLastPlayed(recap.since)}</span>
+                {#if recap.chip}
+                  <button
+                    class="chip"
+                    onclick={() => send(RECAP_QUESTION, { recap: true })}
+                    type="button">{RECAP_QUESTION}</button
+                  >
+                {/if}
               </div>
             {/if}
           {/if}
@@ -1143,6 +1283,7 @@
           </div>
           <div class="footer">
             <span>{modelLabel(provider)} · {asking ? 'streaming' : 'Enter to send'}</span>
+            {#if saveStatus}<span title={SAVE_STATUS_TOOLTIP}>{saveStatus}</span>{/if}
           </div>
         </div>
       </div>
@@ -1653,6 +1794,9 @@
   .answer-error {
     white-space: pre-wrap;
   }
+  .chat-notice {
+    font-size: 12px;
+  }
   .answer-error.spaced {
     margin-top: 8px;
   }
@@ -1764,6 +1908,13 @@
   .chip:hover {
     color: var(--color-t-hi);
     border-color: color-mix(in oklab, var(--accent) 34%, transparent);
+  }
+  .recap {
+    align-items: center;
+  }
+  .recap-when {
+    font-size: 12px;
+    color: var(--color-t-lo);
   }
 
   /* input row + footer */

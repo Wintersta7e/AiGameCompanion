@@ -3,6 +3,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod ai;
+mod chat_store;
 mod commands;
 mod discovery;
 mod models;
@@ -201,7 +202,9 @@ fn main() {
                     cfg.claude,
                     cfg.codex
                 );
-                detect_handle.state::<AiState>().set_cli(cfg);
+                let ai_state = detect_handle.state::<AiState>();
+                ai_state.set_cli(cfg);
+                ai_state.set_gemini(ai::gemini_presence());
                 ai::notify_providers_changed(&detect_handle);
             });
 
@@ -231,6 +234,16 @@ fn main() {
                 .build(app)?;
 
             app.manage(app_state);
+            app.manage(chat_store::ChatStore::new(chat_store::chats_dir(
+                app.handle(),
+            )));
+            let handle = app.handle().clone();
+            std::thread::spawn(move || {
+                let mode = chat_store::store_mode(&handle.state::<AppState>());
+                handle
+                    .state::<chat_store::ChatStore>()
+                    .startup_pass(mode, chrono::Utc::now());
+            });
             Ok(())
         })
         .on_window_event(|window, event| {
@@ -275,6 +288,9 @@ fn main() {
             commands::ai::translate_screen,
             commands::ai::set_gemini_key,
             commands::ai::recheck_clis,
+            commands::chat::load_chat,
+            commands::chat::clear_chat,
+            commands::chat::delete_saved_chats,
             overlay::hide_overlay,
             overlay::link_game,
             shots::take_shot,

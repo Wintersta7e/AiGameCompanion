@@ -15,9 +15,17 @@ All notable changes to this project are documented here. The format is based on
 - **Ctrl+Shift+A and Ctrl+Shift+T take a screenshot of the linked game before
   the panel takes focus,** so it shows the game, not the panel. Nothing is sent
   until you press Enter or click.
+- **Saved chats.** Each game's chat is kept on this PC and comes back when you
+  return to that game; on by default, including after an upgrade. Settings can
+  turn it off or delete every saved chat.
+- **"Where was I?"** After a break of four hours or more, one click asks Sage to
+  recap the chat so far.
 
 ### Fixed
 
+- **The chat no longer follows you to another game.**
+- **The history sent with a question is limited** to up to the last 20
+  exchanges.
 - **A screenshot that cannot be taken is shown as an error** instead of the
   question being sent without it.
 - **Large screenshots stay under provider size limits.**

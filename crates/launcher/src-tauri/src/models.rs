@@ -87,6 +87,9 @@ pub(crate) struct LauncherSettings {
     /// Answers start as hints; written only by `set_hints_first`. On by
     /// default, also for a file saved before the field existed.
     pub hints_first: bool,
+    /// Each game's chat is saved on this PC. On by default, also for a file
+    /// saved before the field existed; off keeps chats until quit.
+    pub save_chats: bool,
     #[serde(flatten)]
     pub unknown: UnknownFields,
 }
@@ -100,6 +103,7 @@ impl Default for LauncherSettings {
             active_provider: String::new(),
             gemini_model: String::new(),
             hints_first: true,
+            save_chats: true,
             unknown: UnknownFields::new(),
         }
     }
@@ -390,6 +394,31 @@ mod tests {
         assert_eq!(value["hints_first"], false);
         let reloaded: LauncherSettings = serde_json::from_value(value).expect("settings load");
         assert!(!reloaded.hints_first, "off survives a save and a load");
+    }
+
+    /// Saving chats starts on, also for a file saved before the field existed,
+    /// and an off survives a save and a load.
+    #[test]
+    fn save_chats_defaults_on() {
+        assert!(
+            LauncherSettings::default().save_chats,
+            "saving chats starts on"
+        );
+        let upgraded: LauncherSettings = serde_json::from_str(r#"{"scan_on_startup":false}"#)
+            .expect("settings saved before the field load");
+        println!(
+            "a file without the field loads save_chats {}",
+            upgraded.save_chats
+        );
+        assert!(upgraded.save_chats, "an upgrade starts with saving on");
+        let off = LauncherSettings {
+            save_chats: false,
+            ..LauncherSettings::default()
+        };
+        let value = serde_json::to_value(&off).expect("settings serialise");
+        assert_eq!(value["save_chats"], false);
+        let reloaded: LauncherSettings = serde_json::from_value(value).expect("settings load");
+        assert!(!reloaded.save_chats, "off survives a save and a load");
     }
 
     /// The overlay shows hints first before it has read the setting; that
