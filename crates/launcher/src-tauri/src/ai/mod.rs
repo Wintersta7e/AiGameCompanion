@@ -1497,8 +1497,9 @@ mod tests {
         }
     }
 
-    #[test]
-    fn request_log_line_names_no_game() {
+    /// The lines of three made-up requests and of every refusal, each checked
+    /// against its expected text.
+    fn checked_fixed_log_lines() -> Vec<String> {
         let line = |request_id, provider, screenshot, turns, linked, identity, hints, recap| {
             request_log_line(&RequestLine {
                 request_id,
@@ -1560,6 +1561,12 @@ mod tests {
             assert_eq!(text, expected);
             lines.push(text);
         }
+        lines
+    }
+
+    #[test]
+    fn request_log_line_names_no_game() {
+        let mut lines = checked_fixed_log_lines();
         // The line an admitted request logs, from the real admission.
         let fixture = Fixture::new("log_line", 1);
         let game = target(true);
