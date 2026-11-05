@@ -182,36 +182,50 @@ struct Parsed {
     corrupt: bool,
 }
 
-/// Parse a chat file's text read for `key`. An entry that does not read --
-/// including one naming a provider or a search note this build does not know
-/// -- is dropped and counted, never logged: the error could quote the chat.
-fn parse_chat_file(text: &str, key: &str) -> Parsed {
-    let value = serde_json::from_str::<serde_json::Value>(text).ok();
-    let file = value.as_ref().and_then(|value| {
-        Some((
-            value.get("key")?.as_str()?,
-            value.get("entries")?.as_array()?,
-        ))
-    });
-    let Some((stored_key, raw)) = file else {
-        return Parsed {
-            entries: Vec::new(),
-            dropped: 0,
-            key_matches: true,
-            corrupt: true,
-        };
-    };
+/// A chat file as read: the key it names, the entries that read, and how
+/// many did not.
+struct StoredFile {
+    key: String,
+    entries: Vec<SavedExchange>,
+    dropped: usize,
+}
+
+/// Parse a chat file's text; `None` when it is not a chat file. An entry that
+/// does not read -- including one naming a provider or a search note this
+/// build does not know -- is dropped and counted, never logged: the error
+/// could quote the chat.
+fn parse_stored(text: &str) -> Option<StoredFile> {
+    let value = serde_json::from_str::<serde_json::Value>(text).ok()?;
+    let key = value.get("key")?.as_str()?.to_owned();
+    let raw = value.get("entries")?.as_array()?;
     let entries: Vec<SavedExchange> = raw
         .iter()
         .filter_map(|entry| serde_json::from_value::<ChatEntry>(entry.clone()).ok())
         .map(|ChatEntry::Exchange(exchange)| exchange)
         .collect();
-    Parsed {
+    Some(StoredFile {
+        key,
         dropped: raw.len() - entries.len(),
         entries,
-        key_matches: stored_key == key,
-        corrupt: false,
-    }
+    })
+}
+
+/// Parse a chat file's text read for `key`.
+fn parse_chat_file(text: &str, key: &str) -> Parsed {
+    parse_stored(text).map_or(
+        Parsed {
+            entries: Vec::new(),
+            dropped: 0,
+            key_matches: true,
+            corrupt: true,
+        },
+        |file| Parsed {
+            key_matches: file.key == key,
+            entries: file.entries,
+            dropped: file.dropped,
+            corrupt: false,
+        },
+    )
 }
 
 /// Remove the exchanges saved more than `EXPIRY_DAYS` before `now`; one saved
@@ -383,12 +397,13 @@ impl ChatStore {
             .dir
             .as_deref()
             .map_or_else(KeyEntry::empty, |dir| read_key(dir, key, mode, Utc::now()));
-        drop(io);
+        // In memory before the I/O lock goes, so the startup pass skips this file.
         self.memory
             .lock()
             .keys
             .entry(key.to_owned())
             .or_insert(entry);
+        drop(io);
     }
 
     /// Read an Unread `key`'s file the way `load` does, put this session's
@@ -651,6 +666,160 @@ impl ChatStore {
         } else {
             Ok(deleted.chat_files)
         }
+    }
+
+    /// Remove, once at startup, what is past the 700-day limit in every saved
+    /// chat not in memory -- with saving off too: expired exchanges, and
+    /// backups and leftover `.tmp` files that old. A chat file that cannot be
+    /// read, or holds another game's chat, goes only once it is that old by
+    /// its modification time; one that cannot be deleted is tried again at
+    /// the next start. Nothing changes in read-only mode, and nothing is added
+    /// to memory. Takes the I/O lock per file. Blocks on file I/O.
+    pub(crate) fn startup_pass(&self, mode: StoreMode, now: DateTime<Utc>) {
+        let Some(dir) = self.dir.as_deref().filter(|_| !mode.read_only) else {
+            return;
+        };
+        let Some(cutoff) = now.checked_sub_signed(TimeDelta::days(EXPIRY_DAYS)) else {
+            return;
+        };
+        let names: Vec<String> = match std::fs::read_dir(dir) {
+            Ok(listing) => listing
+                .filter_map(|item| item.ok()?.file_name().into_string().ok())
+                .collect(),
+            Err(e) if e.kind() == ErrorKind::NotFound => return,
+            Err(e) => {
+                log_unlisted(e.kind());
+                return;
+            }
+        };
+        let (mut rewritten, mut deleted, mut failed) = (0, 0, 0);
+        for name in names {
+            let Some((hash, chat_file)) = store_file(&name) else {
+                continue;
+            };
+            let hash = ChatHash(hash.to_owned());
+            let io = self.io.lock();
+            let in_memory = self
+                .memory
+                .lock()
+                .keys
+                .keys()
+                .any(|key| file_hash(key) == hash);
+            let outcome = if in_memory {
+                Expired::Left
+            } else if chat_file {
+                expire_chat(dir, &hash, now, cutoff)
+            } else {
+                let path = dir.join(&name);
+                let tmp = path.extension().is_some_and(|ext| ext == "tmp");
+                expire_copy(&path, tmp, cutoff)
+            };
+            drop(io);
+            match outcome {
+                Expired::Left => {}
+                Expired::Rewritten => rewritten += 1,
+                Expired::Deleted => deleted += 1,
+                Expired::Failed => failed += 1,
+            }
+        }
+        log_expired_at_start(rewritten, deleted, failed);
+    }
+}
+
+/// What the startup pass did to one store file.
+enum Expired {
+    Left,
+    Rewritten,
+    Deleted,
+    /// It could not be changed; tried again at the next start.
+    Failed,
+}
+
+/// Delete the store file at `path`.
+fn delete_expired(path: &Path) -> Expired {
+    match std::fs::remove_file(path) {
+        Ok(()) => Expired::Deleted,
+        Err(e) if e.kind() == ErrorKind::NotFound => Expired::Left,
+        Err(_) => Expired::Failed,
+    }
+}
+
+/// Delete the store file at `path` when it was last changed before `cutoff`;
+/// one whose time cannot be read stays.
+fn delete_if_older(path: &Path, cutoff: DateTime<Utc>) -> Expired {
+    let older = std::fs::metadata(path)
+        .and_then(|meta| meta.modified())
+        .is_ok_and(|at| DateTime::<Utc>::from(at) < cutoff);
+    if older {
+        delete_expired(path)
+    } else {
+        Expired::Left
+    }
+}
+
+/// Remove the expired exchanges of the chat file `hash` in `dir`: rewrite it
+/// with the rest, or delete it when none remain. A damaged file is kept as a
+/// backup first, and stays as it is when that fails. A file that cannot be
+/// read, or whose key is not the one its name is the hash of, is deleted only
+/// once it was last changed before `cutoff`.
+fn expire_chat(dir: &Path, hash: &ChatHash, now: DateTime<Utc>, cutoff: DateTime<Utc>) -> Expired {
+    let path = chat_file(dir, hash);
+    let text = match read_with_retry(
+        &path,
+        READ_ATTEMPTS,
+        READ_RETRY_DELAY,
+        |path| std::fs::read_to_string(path),
+        |attempt, e| log_read_retry(hash, attempt, e.kind()),
+    ) {
+        Ok(text) => text,
+        Err(e) if e.kind() == ErrorKind::NotFound => return Expired::Left,
+        Err(_) => return delete_if_older(&path, cutoff),
+    };
+    let Some(mut file) = parse_stored(&text).filter(|file| file_hash(&file.key) == *hash) else {
+        return delete_if_older(&path, cutoff);
+    };
+    if prune_expired(&mut file.entries, now) == 0 {
+        return Expired::Left;
+    }
+    if file.dropped > 0 {
+        match back_up(&path, text.as_bytes()) {
+            Ok(kept) if kept.reused => log_backup_reused(hash),
+            Ok(_) => log_backed_up(hash),
+            Err(e) => {
+                log_expiry_failed(hash, e.kind());
+                return Expired::Failed;
+            }
+        }
+    }
+    let emptied = file.entries.is_empty();
+    let written = if emptied {
+        remove_chat(dir, hash)
+    } else {
+        file_json(&file.key, &file.entries).and_then(|text| write_chat(dir, hash, &text))
+    };
+    match written {
+        Ok(()) if emptied => Expired::Deleted,
+        Ok(()) => Expired::Rewritten,
+        Err(e) => {
+            log_expiry_failed(hash, e.kind());
+            Expired::Failed
+        }
+    }
+}
+
+/// Delete an expired copy of a chat file at `path`: a leftover `.tmp` last
+/// changed before `cutoff`, or a backup whose newest exchange was saved before
+/// it -- by its modification time when it holds no exchange that reads.
+fn expire_copy(path: &Path, tmp: bool, cutoff: DateTime<Utc>) -> Expired {
+    let newest = (!tmp)
+        .then(|| std::fs::read_to_string(path).ok())
+        .flatten()
+        .and_then(|text| parse_stored(&text))
+        .and_then(|file| file.entries.iter().map(|exchange| exchange.saved_at).max());
+    match newest {
+        Some(newest) if newest < cutoff => delete_expired(path),
+        Some(_) => Expired::Left,
+        None => delete_if_older(path, cutoff),
     }
 }
 
@@ -932,6 +1101,18 @@ fn log_skipped(hash: &ChatHash, bytes: usize) {
 
 fn log_deleted_all(deleted: u32, failed: usize) {
     tracing::info!("Saved chats: deleted {deleted} chat(s); {failed} file(s) could not be deleted");
+}
+
+fn log_expiry_failed(hash: &ChatHash, kind: ErrorKind) {
+    tracing::warn!(
+        "Chat {hash}: its expired entries could not be removed ({kind}); tried again at the next start"
+    );
+}
+
+fn log_expired_at_start(rewritten: usize, deleted: usize, failed: usize) {
+    tracing::info!(
+        "Saved chats at start: {rewritten} file(s) rewritten and {deleted} deleted for expiry; {failed} could not be changed"
+    );
 }
 
 #[cfg(test)]
@@ -2209,6 +2390,271 @@ mod tests {
                 "{key}: shown"
             );
         }
+    }
+
+    /// Write `text` to `path`, last modified `days` days before `now`.
+    fn seed(path: &Path, text: impl AsRef<[u8]>, now: DateTime<Utc>, days: i64) -> PathBuf {
+        std::fs::write(path, text).unwrap();
+        std::fs::File::options()
+            .write(true)
+            .open(path)
+            .unwrap()
+            .set_modified((now - TimeDelta::days(days)).into())
+            .unwrap();
+        path.to_owned()
+    }
+
+    /// Files the startup pass must delete, and files it must leave as they are.
+    #[derive(Default)]
+    struct PassCases {
+        gone: Vec<(&'static str, PathBuf)>,
+        kept: Vec<(&'static str, PathBuf)>,
+    }
+
+    /// One seeded file: whether the pass deletes it, a label, its path, its
+    /// contents and the days since it was last changed.
+    type PassRow = (bool, &'static str, PathBuf, Vec<u8>, i64);
+
+    /// Backups and `.tmp` files the pass deletes or leaves by their age.
+    fn copy_rows(dir: &Path, now: DateTime<Utc>) -> Vec<PassRow> {
+        let old = |days: i64| entry(&exchange("Old", now - TimeDelta::days(days)));
+        let junk = b"not a chat file".to_vec();
+        let bak = |key: &str| bak_of(&path_of(dir, key));
+        vec![
+            (
+                true,
+                "unparseable backup, 701 days",
+                bak("Junk backup old"),
+                junk.clone(),
+                701,
+            ),
+            (
+                false,
+                "unparseable backup, 699 days",
+                bak("Junk backup new"),
+                junk.clone(),
+                699,
+            ),
+            (
+                true,
+                "backup whose newest entry is 701 days old",
+                bak("Old backup"),
+                file_text("Old backup", &[old(702), old(701)]).into_bytes(),
+                0,
+            ),
+            (
+                false,
+                "backup whose newest entry is 699 days old",
+                path_of(dir, "New backup").with_extension("json.bak.2"),
+                file_text("New backup", &[old(702), old(699)]).into_bytes(),
+                701,
+            ),
+            (
+                true,
+                ".tmp, 701 days",
+                tmp_of(&path_of(dir, "Old tmp")),
+                junk.clone(),
+                701,
+            ),
+            (
+                false,
+                ".tmp, 699 days",
+                tmp_of(&path_of(dir, "New tmp")),
+                junk,
+                699,
+            ),
+        ]
+    }
+
+    /// Chat files the pass deletes or leaves by their age, and a file it does not own.
+    fn chat_rows(dir: &Path, now: DateTime<Utc>) -> Vec<PassRow> {
+        let old = |days: i64| entry(&exchange("Old", now - TimeDelta::days(days)));
+        let junk = b"not a chat file".to_vec();
+        let not_text = vec![0xff, 0xfe, 0xfd];
+        let chat = |key: &str| path_of(dir, key);
+        let foreign = file_text("Real Name", &[old(701)]).into_bytes();
+        vec![
+            (
+                true,
+                "chat whose only entry expired",
+                chat("All expired"),
+                file_text("All expired", &[old(701)]).into_bytes(),
+                0,
+            ),
+            (
+                true,
+                "unparseable chat, 701 days",
+                chat("Junk old"),
+                junk.clone(),
+                701,
+            ),
+            (
+                false,
+                "unparseable chat, 699 days",
+                chat("Junk new"),
+                junk.clone(),
+                699,
+            ),
+            (
+                true,
+                "unreadable chat, 701 days",
+                chat("Unreadable old"),
+                not_text.clone(),
+                701,
+            ),
+            (
+                false,
+                "unreadable chat, 699 days",
+                chat("Unreadable new"),
+                not_text,
+                699,
+            ),
+            (
+                true,
+                "another game's chat, 701 days",
+                chat("Foreign old"),
+                foreign.clone(),
+                701,
+            ),
+            (
+                false,
+                "another game's chat, 699 days",
+                chat("Foreign new"),
+                foreign,
+                699,
+            ),
+            (
+                false,
+                "a file the store does not name",
+                dir.join("notes.txt"),
+                junk,
+                701,
+            ),
+        ]
+    }
+
+    /// Seed in `dir` every file the startup pass deletes or leaves by its age.
+    fn seed_pass_cases(dir: &Path, now: DateTime<Utc>) -> PassCases {
+        let mut cases = PassCases::default();
+        for (gone, label, path, text, days) in
+            copy_rows(dir, now).into_iter().chain(chat_rows(dir, now))
+        {
+            let path = seed(&path, text, now, days);
+            if gone {
+                cases.gone.push((label, path));
+            } else {
+                cases.kept.push((label, path));
+            }
+        }
+        cases
+    }
+
+    #[test]
+    fn startup_pass_expires() {
+        let now = Utc::now();
+        let dir = temp_dir("startup_pass");
+        let cases = seed_pass_cases(&dir, now);
+        let expired = entry(&exchange("Expired", now - TimeDelta::days(701)));
+        let fresh = entry(&exchange("Kept", now));
+        let unknown = serde_json::json!({ "kind": "note", "text": "From a newer build" });
+        let half = seed(
+            &path_of(&dir, "Half expired"),
+            file_text("Half expired", &[expired.clone(), fresh.clone()]),
+            now,
+            0,
+        );
+        let damaged_text = file_text(
+            "Damaged",
+            &[unknown.clone(), expired.clone(), fresh.clone()],
+        );
+        let damaged = seed(&path_of(&dir, "Damaged"), &damaged_text, now, 0);
+        seed(
+            &path_of(&dir, "Damaged, none expired"),
+            file_text("Damaged, none expired", &[unknown, fresh.clone()]),
+            now,
+            0,
+        );
+        // A chat in memory, with an expired entry on disk and an old backup.
+        let shown_text = file_text("Shown", &[expired.clone(), fresh.clone()]);
+        seed(&path_of(&dir, "Shown"), &shown_text, now, 0);
+        let shown_bak = seed(
+            &bak_of(&path_of(&dir, "Shown")),
+            "not a chat file",
+            now,
+            701,
+        );
+        let store = ChatStore::new(Some(dir.clone()));
+        store.load("Shown", WRITABLE);
+        let before = listing(&dir);
+        println!("before: {before:#?}");
+
+        store.startup_pass(READ_ONLY, now);
+        assert_eq!(listing(&dir), before, "read-only: the listing changed");
+
+        store.startup_pass(WRITABLE, now);
+        let after = listing(&dir);
+        println!("after: {after:#?}");
+        let at = |path: &Path| {
+            let name = path.file_name().unwrap().to_string_lossy();
+            after.iter().find(|(file, ..)| *file == name).cloned()
+        };
+        for (label, path) in &cases.gone {
+            assert!(at(path).is_none(), "{label}: kept");
+        }
+        for (label, path) in cases.kept.iter().chain([&("in memory: backup", shown_bak)]) {
+            let name = path.file_name().unwrap().to_string_lossy();
+            let was = before.iter().find(|(file, ..)| *file == name).cloned();
+            assert_eq!(at(path), was, "{label}: changed");
+        }
+        assert_eq!(
+            file_questions(&dir, "Half expired"),
+            ["Kept"],
+            "one of two expired"
+        );
+        assert!(
+            !bak_of(&half).exists(),
+            "a backup of a readable file was made"
+        );
+        assert_eq!(
+            file_questions(&dir, "Damaged"),
+            ["Kept"],
+            "damaged: the rewrite"
+        );
+        assert_eq!(
+            std::fs::read_to_string(bak_of(&damaged)).unwrap(),
+            damaged_text,
+            "damaged: the backup"
+        );
+        assert_eq!(
+            file_questions(&dir, "Damaged, none expired").len(),
+            1,
+            "nothing expired: the file changed"
+        );
+        assert!(
+            !bak_of(&path_of(&dir, "Damaged, none expired")).exists(),
+            "nothing expired: a backup"
+        );
+        assert_eq!(
+            std::fs::read_to_string(path_of(&dir, "Shown")).unwrap(),
+            shown_text,
+            "in memory: changed"
+        );
+        assert!(
+            store.memory.lock().keys.keys().eq(["Shown"]),
+            "the pass added a chat to memory"
+        );
+
+        // Saving off, an expired entry is still removed.
+        let dir = temp_dir("startup_pass_off");
+        seed(
+            &path_of(&dir, "Half expired"),
+            file_text("Half expired", &[expired, fresh]),
+            now,
+            0,
+        );
+        ChatStore::new(Some(dir.clone())).startup_pass(OFF, now);
+        println!("saving off: {:#?}", listing(&dir));
+        assert_eq!(file_questions(&dir, "Half expired"), ["Kept"], "saving off");
     }
 
     /// The `state` and `reason` literals of every `SaveState` equal those of

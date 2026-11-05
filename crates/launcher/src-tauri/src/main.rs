@@ -237,6 +237,13 @@ fn main() {
             app.manage(chat_store::ChatStore::new(chat_store::chats_dir(
                 app.handle(),
             )));
+            let handle = app.handle().clone();
+            std::thread::spawn(move || {
+                let mode = chat_store::store_mode(&handle.state::<AppState>());
+                handle
+                    .state::<chat_store::ChatStore>()
+                    .startup_pass(mode, chrono::Utc::now());
+            });
             Ok(())
         })
         .on_window_event(|window, event| {

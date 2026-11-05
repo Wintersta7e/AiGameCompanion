@@ -96,6 +96,7 @@ chat_store::tests::grounded_answers_go_only_to_gemini run
 chat_store::tests::read_only_writes_nothing run
 chat_store::tests::round_trip_and_stored_shape run
 chat_store::tests::saving_off_writes_no_chat run
+chat_store::tests::startup_pass_expires run
 chat_store::tests::stored_types_hold_no_image_bytes run
 chat_store::tests::unreadable_chats_are_never_replaced run
 chat_store::tests::write_sites_are_confined run
