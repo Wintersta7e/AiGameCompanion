@@ -61,7 +61,8 @@ a working tool you can build and run, not a polished consumer app.
 - Multi-provider AI -- Gemini (direct API), Claude & OpenAI (through your own
   `claude` / `codex` CLIs), switchable from an in-panel dropdown that shows only
   available providers and persists your choice.
-- Streaming "Sage" replies over a Tauri channel, multi-turn chat, Stop / New chat.
+- Streaming "Sage" replies over a Tauri channel, multi-turn chat, Stop / New chat;
+  each game's chat is saved on this PC, with a "Where was I?" recap after a break.
 - Screenshot vision for all three providers via **Windows.Graphics.Capture** --
   capture the game frame with no injection.
 - Translate (**Ctrl+Shift+T**) and quick-ask (**Ctrl+Shift+A**) hotkeys that take a
@@ -224,6 +225,11 @@ Lint and test gates: `./scripts/ci-check.sh` (every check this machine can run),
    are worth knowing about anyway: the UI loads its fonts from Google Fonts at
    startup, and Gemini answers from the model alone -- it does not search the
    web.
+6. **Chats stay on this PC.** Each linked game's chat text is saved on this PC,
+   outside the roaming profile and outside the folder "Open config folder"
+   opens, for up to about two years -- never screenshots. Up to the last 20
+   exchanges are sent with each question. New chat deletes that game's saved
+   chat; Settings turns saving off and deletes all saved chats.
 
 ## License
 
