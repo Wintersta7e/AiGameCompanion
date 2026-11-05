@@ -1896,6 +1896,11 @@ declare_table() {
 	row name='osv scan' tags=supply-chain category=both target=any tools=osv-scanner,node \
 		count='^osv scan: lockfiles [0-9]+' zero='^osv scan: lockfiles [0-9]+ packages ([0-9]+)' \
 		cmd='node crates/launcher/scripts/osv-scan.ts .'
+	row name='licence list self-test' tags=supply-chain category=both target=any tools=node \
+		count='^licence list self-test: ' zero='cases ([0-9]+)' cmd='node crates/launcher/scripts/licence-list.selftest.ts'
+	row name='licence list' tags=supply-chain category=both target=any tools=node \
+		count='^licence list: deny [0-9]+' zero='^licence list: deny [0-9]+ config [0-9]+ npm-only [0-9]+ npm packages ([0-9]+)' \
+		cmd='node crates/launcher/scripts/licence-list.ts .'
 	row name='binary audit self-test' tags=release-audit category=both target=any \
 		tools=strings,iconv,llvm-readobj,sha256sum count='^self-test: ' zero='planted ([0-9]+)' \
 		cmd='scripts/binary-audit.sh self-test'
@@ -1940,6 +1945,8 @@ declare_table() {
 	ci_only_item name='npm ci' \
 		reason='CI installs the frontend packages; locally they are installed by hand and npm ci would delete them'
 	ci_only_item name='aggregate job' reason="reads the needed jobs' results; nothing to run locally"
+	ci_only_item name='dependency review' \
+		reason="runs on pull requests in the supply-chain job against GitHub's dependency graph; nothing to run locally"
 }
 
 main() {

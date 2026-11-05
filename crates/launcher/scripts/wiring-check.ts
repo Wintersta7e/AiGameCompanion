@@ -1,6 +1,7 @@
 // Checks that the workflows call scripts/ci-check.sh the way the step table
 // expects: one runner call per job, every table tag called by one job, an
-// aggregate job that fails on any result but success, the triggers, colour
+// aggregate job that fails on any result but success, the one dependency
+// review step on pull requests, the triggers, colour
 // settings, the required job names, --locked on every cargo call that reads
 // the dependency graph, read-only token permissions (one named job may delete
 // caches), and text that must not come back (a fetching front door, a retired tool, a claim of equal checks).
@@ -474,6 +475,47 @@ const checkAggregate = (ci: Workflow | undefined): Failure[] => {
   return failures;
 };
 
+const REVIEW_ACTION = 'actions/dependency-review-action@';
+const REVIEW_JOB = 'supply-chain';
+const REVIEW_IF = "github.event_name == 'pull_request'";
+const REVIEW_CONFIG = './.github/dependency-review-config.yml';
+
+// One dependency review step in all workflows: in ci.yml's supply-chain job,
+// after its runner call (a skipped step then never skips the rows), on pull
+// requests only, reading its config file and nothing else.
+const checkDependencyReview = (input: WiringInput): Failure[] => {
+  if (ciWorkflow(input) === undefined) return [];
+  const found = allJobs(input).flatMap(({ workflow, job }) =>
+    job.steps
+      .map((step, index) => ({ workflow, job, step, index }))
+      .filter(({ step }) => (asText(step.get('uses')) ?? '').startsWith(REVIEW_ACTION)),
+  );
+  const [only] = found;
+  if (only === undefined || found.length > 1)
+    return [
+      {
+        condition: 'dependency review',
+        message: `the workflows have ${found.length} dependency review steps, not 1`,
+      },
+    ];
+  const { workflow, job, step, index } = only;
+  const where = `${baseName(workflow.file)} job ${job.id}`;
+  const failures: string[] = [];
+  if (baseName(workflow.file) !== 'ci.yml' || job.id !== REVIEW_JOB)
+    failures.push(`the dependency review step is in ${where}, not ci.yml job ${REVIEW_JOB}`);
+  const call = job.steps.findIndex((candidate) => callTag(candidate) !== null);
+  if (call === -1 || index < call)
+    failures.push(`${where}: the dependency review step is not after the runner call`);
+  if (bare(asText(step.get('if')) ?? '') !== REVIEW_IF)
+    failures.push(`${where}: the dependency review step's if: is not ${REVIEW_IF}`);
+  const options = asMapping(step.get('with'));
+  if (options.size !== 1 || asText(options.get('config-file')) !== REVIEW_CONFIG)
+    failures.push(
+      `${where}: the dependency review step's with: is not config-file: ${REVIEW_CONFIG}`,
+    );
+  return failures.map((message) => ({ condition: 'dependency review', message }));
+};
+
 const crons = (ci: Workflow | undefined): string[] =>
   asList(asMapping(ci?.root.get('on')).get('schedule')).map(
     (item) => asText(asMapping(item).get('cron')) ?? '',
@@ -828,6 +870,7 @@ export function checkWiring(input: WiringInput): WiringResult {
     ...checkCalls(input),
     ...checkTags(rows, callers),
     ...checkAggregate(ci),
+    ...checkDependencyReview(input),
     ...checkJobIfs(input),
     ...checkJobShape(input),
     ...checkNoEscapes(input),
@@ -1044,7 +1087,6 @@ const CLAIMS = [
 ];
 const RETIRED = joined('mach', 'ete');
 const NOT_ADOPTED = [
-  joined('dependency-review-', 'action'),
   joined('cargo ', 'audit'),
   joined('lockfile-', 'lint'),
   joined('npm audit ', 'signatures'),

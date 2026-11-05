@@ -42,6 +42,19 @@ const job = (id: string, name: string, runsOn: string, tag: string): string =>
     '',
   ].join('\n');
 
+// The pull-request-only dependency review, after the supply-chain job's call.
+const REVIEW_IF = "        if: github.event_name == 'pull_request'\n";
+const REVIEW_CONFIG = '          config-file: ./.github/dependency-review-config.yml\n';
+const REVIEW_STEP = [
+  '      - name: Review the dependency changes\n',
+  REVIEW_IF,
+  '        uses: actions/dependency-review-action@a1d282b36b6f3519aa1f3fc636f609c47dddb294 # v5.0.0\n',
+  '        with:\n',
+  REVIEW_CONFIG,
+].join('');
+const SUPPLY_CALL =
+  '      - name: Run the supply-chain rows\n        run: ./scripts/ci-check.sh --job supply-chain\n';
+
 const CLEAN_CI = [
   'name: CI',
   '',
@@ -70,7 +83,7 @@ const CLEAN_CI = [
   job('rust-host', 'Host rows', 'ubuntu-24.04', 'rust-host'),
   job('frontend', 'Web rows', 'ubuntu-24.04', 'frontend'),
   job('release-audit', 'Release rows', 'ubuntu-24.04', 'release-audit'),
-  job('supply-chain', 'Dependency rows', 'ubuntu-24.04', 'supply-chain'),
+  `${job('supply-chain', 'Dependency rows', 'ubuntu-24.04', 'supply-chain')}${REVIEW_STEP}`,
   job('workflows', 'Workflow rows', 'ubuntu-24.04', 'workflows'),
   job('secrets', 'Scan rows', 'ubuntu-24.04', 'secrets'),
   '  aggregate:',
@@ -716,6 +729,40 @@ const PERMS = '    permissions:\n      contents: read\n';
 const MATCHER = '      - name: Register problem matchers\n';
 const CALL_SECRETS = '        run: ./scripts/ci-check.sh --job secrets\n';
 
+const withReview = (from: string, to: string): Readonly<Record<string, string>> =>
+  ci(swap(CLEAN_CI, REVIEW_STEP, swap(REVIEW_STEP, from, to)));
+const WITHOUT_REVIEW = swap(CLEAN_CI, REVIEW_STEP, '');
+const review = ['dependency review'];
+
+const reviewCases: readonly Case[] = [
+  {
+    name: 'the dependency review after the supply-chain call',
+    files: ci(CLEAN_CI),
+    expect: [],
+  },
+  { name: 'no dependency review step', files: ci(WITHOUT_REVIEW), expect: review },
+  {
+    name: 'the dependency review with another if',
+    files: withReview(REVIEW_IF, "        if: github.event_name != 'push'\n"),
+    expect: review,
+  },
+  {
+    name: 'the dependency review without its config file',
+    files: withReview(REVIEW_CONFIG, '          fail-on-severity: low\n'),
+    expect: review,
+  },
+  {
+    name: 'the dependency review in another job',
+    files: ci(swap(WITHOUT_REVIEW, SECRETS_JOB, `${SECRETS_JOB}${REVIEW_STEP}`)),
+    expect: review,
+  },
+  {
+    name: 'the dependency review before the runner call',
+    files: ci(swap(CLEAN_CI, `${SUPPLY_CALL}${REVIEW_STEP}`, `${REVIEW_STEP}${SUPPLY_CALL}`)),
+    expect: review,
+  },
+];
+
 const lockedCases: readonly Case[] = [
   {
     name: 'the clean build script and rows are counted',
@@ -889,11 +936,6 @@ const bannedCases: readonly Case[] = [
     { 'crates/launcher/src/a.rs': j('// cargo-mach', 'ete\n') },
     hit,
   ),
-  banned(
-    'a review action in a workflow',
-    { '.github/workflows/extra.yml': j('uses: actions/dependency-review-', 'action@v4\n') },
-    hit,
-  ),
   banned('an advisory tool in a script', { 'scripts/extra.sh': j('cargo ', 'audit\n') }, hit),
   banned(
     'a lockfile linter in a workflow',
@@ -935,6 +977,7 @@ const cases = [
   ...requiredCases,
   ...lockedCases,
   ...permissionCases,
+  ...reviewCases,
   ...bannedCases,
 ];
 const results = [...(await Promise.all(cases.map(runCase))), ...constantCases()];

@@ -238,6 +238,14 @@ jobs:
           fallback: none
       - name: Run the supply-chain rows of ci-check.sh
         run: ./scripts/ci-check.sh --job supply-chain
+      # Reviews the pull request's dependency changes (advisories on actions
+      # and packages, npm licences) against GitHub's dependency graph. A step,
+      # not a job: on other events it is skipped and the job still passes.
+      - name: Review the dependency changes
+        if: github.event_name == 'pull_request'
+        uses: actions/dependency-review-action@a1d282b36b6f3519aa1f3fc636f609c47dddb294 # v5.0.0
+        with:
+          config-file: ./.github/dependency-review-config.yml
 
   workflows:
     name: Workflows and CI wiring (actionlint, zizmor, pins, self-checks)
