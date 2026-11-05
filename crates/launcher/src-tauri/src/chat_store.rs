@@ -20,7 +20,7 @@ use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Manager};
 
 use crate::ai::search::SearchReport;
-use crate::ai::Provider;
+use crate::ai::{ChatMessage, Provider};
 use crate::state::{
     back_up, read_with_retry, should_promote_tmp, AppState, READ_ATTEMPTS, READ_RETRY_DELAY,
 };
@@ -53,6 +53,25 @@ pub(crate) struct SavedExchange {
 #[serde(tag = "kind", rename_all = "snake_case")]
 enum ChatEntry {
     Exchange(SavedExchange),
+}
+
+/// A chat file as written: the key it belongs to and its entries.
+#[derive(Serialize)]
+struct StoredChat<'a> {
+    key: &'a str,
+    entries: Vec<ChatEntry>,
+}
+
+/// What a request takes from the store when it is admitted.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) struct ChatSnapshot {
+    pub(crate) display_generation: u64,
+    /// Whether the key's chat is the one on screen.
+    pub(crate) displayed: bool,
+    /// The key's clear generation: a save made under another is dropped.
+    pub(crate) clear_generation: u64,
+    /// The saved exchanges sent again with the question, oldest first.
+    pub(crate) tail: Vec<ChatMessage>,
 }
 
 /// Whether this run may change saved chats.
@@ -366,6 +385,89 @@ impl ChatStore {
         }
     }
 
+    /// What a request for `key` sends again and checks, under one hold of the
+    /// memory lock and without I/O.
+    pub(crate) fn snapshot(&self, key: &str) -> ChatSnapshot {
+        let memory = self.memory.lock();
+        let clear_generation = memory.generations.get(key).copied().unwrap_or(0);
+        ChatSnapshot {
+            display_generation: memory.display_generation,
+            displayed: memory
+                .displayed
+                .as_ref()
+                .is_some_and(|(shown, at)| shown == key && *at == clear_generation),
+            clear_generation,
+            tail: memory
+                .keys
+                .get(key)
+                .map_or_else(Vec::new, |chat| resend_tail(&chat.entries)),
+        }
+    }
+
+    /// The number of the chat on screen now.
+    pub(crate) fn display_generation(&self) -> u64 {
+        self.memory.lock().display_generation
+    }
+
+    /// Save a finished answer to `key`'s chat and return the chat's status.
+    /// Dropped when the chat was cleared or deleted since the request was
+    /// admitted (`clear_generation`); `None` saves nothing. A chat that may
+    /// not be written keeps the answer in memory only. Blocks on file I/O.
+    pub(crate) fn append_exchange(
+        &self,
+        key: &str,
+        clear_generation: u64,
+        entry: Option<SavedExchange>,
+        mode: StoreMode,
+    ) -> SaveState {
+        let io = self.io.lock();
+        let mut memory = self.memory.lock();
+        let current = memory.generations.get(key).copied().unwrap_or(0);
+        let Some(chat) = memory.keys.get_mut(key) else {
+            return save_state(mode, KeyStatus::Locked, false);
+        };
+        let Some(entry) = entry.filter(|_| current == clear_generation) else {
+            return save_state(mode, chat.status, chat.write_failed);
+        };
+        chat.entries.push(entry);
+        if mode.read_only || chat.status == KeyStatus::Locked {
+            return save_state(mode, chat.status, chat.write_failed);
+        }
+        let stored = StoredChat {
+            key,
+            entries: chat
+                .entries
+                .iter()
+                .cloned()
+                .map(ChatEntry::Exchange)
+                .collect(),
+        };
+        let text = serde_json::to_string(&stored).map_err(std::io::Error::from);
+        drop(memory);
+        let hash = file_hash(key);
+        let written = self
+            .dir
+            .as_deref()
+            .map(|dir| text.and_then(|text| write_chat(dir, &hash, &text)));
+        let failed = match written {
+            Some(Ok(())) => false,
+            Some(Err(e)) => {
+                log_write_failed(&hash, e.kind());
+                true
+            }
+            None => true,
+        };
+        if let Some(chat) = self.memory.lock().keys.get_mut(key) {
+            chat.write_failed = failed;
+        }
+        drop(io);
+        if failed {
+            SaveState::Failed
+        } else {
+            SaveState::On
+        }
+    }
+
     /// No chat is on screen.
     pub(crate) fn hide(&self) {
         self.memory.lock().displayed = None;
@@ -480,6 +582,40 @@ const fn save_state(mode: StoreMode, status: KeyStatus, write_failed: bool) -> S
     } else {
         SaveState::On
     }
+}
+
+/// The exchanges a request sends again, oldest first: each question as a
+/// user turn and its answer as an assistant turn.
+fn resend_tail(entries: &[SavedExchange]) -> Vec<ChatMessage> {
+    entries
+        .iter()
+        .flat_map(|exchange| {
+            [
+                ChatMessage {
+                    role: "user".to_owned(),
+                    content: exchange.question.clone(),
+                },
+                ChatMessage {
+                    role: "assistant".to_owned(),
+                    content: exchange.answer.clone(),
+                },
+            ]
+        })
+        .collect()
+}
+
+/// Replace `hash`'s chat file in `dir` with `text` atomically: write a
+/// `.tmp`, flush it to disk, then rename it over the file.
+fn write_chat(dir: &Path, hash: &ChatHash, text: &str) -> std::io::Result<()> {
+    use std::io::Write as _;
+    std::fs::create_dir_all(dir)?;
+    let path = chat_file(dir, hash);
+    let tmp = path.with_extension("json.tmp");
+    let mut file = std::fs::File::create(&tmp)?;
+    file.write_all(text.as_bytes())?;
+    file.sync_all()?;
+    drop(file);
+    std::fs::rename(&tmp, &path)
 }
 
 /// Read `key`'s file in `dir`. A file that cannot be read, or holds another
@@ -605,6 +741,10 @@ fn log_clear_failed(hash: &ChatHash, failed: usize) {
     tracing::warn!("Chat {hash}: cleared, but {failed} file(s) could not be deleted");
 }
 
+fn log_write_failed(hash: &ChatHash, kind: ErrorKind) {
+    tracing::warn!("Chat {hash}: the answer could not be saved ({kind}); kept until you quit");
+}
+
 fn log_deleted_all(deleted: u32, failed: usize) {
     tracing::info!("Saved chats: deleted {deleted} chat(s); {failed} file(s) could not be deleted");
 }
@@ -663,6 +803,21 @@ mod tests {
         let store = ChatStore::new(Some(dir.to_owned()));
         store.load(key, mode);
         store.show(key, mode)
+    }
+
+    /// Save one exchange for `key` the way a request does, in a fresh store
+    /// that loaded and showed it first; returns the save status.
+    fn append_to(dir: &Path, key: &str, mode: StoreMode) -> SaveState {
+        let store = ChatStore::new(Some(dir.to_owned()));
+        store.load(key, mode);
+        store.show(key, mode);
+        let snapshot = store.snapshot(key);
+        store.append_exchange(
+            key,
+            snapshot.clear_generation,
+            Some(exchange("Saved?", Utc::now())),
+            mode,
+        )
     }
 
     fn questions(view: &ChatView) -> Vec<&str> {
@@ -798,6 +953,9 @@ mod tests {
         let shown = view(dir, key, WRITABLE);
         println!("directory: {:?}", shown.save);
         assert_eq!(shown.save, LOCKED, "a directory at the file name");
+        let saved = append_to(dir, key, WRITABLE);
+        println!("directory, an answer: {saved:?}");
+        assert_eq!(saved, LOCKED, "an answer for a directory at the file name");
         assert!(path.is_dir(), "the directory was touched");
         assert!(!tmp_of(&path).exists(), "a .tmp was written");
         assert!(!bak_of(&path).exists(), "a backup was written");
@@ -818,6 +976,9 @@ mod tests {
                 let shown = view(dir, key, WRITABLE);
                 println!("no access: {:?}", shown.save);
                 assert_eq!(shown.save, LOCKED, "an unreadable file");
+                let saved = append_to(dir, key, WRITABLE);
+                println!("no access, an answer: {saved:?}");
+                assert_eq!(saved, LOCKED, "an answer for an unreadable file");
             }
             std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
             assert_eq!(
@@ -942,6 +1103,9 @@ mod tests {
             shown.exchanges.is_empty(),
             "another key's exchanges were shown"
         );
+        let saved = append_to(dir, key, WRITABLE);
+        println!("another key's file, an answer: {saved:?}");
+        assert_eq!(saved, LOCKED, "an answer for another key's file");
         assert_eq!(
             std::fs::read_to_string(&path).unwrap(),
             text,
@@ -1010,6 +1174,28 @@ mod tests {
             Err(DELETE_REFUSED_READ_ONLY.to_owned()),
             "delete all"
         );
+        // An answer is kept in memory and sent again, and written nowhere.
+        let snapshot = store.snapshot(readable);
+        let saved = store.append_exchange(
+            readable,
+            snapshot.clear_generation,
+            Some(exchange("Kept?", Utc::now())),
+            READ_ONLY,
+        );
+        let tail = store.snapshot(readable).tail;
+        println!("an answer: {saved:?}, tail {tail:?}");
+        assert_eq!(
+            saved,
+            SaveState::ReadOnly {
+                reason: ReadOnlyReason::Library
+            },
+            "an answer"
+        );
+        let sent: Vec<(&str, &str)> = tail
+            .iter()
+            .map(|turn| (turn.role.as_str(), turn.content.as_str()))
+            .collect();
+        assert_eq!(sent, [("user", "Kept?"), ("assistant", "Go north.")]);
 
         let after = listing(&dir);
         println!("after: {after:?}");
@@ -1053,6 +1239,106 @@ mod tests {
             cleared,
             "the cleared chat is the one on screen"
         );
+
+        // A clear between a request's snapshot and its save drops the save.
+        let dir = temp_dir("generations");
+        let store = ChatStore::new(Some(dir.clone()));
+        store.load("exe:a", WRITABLE);
+        let shown = store.show("exe:a", WRITABLE);
+        let asked = store.snapshot("exe:a");
+        store
+            .clear(Some("exe:a"), shown.display_generation, WRITABLE)
+            .expect("clearing the chat on screen was refused");
+        let files = listing(&dir);
+        let saved = store.append_exchange(
+            "exe:a",
+            asked.clear_generation,
+            Some(exchange("Late?", Utc::now())),
+            WRITABLE,
+        );
+        let tail = store.snapshot("exe:a").tail;
+        println!("a save after a clear: {saved:?}, tail {tail:?}");
+        assert_eq!(listing(&dir), files, "a save after a clear wrote a file");
+        assert!(tail.is_empty(), "a save after a clear reached the chat");
+        drop(std::fs::remove_dir_all(&dir));
+    }
+
+    #[test]
+    fn round_trip_and_stored_shape() {
+        let dir = temp_dir("round_trip");
+        let key = "exe:round-trip";
+        let store = ChatStore::new(Some(dir.clone()));
+        store.load(key, WRITABLE);
+        store.show(key, WRITABLE);
+        let searched = SavedExchange {
+            search: Some(SearchReport {
+                searched: true,
+                queries: vec!["foo".to_owned()],
+                sources: vec![SearchSource {
+                    title: "Foo".to_owned(),
+                    url: "https://example.com/".to_owned(),
+                    host: "example.com".to_owned(),
+                }],
+                suggestion_html: "<div>foo</div>".to_owned(),
+                note: SearchNote::QueriesOnly,
+                hints: true,
+            }),
+            ..exchange("Second?", Utc::now())
+        };
+        let saved = [
+            exchange("First?", Utc::now()),
+            searched,
+            SavedExchange {
+                screenshot: true,
+                ..exchange("Third?", Utc::now())
+            },
+        ];
+        for exchange in &saved {
+            let snapshot = store.snapshot(key);
+            let status = store.append_exchange(
+                key,
+                snapshot.clear_generation,
+                Some(exchange.clone()),
+                WRITABLE,
+            );
+            assert_eq!(status, SaveState::On, "{}", exchange.question);
+        }
+        let reopened = view(&dir, key, WRITABLE);
+        println!("reopened: {:?}", questions(&reopened));
+        assert_eq!(reopened.exchanges, saved, "the chat read back");
+
+        let path = path_of(&dir, key);
+        let text = std::fs::read_to_string(&path).unwrap();
+        println!("{text}");
+        assert!(
+            !text.contains('\n') && !text.contains(": "),
+            "the file is not compact JSON"
+        );
+        assert!(!tmp_of(&path).exists(), "a .tmp was left");
+        let value: serde_json::Value = serde_json::from_str(&text).unwrap();
+        let keys = |value: &serde_json::Value| {
+            let mut keys: Vec<String> = value.as_object().unwrap().keys().cloned().collect();
+            keys.sort();
+            keys
+        };
+        println!("file keys: {:?}", keys(&value));
+        assert_eq!(keys(&value), ["entries", "key"]);
+        let entry_keys = keys(&value["entries"][1]);
+        println!("entry keys: {entry_keys:?}");
+        assert_eq!(
+            entry_keys,
+            [
+                "answer",
+                "kind",
+                "model",
+                "provider",
+                "question",
+                "savedAt",
+                "screenshot",
+                "search"
+            ]
+        );
+        drop(std::fs::remove_dir_all(&dir));
     }
 
     /// `key`'s chat file with one exchange, and a `.tmp`, `.bak` and `.bak.3`.

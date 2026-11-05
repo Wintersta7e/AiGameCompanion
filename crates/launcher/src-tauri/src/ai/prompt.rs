@@ -53,11 +53,20 @@ pub(crate) const TRANSLATE_REQUEST: &str =
      Output only the translation. If there is no foreign text, reply exactly: \
      No foreign text found.";
 
+/// The task of a recap: where the player left off, from the chat alone.
+pub(crate) const RECAP_TASK: &str =
+    "The player is returning after a break and asked where they left off. Using only this \
+     conversation, summarize in at most five short bullet points what they were doing, what they \
+     were trying to solve, and the last advice they were given. Add no new information, hints or \
+     next steps. If the conversation does not show where they were, say so in one sentence.";
+
 /// Which system prompt a request needs.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum PromptKind {
     /// A chat question; `hints` adds the hint line as its task.
     Chat { hints: bool },
+    /// A recap of the chat so far, never with hints.
+    Recap,
 }
 
 /// The system prompt for `kind`: its slots in order, joined by a blank line.
@@ -65,6 +74,7 @@ pub(crate) fn assemble(kind: PromptKind) -> String {
     let slots: &[&str] = match kind {
         PromptKind::Chat { hints: true } => &[PERSONA, FORMAT, HINT_LINE],
         PromptKind::Chat { hints: false } => &[PERSONA, FORMAT],
+        PromptKind::Recap => &[PERSONA, FORMAT, RECAP_TASK],
     };
     slots.join("\n\n")
 }
@@ -74,20 +84,25 @@ mod tests {
     use super::*;
 
     /// Every text constant above, by name.
-    const TEXTS: [(&str, &str); 5] = [
+    const TEXTS: [(&str, &str); 6] = [
         ("PERSONA", PERSONA),
         ("FORMAT", FORMAT),
         ("HINT_LINE", HINT_LINE),
+        ("RECAP_TASK", RECAP_TASK),
         ("TRANSLATE_SYSTEM", TRANSLATE_SYSTEM),
         ("TRANSLATE_REQUEST", TRANSLATE_REQUEST),
     ];
 
     /// Every system prompt a chat request can send, built as `run()` builds it.
     fn every_prompt() -> Vec<(&'static str, String)> {
-        [("chat, hints on", true), ("chat, hints off", false)]
-            .into_iter()
-            .map(|(kind, hints)| (kind, assemble(super::super::prompt_kind(hints))))
-            .collect()
+        [
+            ("chat, hints on", false, true),
+            ("chat, hints off", false, false),
+            ("recap", true, false),
+        ]
+        .into_iter()
+        .map(|(kind, recap, hints)| (kind, assemble(super::super::prompt_kind(recap, hints))))
+        .collect()
     }
 
     #[test]
@@ -109,6 +124,37 @@ mod tests {
                 "slots out of order: {offsets:?}"
             );
         }
+    }
+
+    #[test]
+    fn recap_prompt_holds_the_recap_line() {
+        let prompt = assemble(PromptKind::Recap);
+        println!("{prompt}");
+        let offsets: Vec<usize> = [PERSONA, FORMAT, RECAP_TASK]
+            .iter()
+            .map(|slot| prompt.find(slot).unwrap())
+            .collect();
+        println!("slot offsets: {offsets:?}");
+        assert!(
+            offsets.windows(2).all(|pair| pair[0] < pair[1]),
+            "{offsets:?}"
+        );
+        assert_eq!(prompt, [PERSONA, FORMAT, RECAP_TASK].join("\n\n"));
+        assert!(
+            !prompt.contains(HINT_LINE),
+            "the recap prompt holds the hint line"
+        );
+        assert!(
+            !prompt.to_lowercase().contains("search"),
+            "the recap prompt mentions a search"
+        );
+        println!(
+            "recap prompt {} bytes, RECAP_TASK {} bytes",
+            prompt.len(),
+            RECAP_TASK.len()
+        );
+        assert!(prompt.len() <= 4_096 && prompt.is_ascii());
+        assert!(RECAP_TASK.len() <= 1_280 && RECAP_TASK.is_ascii());
     }
 
     #[test]

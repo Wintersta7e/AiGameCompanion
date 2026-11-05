@@ -11,7 +11,7 @@ use crate::util;
 const CLEAR_FAILED: &str = "The chat could not be cleared.";
 
 /// This run's store mode. Without the launcher state nothing may be written.
-fn mode_of(app: &AppHandle) -> StoreMode {
+pub(crate) fn mode_of(app: &AppHandle) -> StoreMode {
     app.try_state::<AppState>()
         .map_or(StoreMode { read_only: true }, |state| {
             chat_store::store_mode(&state)

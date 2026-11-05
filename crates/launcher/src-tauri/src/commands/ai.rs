@@ -4,7 +4,7 @@
 use tauri::ipc::Channel;
 use tauri::{AppHandle, State};
 
-use crate::ai::{AiState, ChatMessage, Provider, ProviderAvailability, RequestParams, SageEvent};
+use crate::ai::{AiState, ChatArgs, Provider, ProviderAvailability, SageEvent};
 use crate::state::AppState;
 
 /// The Gemini model chosen in Settings. The lock is released on return, so no
@@ -29,9 +29,11 @@ pub(crate) fn available_providers(
     ai.availability(&settings_model(&state))
 }
 
-/// Start a streaming chat request. Tokens arrive on `channel`; issuing a newer
-/// request cancels this one. A refused screenshot is the command's error, so
-/// the overlay knows on return whether the screenshot went.
+/// Start a streaming chat request; its history comes from the game's saved
+/// chat. Tokens arrive on `channel`; a newer chat request cancels this one,
+/// and a recap is refused while an answer is still streaming. A refusal
+/// arrives on `channel` as its one error event. Returns whether the request
+/// started, so the overlay knows whether the screenshot went.
 #[tauri::command]
 #[expect(
     clippy::needless_pass_by_value,
@@ -46,22 +48,26 @@ pub(crate) fn ask_sage(
     request_id: u64,
     conversation_id: u64,
     provider: Provider,
-    messages: Vec<ChatMessage>,
-    shot_id: Option<u64>,
-    hints: bool,
     channel: Channel<SageEvent>,
-) -> Result<(), String> {
-    crate::ai::spawn_request(
+    question: String,
+    shot_id: Option<u64>,
+    search: bool,
+    hints: bool,
+    recap: bool,
+) -> bool {
+    crate::ai::ask(
         &app,
-        RequestParams {
+        ChatArgs {
             request_id,
             conversation_id,
             provider,
-            messages,
+            question,
             shot_id,
+            search,
             hints,
+            recap,
         },
-        channel,
+        &channel,
     )
 }
 

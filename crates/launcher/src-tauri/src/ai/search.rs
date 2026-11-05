@@ -1,6 +1,22 @@
-//! The report of an answer's web search, stored with the answer.
+//! The report of an answer's web search, stored with the answer, and the
+//! gate that decides whether a request may search.
 
 use serde::{Deserialize, Serialize};
+
+use super::Provider;
+
+/// Whether a request searches the web: never for a recap, which answers from
+/// the chat alone. No provider can search here yet, so a search request is
+/// refused with the text the overlay shows.
+pub(crate) fn search_gate(provider: Provider, search: bool, recap: bool) -> Result<bool, String> {
+    if !search || recap {
+        return Ok(false);
+    }
+    Err(format!(
+        "{} can't search the web here. Turn off Search to ask without it.",
+        provider.label()
+    ))
+}
 
 /// What an answer's web search did: the queries it ran, the pages it drew
 /// on, and the search suggestion the provider asks to be shown with it.
@@ -39,6 +55,30 @@ pub(crate) enum SearchNote {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn search_gate_table() {
+        for provider in [Provider::Gemini, Provider::Claude, Provider::Openai] {
+            for search in [false, true] {
+                for recap in [false, true] {
+                    let gate = search_gate(provider, search, recap);
+                    println!("{provider:?}, search {search}, recap {recap}: {gate:?}");
+                    if search && !recap {
+                        let Err(text) = gate else {
+                            panic!("{provider:?} was let search");
+                        };
+                        assert!(text.contains(provider.label()), "{text}");
+                    } else {
+                        assert_eq!(
+                            gate,
+                            Ok(false),
+                            "{provider:?}, search {search}, recap {recap}"
+                        );
+                    }
+                }
+            }
+        }
+    }
 
     #[test]
     fn search_report_mirrors_rust() {

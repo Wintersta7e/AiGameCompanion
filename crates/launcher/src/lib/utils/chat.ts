@@ -4,7 +4,7 @@ import type { Provider } from '../stores/companion.svelte';
 import type { SearchReport } from './search';
 
 /** Whether the chat on screen is being saved, and if not, why. */
-type SaveState =
+export type SaveState =
   { state: 'on' | 'failed' } | { state: 'read_only'; reason: 'library' | 'chat_file' };
 
 export interface SavedExchange {
@@ -34,4 +34,20 @@ export type ChatViewAction = 'empty' | 'replace' | 'status';
 export function chatViewAction(current: number, view: ChatView | null): ChatViewAction {
   if (!view) return 'empty';
   return view.displayGeneration === current ? 'status' : 'replace';
+}
+
+/** The chat footer's line saying whether answers are saved; `null` before the chat arrives. */
+export function saveStatusText(save: SaveState | null, linked: boolean): string {
+  if (!linked) return 'No linked game — nothing saved';
+  if (!save) return '';
+  switch (save.state) {
+    case 'on':
+      return 'Saved on this PC';
+    case 'failed':
+      return 'Last answer not saved — retrying with the next one';
+    case 'read_only':
+      return save.reason === 'library'
+        ? "Not saving — the library can't be read; saved chats are untouched"
+        : "Not saving — this game's saved chat can't be read; kept until you quit";
+  }
 }

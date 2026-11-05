@@ -23,6 +23,7 @@ received: a stale seq or a slot not taking returns the same object run
 renderAnswer: plain past the size cap, markdown below it run
 renderMode: long, slow or failed renders stay plain run
 replaced: a take a newer one replaced leaves the slot empty, with no message run
+saveStatusText: one line per save state, and none of them deletes run
 sendBlocked: a take or a fetch in progress blocks a send run
 sendableShot: an id only once the preview is shown run
 sendsQuestion: Enter sends, Shift+Enter does not run
