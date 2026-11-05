@@ -145,20 +145,123 @@ fn windowless(cmd: &mut std::process::Command) -> &mut std::process::Command {
     cmd
 }
 
-/// Apply the Windows no-window flag to a tokio `Command`. No-op on non-Windows
-/// so the launcher crate compiles for the Linux test runner.
-#[cfg_attr(
-    not(windows),
-    expect(
-        unused_variables,
-        clippy::needless_pass_by_ref_mut,
-        clippy::missing_const_for_fn,
-        reason = "off Windows the command is left untouched, and the Windows build calls creation_flags, which is not const"
-    )
-)]
-fn no_window(cmd: &mut Command) {
-    #[cfg(windows)]
-    cmd.creation_flags(CREATE_NO_WINDOW);
+/// Windows `CREATE_SUSPENDED`: a CLI child starts paused, so it is in its job
+/// before it can start a process of its own.
+#[cfg(windows)]
+const CREATE_SUSPENDED: u32 = 0x0000_0004;
+
+/// The Job Object a CLI child runs in on Windows. Every process the child
+/// starts joins it, and closing it ends them all: dropping it when a request
+/// ends (answer, error, Stop, a newer request, a timeout), or the launcher
+/// exiting by any path. An npm-installed CLI is `node` plus the CLI's own
+/// binary, which `node` starts, and `kill_on_drop` ends only the first.
+#[cfg(windows)]
+mod tree {
+    #![expect(
+        unsafe_code,
+        reason = "this module wraps the Win32 job object and thread calls"
+    )]
+
+    use std::os::windows::io::{AsRawHandle as _, FromRawHandle as _, OwnedHandle};
+
+    use windows::Win32::Foundation::{CloseHandle, HANDLE};
+    use windows::Win32::System::Diagnostics::ToolHelp::{
+        CreateToolhelp32Snapshot, Thread32First, Thread32Next, TH32CS_SNAPTHREAD, THREADENTRY32,
+    };
+    use windows::Win32::System::JobObjects::{
+        AssignProcessToJobObject, CreateJobObjectW, JobObjectExtendedLimitInformation,
+        SetInformationJobObject, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
+        JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
+    };
+    use windows::Win32::System::Threading::{OpenThread, ResumeThread, THREAD_SUSPEND_RESUME};
+
+    /// A kill-on-close job. Dropping it closes the handle, which ends every
+    /// process in it.
+    pub(super) struct ChildTree(OwnedHandle);
+
+    /// Put the suspended `child` in a new kill-on-close job, then let it run.
+    /// A child that cannot be put in a job still runs, as before the job
+    /// existed; one that cannot be resumed is an error, and dropping it kills it.
+    pub(super) fn start(
+        child: &tokio::process::Child,
+        label: &str,
+    ) -> Result<Option<ChildTree>, String> {
+        let job = child.raw_handle().map(|raw| adopt(HANDLE(raw)));
+        let tree = match job {
+            Some(Ok(tree)) => Some(tree),
+            Some(Err(e)) => {
+                tracing::warn!(
+                    "{label} CLI runs outside a job; Stop ends only its first process: {e}"
+                );
+                None
+            }
+            None => None,
+        };
+        let pid = child
+            .id()
+            .ok_or_else(|| format!("{label} CLI exited before it started."))?;
+        resume(pid).map_err(|e| format!("Failed to start {label} CLI: {e}"))?;
+        Ok(tree)
+    }
+
+    fn adopt(process: HANDLE) -> windows::core::Result<ChildTree> {
+        // SAFETY: no security attributes and no name: plain values only.
+        let raw = unsafe { CreateJobObjectW(None, windows::core::PCWSTR::null()) }?;
+        // SAFETY: `raw` is a new handle nothing else owns or closes.
+        let tree = ChildTree(unsafe { OwnedHandle::from_raw_handle(raw.0) });
+        let job = HANDLE(tree.0.as_raw_handle());
+        let mut limits = JOBOBJECT_EXTENDED_LIMIT_INFORMATION::default();
+        limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+        // SAFETY: `job` is open, and `limits` is a live local of the size passed.
+        unsafe {
+            SetInformationJobObject(
+                job,
+                JobObjectExtendedLimitInformation,
+                (&raw const limits).cast(),
+                u32::try_from(size_of_val(&limits)).unwrap_or(0),
+            )
+        }?;
+        // SAFETY: both handles are open: `job` above, `process` owned by the child.
+        unsafe { AssignProcessToJobObject(job, process) }?;
+        Ok(tree)
+    }
+
+    /// Resume the threads of the suspended process `pid`: its one main thread.
+    fn resume(pid: u32) -> Result<(), String> {
+        // SAFETY: plain values; the snapshot handle is closed below.
+        let snapshot =
+            unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0) }.map_err(|e| e.to_string())?;
+        let mut entry = THREADENTRY32 {
+            dwSize: u32::try_from(size_of::<THREADENTRY32>()).unwrap_or(0),
+            ..Default::default()
+        };
+        let mut resumed = 0usize;
+        // SAFETY: `snapshot` is open, and `entry` is a live, `dwSize`-initialised local.
+        let mut more = unsafe { Thread32First(snapshot, &raw mut entry) }.is_ok();
+        while more {
+            if entry.th32OwnerProcessID == pid {
+                // SAFETY: plain values; the thread handle is closed below.
+                let opened =
+                    unsafe { OpenThread(THREAD_SUSPEND_RESUME, false, entry.th32ThreadID) };
+                if let Ok(thread) = opened {
+                    // SAFETY: `thread` is the open handle from above.
+                    if unsafe { ResumeThread(thread) } != u32::MAX {
+                        resumed += 1;
+                    }
+                    // SAFETY: `thread` is not used again.
+                    crate::util::log_if_err("CloseHandle(thread)", unsafe { CloseHandle(thread) });
+                }
+            }
+            // SAFETY: as for Thread32First above.
+            more = unsafe { Thread32Next(snapshot, &raw mut entry) }.is_ok();
+        }
+        // SAFETY: `snapshot` is not used again.
+        crate::util::log_if_err("CloseHandle(snapshot)", unsafe { CloseHandle(snapshot) });
+        if resumed == 0 {
+            return Err(format!("no thread of process {pid} could be resumed"));
+        }
+        Ok(())
+    }
 }
 
 /// Escape a string for use inside a `bash -c` / `bash -lic` command.
@@ -190,8 +293,86 @@ fn version_script(name: &str) -> String {
     format!("{} --version", shell_escape(name))
 }
 
-/// Check if a CLI tool is available, first natively on the Windows PATH, then
-/// inside WSL, using `bash -lic`.
+/// The command that runs the CLI `name` from the Windows PATH.
+fn native_command(name: &str) -> std::process::Command {
+    #[cfg(windows)]
+    if let Some(path) = std::env::var_os("PATH") {
+        return native_command_in(name, &path);
+    }
+    std::process::Command::new(name)
+}
+
+/// `native_command` for the PATH value `path`.
+///
+/// `Command::new(name)` finds only `name.exe`, but npm installs a CLI as a
+/// `name.cmd` batch file. That would have to run through `cmd.exe`, which
+/// parses the command line again: `&`, `|` and `%VAR%` in an argument act, and
+/// an argument cannot hold a line break -- Claude's system prompt is one
+/// argument of many lines. So the batch file is read instead, and what it
+/// runs is started directly with the same arguments.
+#[cfg(windows)]
+fn native_command_in(name: &str, path: &std::ffi::OsStr) -> std::process::Command {
+    for dir in std::env::split_paths(path) {
+        if dir.join(format!("{name}.exe")).is_file() {
+            break;
+        }
+        let shim = dir.join(format!("{name}.cmd"));
+        if !shim.is_file() {
+            continue;
+        }
+        let text = std::fs::read_to_string(&shim).unwrap_or_default();
+        if let Some(cmd) = npm_shim_command(&text, &dir) {
+            return cmd;
+        }
+        tracing::warn!("{name}.cmd is on PATH, but what it runs could not be read from it");
+        break;
+    }
+    std::process::Command::new(name)
+}
+
+/// What an npm batch file in `dir` runs, as a command to which the caller's
+/// arguments are appended. Its last line is either `"%dp0%\<program>" %*`, or
+/// `"%_prog%" "%dp0%\<script>" %*` where `_prog` is the interpreter beside the
+/// batch file when there is one, else the one on PATH. Any other shape is
+/// `None`: it is not run.
+#[cfg(windows)]
+fn npm_shim_command(shim: &str, dir: &std::path::Path) -> Option<std::process::Command> {
+    let last = shim.lines().map(str::trim).rfind(|line| !line.is_empty())?;
+    let (before, target) = last
+        .strip_suffix("%*")?
+        .trim_end()
+        .strip_suffix('"')?
+        .rsplit_once("\"%dp0%\\")?;
+    if target.contains(['"', '%']) {
+        return None;
+    }
+    let target = dir.join(target);
+    let before = before.trim();
+    if before.is_empty() || before == "@" {
+        return Some(std::process::Command::new(target));
+    }
+    if !before.ends_with("\"%_prog%\"") {
+        return None;
+    }
+    let prog = shim.lines().find_map(|line| {
+        line.trim()
+            .strip_prefix("SET \"_prog=")?
+            .strip_suffix('"')
+            .filter(|prog| !prog.contains(['%', '\\', '/']))
+    })?;
+    let local = dir.join(format!("{prog}.exe"));
+    let mut cmd = if local.is_file() {
+        std::process::Command::new(local)
+    } else {
+        std::process::Command::new(prog)
+    };
+    cmd.arg(target);
+    Some(cmd)
+}
+
+/// Check if a CLI tool is available, first natively on the Windows PATH (an
+/// `.exe`, or an npm install: see `native_command_in`), then inside WSL, using
+/// `bash -lic`.
 ///
 /// Both flags are required, and each was measured from the running launcher:
 /// `-i` sources `.bashrc`, where nvm puts Codex (plain `-lc` made Codex
@@ -201,7 +382,7 @@ fn version_script(name: &str) -> String {
 /// first. See `WSL_SENTINEL` for how the interactive shell's banner output is
 /// kept out of the model stream.
 pub(crate) fn detect_cli(name: &str) -> CliMode {
-    let native = silent(std::process::Command::new(name).arg("--version"))
+    let native = silent(native_command(name).arg("--version"))
         .status()
         .is_ok_and(|status| status.success());
     if native {
@@ -452,51 +633,16 @@ fn claude_result_error(frame: &serde_json::Value) -> Option<String> {
     )
 }
 
-/// Parse a single line from Codex CLI stdout. `codex exec` prints plain text, so
-/// non-JSON lines (blank ones included) are emitted verbatim plus their newline;
-/// JSON lines (refusals, structured output) are decoded.
+/// Parse a single line from Codex CLI stdout. Without `--json`, `codex exec`
+/// prints only the answer there, as plain text (everything else goes to
+/// stderr), so every line -- a JSON object, a blank line -- is the answer and is
+/// emitted verbatim. The newline `lines()` removed is put back, so the answer
+/// keeps its line breaks and blank lines (paragraphs, lists).
+#[expect(
+    clippy::unnecessary_wraps,
+    reason = "run_cli takes one parser shape for both CLIs"
+)]
 fn parse_codex_line(line: &str) -> Option<Parsed> {
-    if let Ok(v) = serde_json::from_str::<serde_json::Value>(line) {
-        if v.get("type").and_then(serde_json::Value::as_str) == Some("refusal") {
-            let msg = v
-                .get("content")
-                .and_then(serde_json::Value::as_str)
-                .unwrap_or("Model refused the request");
-            return Some(Parsed::Error(msg.to_owned()));
-        }
-
-        if let Some(content) = v.get("content").and_then(serde_json::Value::as_array) {
-            let mut collected = String::new();
-            for item in content {
-                if item.get("type").and_then(serde_json::Value::as_str) == Some("output_text") {
-                    if let Some(text) = item.get("text").and_then(serde_json::Value::as_str) {
-                        collected.push_str(text);
-                    }
-                }
-            }
-            if !collected.is_empty() {
-                return Some(Parsed::Text(collected));
-            }
-        }
-
-        if let Some(text) = v.get("text").and_then(serde_json::Value::as_str) {
-            if !text.is_empty() {
-                return Some(Parsed::Text(text.to_owned()));
-            }
-        }
-
-        // An object carrying a protocol "type" we don't recognize is a control
-        // frame -- drop it. Anything else (a bare JSON value, or an object with
-        // no "type") is the model's answer that happens to be JSON: fall through
-        // and emit it verbatim rather than silently dropping it.
-        if v.get("type").and_then(serde_json::Value::as_str).is_some() {
-            tracing::debug!("Ignoring unrecognized codex control frame: {line}");
-            return None;
-        }
-    }
-
-    // Put back the newline `lines()` removed, so the answer keeps its line
-    // breaks and blank lines (paragraphs, lists).
     Some(Parsed::Text(format!("{line}\n")))
 }
 
@@ -699,7 +845,7 @@ where
     let mut cmd = if cfg.claude == CliMode::Wsl {
         Command::from(wsl_bash(&claude_wsl_script(model, system_prompt)))
     } else {
-        let mut c = Command::new("claude");
+        let mut c = Command::from(native_command("claude"));
         c.args(claude_args(model, system_prompt));
         c
     };
@@ -743,7 +889,7 @@ where
     let mut cmd = if cfg.codex == CliMode::Wsl {
         Command::from(wsl_bash(&codex_wsl_script(work_dir, image.as_deref())))
     } else {
-        let mut c = Command::new("codex");
+        let mut c = Command::from(native_command("codex"));
         c.args(codex_args(work_dir, image.as_deref()));
         c
     };
@@ -767,8 +913,9 @@ where
 /// Spawn a CLI child, write `input` to stdin, and stream parsed stdout lines to
 /// `on_chunk`. stdin/stdout/stderr are driven concurrently in this one future so
 /// that aborting the owning task drops the child; `kill_on_drop` then terminates
-/// it. Note: in WSL mode the direct child is `wsl.exe`, so this ends the relay
-/// but may orphan the in-distro CLI process (a known limitation, same as before).
+/// it, and on Windows its job ends every process it started. Note: in WSL mode
+/// the direct child is `wsl.exe`, so this ends the relay but may orphan the
+/// in-distro CLI process (a known limitation, same as before).
 async fn run_cli<F, P>(
     cmd: &mut Command,
     input: String,
@@ -785,11 +932,15 @@ where
     cmd.stdout(std::process::Stdio::piped());
     cmd.stderr(std::process::Stdio::piped());
     cmd.kill_on_drop(true);
-    no_window(cmd);
+    #[cfg(windows)]
+    cmd.creation_flags(CREATE_NO_WINDOW | CREATE_SUSPENDED);
 
     let mut child = cmd
         .spawn()
         .map_err(|e| format!("Failed to spawn {label} CLI: {e}"))?;
+    // Held until this future ends, however it ends.
+    #[cfg(windows)]
+    let _tree = tree::start(&child, label)?;
 
     let mut stdin = child
         .stdin
@@ -801,37 +952,17 @@ where
         .ok_or_else(|| format!("Failed to open {label} stdout."))?;
     let stderr = child.stderr.take();
 
+    let prompt = input.as_str();
     let write_fut = async move {
         crate::util::log_if_err(
             "write the CLI prompt",
-            stdin.write_all(input.as_bytes()).await,
+            stdin.write_all(prompt.as_bytes()).await,
         );
         crate::util::log_if_err("flush the CLI prompt", stdin.flush().await);
         // Dropping stdin closes the pipe so the CLI knows the input is complete.
     };
 
-    // Keep the last few stderr lines: when the child fails without writing any
-    // stdout, this is the only thing that can explain why. They are not logged
-    // line by line -- Codex echoes the whole prompt, and with it the chat, to
-    // stderr -- only counted, and the tail is logged when the CLI fails.
-    let stderr_fut = async move {
-        let mut tail: Vec<String> = Vec::new();
-        let mut count = 0usize;
-        if let Some(stderr) = stderr {
-            let reader = BufReader::new(stderr);
-            let mut lines = LinesStream::new(reader.lines());
-            while let Some(Ok(line)) = lines.next().await {
-                if !line.trim().is_empty() {
-                    count += 1;
-                    if tail.len() == STDERR_TAIL_LINES {
-                        tail.remove(0);
-                    }
-                    tail.push(line);
-                }
-            }
-        }
-        (tail, count)
-    };
+    let stderr_fut = read_stderr_tail(stderr, prompt);
 
     let read_fut = async {
         let reader = BufReader::new(stdout);
@@ -883,34 +1014,91 @@ where
     // reached the user as a completed, empty answer with no error at all.
     let status = child.wait().await;
     drop(child);
-    let failed = |stderr_tail: &[String]| {
-        let message = cli_failure_message(label, stderr_tail);
-        tracing::warn!("{message}");
-        Err(message)
+    // The log gets how the CLI ended and its error lines, never the rest of
+    // stderr: a CLI may repeat the chat there.
+    let failed = |outcome: &str| {
+        let errors = error_lines(&stderr_tail);
+        let mut line = format!("{label} CLI failed: {outcome}, {stderr_lines} stderr line(s)");
+        if !errors.is_empty() {
+            line.push_str(": ");
+            line.push_str(&errors.join(" / "));
+        }
+        tracing::warn!("{line}");
+        Err(cli_failure_message(label, &stderr_tail))
     };
     match status {
         Ok(status) if status.success() => {
             if emitted {
                 Ok(())
             } else {
-                failed(&stderr_tail)
+                failed("exited with no answer")
             }
         }
-        Ok(status) => {
-            tracing::warn!("{label} CLI exited with {status}");
-            failed(&stderr_tail)
-        }
+        Ok(status) => failed(&format!("exited with {status}")),
         Err(e) => Err(format!("Failed to wait for {label} CLI: {e}")),
     }
 }
 
+/// Count the child's stderr lines and keep the last few: when the child fails
+/// without writing any stdout, they are the only thing that can explain why.
+/// Codex echoes the whole prompt, and with it the chat, to stderr, so a line of
+/// the prompt is only counted, never kept.
+async fn read_stderr_tail(
+    stderr: Option<tokio::process::ChildStderr>,
+    prompt: &str,
+) -> (Vec<String>, usize) {
+    let prompt_lines: std::collections::HashSet<&str> = prompt.lines().map(str::trim).collect();
+    let mut tail: Vec<String> = Vec::new();
+    let mut count = 0usize;
+    if let Some(stderr) = stderr {
+        let reader = BufReader::new(stderr);
+        let mut lines = LinesStream::new(reader.lines());
+        while let Some(Ok(line)) = lines.next().await {
+            if line.trim().is_empty() {
+                continue;
+            }
+            count += 1;
+            if prompt_lines.contains(line.trim()) {
+                continue;
+            }
+            if tail.len() == STDERR_TAIL_LINES {
+                tail.remove(0);
+            }
+            tail.push(line);
+        }
+    }
+    (tail, count)
+}
+
+/// The stderr lines that report an error, such as Codex's
+/// `ERROR: unexpected status 401 Unauthorized`.
+fn error_lines(stderr_tail: &[String]) -> Vec<&str> {
+    stderr_tail
+        .iter()
+        .map(|line| line.trim())
+        .filter(|line| {
+            line.contains("ERROR")
+                || line
+                    .get(..5)
+                    .is_some_and(|head| head.eq_ignore_ascii_case("error"))
+        })
+        .collect()
+}
+
 /// Surface the child's own stderr when it has any -- "Invalid API key, please
 /// run /login" is actionable in a way that a generic failure string is not.
+/// Its error lines say why when there are any; the rest is context.
 fn cli_failure_message(label: &str, stderr_tail: &[String]) -> String {
-    if stderr_tail.is_empty() {
+    let errors = error_lines(stderr_tail);
+    let reason = if errors.is_empty() {
+        stderr_tail.join(" / ")
+    } else {
+        errors.join(" / ")
+    };
+    if reason.is_empty() {
         format!("{label} CLI produced no output. Check the launcher log.")
     } else {
-        format!("{label} CLI failed: {}", stderr_tail.join(" / "))
+        format!("{label} CLI failed: {reason}")
     }
 }
 
@@ -989,6 +1177,119 @@ mod tests {
             println!("input  {input:?}\nresult {result:?}");
             assert_eq!(result, input);
         }
+    }
+
+    // ---------------- npm installs on Windows ----------------
+
+    /// The `.cmd` file npm writes for a CLI whose entry point is a script,
+    /// with an invented package.
+    #[cfg(windows)]
+    const NPM_SHIM: &str = "@ECHO off\r\nGOTO start\r\n:find_dp0\r\nSET dp0=%~dp0\r\nEXIT /b\r\n\
+        :start\r\nSETLOCAL\r\nCALL :find_dp0\r\n\r\nIF EXIST \"%dp0%\\node.exe\" (\r\n  \
+        SET \"_prog=%dp0%\\node.exe\"\r\n) ELSE (\r\n  SET \"_prog=node\"\r\n  \
+        SET PATHEXT=%PATHEXT:;.JS;=;%\r\n)\r\n\r\nendLocal & goto #_undefined_# 2>NUL || \
+        title %COMSPEC% & \"%_prog%\"  \"%dp0%\\node_modules\\@example\\fakecli\\bin\\fakecli.js\" %*\r\n";
+
+    /// Arguments `cmd.exe` would act on, and an empty one (`--tools ''`).
+    /// Claude's system prompt is one argument and spans many lines.
+    #[cfg(windows)]
+    fn hostile_args(marker: &std::path::Path) -> Vec<String> {
+        let marker = marker.display();
+        vec![
+            format!("a & echo INJECTED > \"{marker}\""),
+            format!("b | echo INJECTED > \"{marker}\""),
+            format!("c ^& echo INJECTED > \"{marker}\""),
+            "%PATH% %COMSPEC% !bang!".to_owned(),
+            String::new(),
+            r#"say "hi" \" and \\"#.to_owned(),
+            format!("line one\nline two & echo INJECTED > \"{marker}\""),
+            format!("line one\r\n\"& echo INJECTED > \"{marker}\""),
+        ]
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn an_npm_installed_cli_is_found_and_runs_without_cmd_exe() {
+        let dir = fresh_dir("npm-shim");
+        let bin = dir.join(r"node_modules\@example\fakecli\bin");
+        std::fs::create_dir_all(&bin).unwrap();
+        std::fs::write(
+            bin.join("fakecli.js"),
+            "process.stdout.write(JSON.stringify(process.argv.slice(2)));",
+        )
+        .unwrap();
+        std::fs::write(dir.join("fakecli.cmd"), NPM_SHIM).unwrap();
+        let marker = dir.join("INJECTED");
+        let args = hostile_args(&marker);
+
+        let mut cmd = native_command_in("fakecli", dir.as_os_str());
+        let program = std::path::Path::new(cmd.get_program()).to_owned();
+        let out = cmd.args(&args).output();
+        println!("program {program:?}, output {out:?}");
+        let out = out.expect("the npm-installed CLI runs");
+        let seen: Vec<String> = serde_json::from_slice(&out.stdout).unwrap();
+        let injected = marker.exists();
+        std::fs::remove_dir_all(&dir).unwrap();
+        assert_eq!(seen, args, "every argument arrives as written");
+        assert!(!injected, "an argument ran a command");
+        assert!(
+            !program
+                .file_name()
+                .is_some_and(|name| name.eq_ignore_ascii_case("cmd.exe")),
+            "the CLI ran through cmd.exe"
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn npm_shims_resolve_like_the_batch_file() {
+        let dir = fresh_dir("npm-forms");
+        let path = |dirs: &[&std::path::Path]| std::env::join_paths(dirs).unwrap();
+        let program = |cmd: &std::process::Command| std::path::PathBuf::from(cmd.get_program());
+        let args = |cmd: &std::process::Command| {
+            cmd.get_args()
+                .map(std::path::PathBuf::from)
+                .collect::<Vec<_>>()
+        };
+
+        // A script run by `node`: the one beside the batch file comes first.
+        let script = dir.join(r"node_modules\@example\fakecli\bin\fakecli.js");
+        std::fs::write(dir.join("fakecli.cmd"), NPM_SHIM).unwrap();
+        let cmd = native_command_in("fakecli", &path(&[&dir]));
+        assert_eq!(
+            (program(&cmd), args(&cmd)),
+            ("node".into(), vec![script.clone()])
+        );
+        std::fs::write(dir.join("node.exe"), b"").unwrap();
+        let cmd = native_command_in("fakecli", &path(&[&dir]));
+        assert_eq!(
+            (program(&cmd), args(&cmd)),
+            (dir.join("node.exe"), vec![script])
+        );
+
+        // A program the batch file runs itself.
+        let exe = dir.join(r"node_modules\@example\exetool\bin\exetool.exe");
+        std::fs::write(
+            dir.join("exetool.cmd"),
+            "@ECHO off\r\nGOTO start\r\n:find_dp0\r\nSET dp0=%~dp0\r\nEXIT /b\r\n:start\r\n\
+             SETLOCAL\r\nCALL :find_dp0\r\n\"%dp0%\\node_modules\\@example\\exetool\\bin\\exetool.exe\"   %*\r\n",
+        )
+        .unwrap();
+        let cmd = native_command_in("exetool", &path(&[&dir]));
+        assert_eq!((program(&cmd), args(&cmd)), (exe, vec![]));
+
+        // PATH order decides: an `.exe` in an earlier folder wins.
+        let first = dir.join("first");
+        std::fs::create_dir_all(&first).unwrap();
+        std::fs::write(first.join("fakecli.exe"), b"").unwrap();
+        let cmd = native_command_in("fakecli", &path(&[&first, &dir]));
+        assert_eq!((program(&cmd), args(&cmd)), ("fakecli".into(), vec![]));
+
+        // A batch file in another shape is not run.
+        std::fs::write(dir.join("other.cmd"), "@echo off\r\nsomething.exe %*\r\n").unwrap();
+        let cmd = native_command_in("other", &path(&[&dir]));
+        assert_eq!((program(&cmd), args(&cmd)), ("other".into(), vec![]));
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     // ---------------- shell_escape ----------------
@@ -1546,41 +1847,98 @@ mod tests {
     }
 
     #[cfg(unix)]
+    #[derive(Clone, Default)]
+    struct LogBuf(std::sync::Arc<std::sync::Mutex<Vec<u8>>>);
+
+    #[cfg(unix)]
+    impl std::io::Write for LogBuf {
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            self.0
+                .lock()
+                .map_err(|_| std::io::Error::other("log buffer poisoned"))?
+                .extend_from_slice(bytes);
+            Ok(bytes.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    #[cfg(unix)]
+    impl LogBuf {
+        fn text(&self) -> String {
+            String::from_utf8(self.0.lock().unwrap().clone()).unwrap()
+        }
+    }
+
+    /// Everything logged while the tests run. A process-wide subscriber,
+    /// installed once: a thread-local one misses events whenever a parallel
+    /// test registered the call site first (measured: the captured log came
+    /// back empty in 3 of 5 full runs). Each test uses a label no other test
+    /// uses, which keeps the other tests' lines out of its assertions.
+    #[cfg(unix)]
+    fn captured_log() -> LogBuf {
+        static LOG: std::sync::OnceLock<LogBuf> = std::sync::OnceLock::new();
+        LOG.get_or_init(|| {
+            let buf = LogBuf::default();
+            let writer = buf.clone();
+            let subscriber = tracing_subscriber::fmt()
+                .with_max_level(tracing::Level::TRACE)
+                .with_writer(move || writer.clone())
+                .finish();
+            tracing::subscriber::set_global_default(subscriber).unwrap();
+            buf
+        })
+        .clone()
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_failed_cli_keeps_the_chat_out_of_the_log() {
+        let buf = captured_log();
+        // Codex echoes the whole prompt to stderr, then writes its own error
+        // line when the request fails (not logged in, usage limit, network).
+        let input = build_codex_input(
+            "Answer briefly.",
+            &[msg(
+                "user",
+                "<game_context>\nname: \"Invented Game\"\n</game_context>\n\nWhere is SECRET-QUESTION?\nERROR: my save will not load",
+            )],
+        );
+        let mut cmd = Command::new("sh");
+        cmd.args([
+            "-c",
+            "echo user >&2; cat >&2; echo 'ERROR: unexpected status 401 Unauthorized' >&2; exit 1",
+        ]);
+        let result = run_cli(&mut cmd, input, |_| Ok(()), parse_codex_line, "Echo", None).await;
+        let log = buf.text();
+        println!("result: {result:?}");
+        println!("log:\n{log}");
+        let shown = result.expect_err("a failed CLI is an error");
+        for chat_text in ["SECRET-QUESTION", "Invented Game", "my save"] {
+            assert!(!log.contains(chat_text), "{chat_text} reached the log");
+            assert!(!shown.contains(chat_text), "{chat_text} reached the error");
+        }
+        assert_eq!(
+            shown,
+            "Echo CLI failed: ERROR: unexpected status 401 Unauthorized"
+        );
+        let line = log
+            .lines()
+            .find(|line| line.contains("Echo CLI failed"))
+            .expect("the failure is logged");
+        assert!(
+            line.contains("exit status: 1")
+                && line.ends_with("stderr line(s): ERROR: unexpected status 401 Unauthorized"),
+            "the log names how the CLI ended and its own error line: {line}"
+        );
+    }
+
+    #[cfg(unix)]
     #[tokio::test]
     async fn cli_stderr_is_not_copied_into_the_log() {
-        #[derive(Clone, Default)]
-        struct Buf(std::sync::Arc<std::sync::Mutex<Vec<u8>>>);
-        impl std::io::Write for Buf {
-            fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
-                self.0
-                    .lock()
-                    .map_err(|_| std::io::Error::other("log buffer poisoned"))?
-                    .extend_from_slice(bytes);
-                Ok(bytes.len())
-            }
-            fn flush(&mut self) -> std::io::Result<()> {
-                Ok(())
-            }
-        }
-        // A process-wide subscriber, installed once: a thread-local one misses
-        // events whenever a parallel test registered the call site first
-        // (measured: the captured log came back empty in 3 of 5 full runs).
-        static LOG: std::sync::OnceLock<Buf> = std::sync::OnceLock::new();
-        let buf = LOG
-            .get_or_init(|| {
-                let buf = Buf::default();
-                let writer = buf.clone();
-                let subscriber = tracing_subscriber::fmt()
-                    .with_max_level(tracing::Level::TRACE)
-                    .with_writer(move || writer.clone())
-                    .finish();
-                tracing::subscriber::set_global_default(subscriber).unwrap();
-                buf
-            })
-            .clone();
-
-        // Codex echoes the prompt -- and so the conversation -- to stderr. A
-        // label no other test uses keeps their lines out of the assertions.
+        let buf = captured_log();
+        // Codex echoes the prompt -- and so the conversation -- to stderr.
         let mut cmd = Command::new("sh");
         cmd.args(["-c", "echo 'user: SECRET-PROMPT' >&2; echo answer"]);
         let result = run_cli(
@@ -1592,7 +1950,7 @@ mod tests {
             None,
         )
         .await;
-        let log = String::from_utf8(buf.0.lock().unwrap().clone()).unwrap();
+        let log = buf.text();
         assert_eq!(result, Ok(()));
         assert!(
             !log.contains("SECRET-PROMPT"),
@@ -1641,51 +1999,190 @@ mod tests {
         assert_eq!(parse_codex_line(""), Some(Parsed::Text("\n".to_owned())));
     }
 
-    #[test]
-    fn parse_codex_line_surfaces_refusal() {
-        let line = r#"{"type":"refusal","content":"I can't help with that"}"#;
-        assert_eq!(
-            parse_codex_line(line),
-            Some(Parsed::Error("I can't help with that".to_owned()))
-        );
-    }
+    /// Answer lines that happen to be JSON objects, in the shapes that were
+    /// once read as protocol frames: a typed object, a `text` field, a
+    /// `content` array and a refusal-shaped object.
+    const JSON_ANSWER: &str = r#"Put this in the save file:
+{"type": "weapon", "name": "Iron Sword", "damage": 12}
+{"text": "Press E", "key": "E"}
+{"content":[{"type":"output_text","text":"hello"}]}
+{"type": "refusal", "content": "sample"}
+42
+"#;
 
     #[test]
-    fn parse_codex_line_collects_output_text_from_content_array() {
-        let line = r#"{"content":[{"type":"output_text","text":"hello"},{"type":"output_text","text":" world"}]}"#;
-        assert_eq!(
-            parse_codex_line(line),
-            Some(Parsed::Text("hello world".to_owned()))
-        );
+    fn parse_codex_line_emits_json_answer_lines_verbatim() {
+        for line in JSON_ANSWER.lines() {
+            assert_eq!(
+                parse_codex_line(line),
+                Some(Parsed::Text(format!("{line}\n"))),
+                "{line}"
+            );
+        }
     }
 
-    #[test]
-    fn parse_codex_line_extracts_top_level_text_field() {
-        let line = r#"{"text":"hi there"}"#;
-        assert_eq!(
-            parse_codex_line(line),
-            Some(Parsed::Text("hi there".to_owned()))
-        );
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_codex_answer_written_as_json_reaches_the_user_unchanged() {
+        // `codex exec` prints the answer as plain text on stdout, so a JSON
+        // line in it is the model's answer, never a protocol frame.
+        let mut cmd = Command::new("sh");
+        cmd.args(["-c", "cat"]);
+        let mut chunks = Vec::new();
+        let result = run_cli(
+            &mut cmd,
+            JSON_ANSWER.to_owned(),
+            |text| {
+                chunks.push(text);
+                Ok(())
+            },
+            parse_codex_line,
+            "Codex",
+            None,
+        )
+        .await;
+        let joined = chunks.concat();
+        println!("{result:?}\n{joined}");
+        assert_eq!(result, Ok(()));
+        assert_eq!(joined, JSON_ANSWER);
     }
 
-    #[test]
-    fn parse_codex_line_skips_unrecognized_json_object() {
-        let line = r#"{"type":"token_count","tokens":42}"#;
-        assert_eq!(parse_codex_line(line), None);
+    // ---------------- quitting and stopping ----------------
+
+    /// Whether `pid` still runs. A killed process its parent has not reaped
+    /// yet is a zombie (`Z`), which no longer runs.
+    #[cfg(unix)]
+    fn runs(pid: &str) -> bool {
+        std::fs::read_to_string(format!("/proc/{pid}/stat")).is_ok_and(|stat| {
+            stat.rsplit_once(") ")
+                .is_some_and(|(_, rest)| !rest.starts_with('Z') && !rest.starts_with('X'))
+        })
     }
 
+    #[cfg(unix)]
     #[test]
-    fn parse_codex_line_emits_typeless_json_answer_verbatim() {
-        // A JSON answer with no protocol "type" is the model's output, not a
-        // control frame -- emit it verbatim instead of dropping it.
-        let object = r#"{"ok":true}"#;
-        assert_eq!(
-            parse_codex_line(object),
-            Some(Parsed::Text(format!("{object}\n")))
-        );
-        assert_eq!(
-            parse_codex_line("42"),
-            Some(Parsed::Text("42\n".to_owned()))
-        );
+    fn quitting_ends_the_cli_and_deletes_its_screenshot() {
+        let dir = fresh_dir("quit");
+        // One file a crash left behind, and the one the running request holds.
+        std::fs::write(dir.join("aigc-shot-left-behind.png"), b"OLD").unwrap();
+        let shot = TempShot::create(shot_path(&dir), b"PNGDATA").unwrap();
+        let (pid_tx, pid_rx) = std::sync::mpsc::channel();
+        let handle = tauri::async_runtime::spawn(async move {
+            let _shot = shot;
+            let mut cmd = Command::new("sh");
+            cmd.args(["-c", "echo $$; exec sleep 60"]);
+            let ended = run_cli(
+                &mut cmd,
+                String::new(),
+                |pid| pid_tx.send(pid).map_err(|e| e.to_string()),
+                parse_codex_line,
+                "Quit",
+                None,
+            )
+            .await;
+            println!("the request ended: {ended:?}");
+        });
+        let ai = super::super::AiState::default();
+        ai.replace_active(1, handle);
+        let pid = pid_rx
+            .recv_timeout(std::time::Duration::from_secs(10))
+            .expect("the CLI started");
+        let pid = pid.trim().to_owned();
+        assert!(runs(&pid), "the CLI {pid} is not running");
+
+        ai.stop_for_exit(Some(&dir));
+
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while runs(&pid) && std::time::Instant::now() < deadline {
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+        let still_runs = runs(&pid);
+        if still_runs {
+            std::process::Command::new("kill")
+                .args(["-9", &pid])
+                .status()
+                .unwrap();
+        }
+        let left: Vec<_> = std::fs::read_dir(&dir)
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name())
+            .collect();
+        std::fs::remove_dir_all(&dir).unwrap();
+        println!("after quit: CLI running {still_runs}, files {left:?}");
+        assert!(!still_runs, "the CLI kept running after quit");
+        assert!(left.is_empty(), "files left after quit: {left:?}");
+    }
+
+    /// The processes a CLI starts on Windows, and how a test watches them.
+    #[cfg(windows)]
+    mod windows_tree {
+        #![expect(
+            unsafe_code,
+            reason = "the test opens, waits on and ends a process by its pid"
+        )]
+
+        use super::*;
+        use windows::Win32::Foundation::{CloseHandle, WAIT_OBJECT_0};
+        use windows::Win32::System::Threading::{
+            OpenProcess, TerminateProcess, WaitForSingleObject, PROCESS_SYNCHRONIZE,
+            PROCESS_TERMINATE,
+        };
+
+        const START_A_CHILD: &str = "$i = New-Object System.Diagnostics.ProcessStartInfo \
+            'ping.exe', '-n 60 127.0.0.1'; $i.UseShellExecute = $false; \
+            $i.RedirectStandardOutput = $true; $p = [System.Diagnostics.Process]::Start($i); \
+            [Console]::Out.WriteLine($p.Id); [Console]::Out.Flush(); Start-Sleep -Seconds 60";
+
+        /// An npm-installed CLI is `node` plus the CLI's own binary, which
+        /// `node` starts. Stop must end that second process too.
+        #[tokio::test]
+        async fn stopping_a_request_ends_the_process_its_cli_started() {
+            let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+            let request = tokio::spawn(async move {
+                let mut cmd = Command::new("powershell.exe");
+                cmd.args(["-NoProfile", "-NonInteractive", "-Command", START_A_CHILD]);
+                let ended = run_cli(
+                    &mut cmd,
+                    String::new(),
+                    |line| tx.send(line).map_err(|e| e.to_string()),
+                    parse_codex_line,
+                    "Tree",
+                    None,
+                )
+                .await;
+                println!("the request ended: {ended:?}");
+            });
+            let pid: u32 = loop {
+                let line = tokio::time::timeout(std::time::Duration::from_secs(30), rx.recv())
+                    .await
+                    .expect("the CLI printed its child's pid")
+                    .expect("the CLI is still running");
+                if let Ok(pid) = line.trim().parse() {
+                    break pid;
+                }
+            };
+            // SAFETY: OpenProcess takes plain values; the handle is closed below.
+            let started =
+                unsafe { OpenProcess(PROCESS_SYNCHRONIZE | PROCESS_TERMINATE, false, pid) }
+                    .unwrap();
+
+            request.abort();
+            println!("stopped: {:?}", request.await);
+
+            // SAFETY: `started` is the open handle from above.
+            let wait = unsafe { WaitForSingleObject(started, 5000) };
+            if wait != WAIT_OBJECT_0 {
+                // SAFETY: as above; ends what the test started when Stop did not.
+                crate::util::log_if_err("end the test's process", unsafe {
+                    TerminateProcess(started, 1)
+                });
+            }
+            // SAFETY: `started` is not used again.
+            crate::util::log_if_err("CloseHandle(process)", unsafe { CloseHandle(started) });
+            assert_eq!(
+                wait, WAIT_OBJECT_0,
+                "process {pid}, started by the CLI, outlived the request"
+            );
+        }
     }
 }

@@ -1406,7 +1406,7 @@ mod tests {
     /// the fields it knows are written once.
     #[test]
     fn unknown_fields_survive_a_load_and_a_save() {
-        let newer = r#"{"games":[{"id":"steam_1","name":"Foo","source":"steam","source_id":"1","play_time_minutes":900,"notes":"my notes"}],"settings":{"launch_on_startup":true,"voice_input":{"key":"F8"}},"game_prefs":{"library:steam_1":{"future_pref":7}},"journals":[{"text":"entry"}]}"#;
+        let newer = r#"{"games":[{"id":"steam_1","name":"Foo","source":"steam","source_id":"1","play_time_minutes":900,"notes":"my notes"}],"settings":{"launch_on_startup":true,"voice_input":{"key":"F8"}},"game_prefs":{"library:steam_1":{"translate_region":{"x":0.25,"y":0.5,"w":0.5,"h":0.25},"future_pref":7}},"journals":[{"text":"entry"}]}"#;
         let path = temp_state_path("unknown_fields");
         std::fs::write(&path, newer).unwrap();
         let app = AppState::load(path.clone());
@@ -1415,6 +1415,10 @@ mod tests {
             app.autostart_setting(),
             Some(true),
             "an unknown setting is not an unreadable one"
+        );
+        assert!(
+            app.game_prefs("library:steam_1").translate_region.is_some(),
+            "a known per-game value loads beside an unknown one"
         );
         app.save().unwrap();
         let text = std::fs::read_to_string(&path).unwrap();
@@ -1425,6 +1429,7 @@ mod tests {
             "/journals",
             "/settings/voice_input",
             "/games/0/notes",
+            "/game_prefs/library:steam_1/translate_region",
             "/game_prefs/library:steam_1/future_pref",
         ] {
             println!("{pointer}: {:?}", saved.pointer(pointer));
@@ -1446,6 +1451,8 @@ mod tests {
             "\"play_time_minutes\"",
             "\"notes\"",
             "\"journals\"",
+            "\"translate_region\"",
+            "\"future_pref\"",
         ] {
             assert_eq!(text.matches(key).count(), 1, "{key} in {text}");
         }

@@ -1,3 +1,5 @@
+ai::cli::tests::a_codex_answer_written_as_json_reaches_the_user_unchanged run
+ai::cli::tests::a_failed_cli_keeps_the_chat_out_of_the_log run
 ai::cli::tests::blank_lines_count_toward_the_byte_cap run
 ai::cli::tests::claude_children_are_locked_down run
 ai::cli::tests::claude_input_appends_image_part_when_screenshot_present run
@@ -24,12 +26,9 @@ ai::cli::tests::parse_claude_line_skips_malformed_or_empty_lines run
 ai::cli::tests::parse_claude_line_surfaces_error_result_message run
 ai::cli::tests::parse_claude_line_treats_successful_result_as_stream_end run
 ai::cli::tests::parse_claude_line_uses_fallback_when_error_result_has_no_message run
-ai::cli::tests::parse_codex_line_collects_output_text_from_content_array run
+ai::cli::tests::parse_codex_line_emits_json_answer_lines_verbatim run
 ai::cli::tests::parse_codex_line_emits_plain_text_verbatim run
-ai::cli::tests::parse_codex_line_emits_typeless_json_answer_verbatim run
-ai::cli::tests::parse_codex_line_extracts_top_level_text_field run
-ai::cli::tests::parse_codex_line_skips_unrecognized_json_object run
-ai::cli::tests::parse_codex_line_surfaces_refusal run
+ai::cli::tests::quitting_ends_the_cli_and_deletes_its_screenshot run
 ai::cli::tests::shell_escape_escapes_inner_single_quote run
 ai::cli::tests::shell_escape_handles_empty_string run
 ai::cli::tests::shell_escape_preserves_spaces_and_special_chars run
@@ -45,6 +44,8 @@ ai::cli::tests::validate_model_name_rejects_non_ascii run
 ai::cli::tests::validate_model_name_rejects_path_traversal run
 ai::cli::tests::version_probe_escapes_the_name run
 ai::cli::tests::wsl_bash_passes_script_without_a_second_shell run
+ai::gemini::tests::a_translation_cut_short_keeps_its_text run
+ai::gemini::tests::an_answer_cut_short_ends_with_its_stop_reason run
 ai::gemini::tests::buffers_split_utf8_and_emits_complete_text_chunks run
 ai::gemini::tests::detects_streamed_api_errors run
 ai::gemini::tests::http_errors_explain_themselves run
@@ -71,6 +72,7 @@ ai::tests::provider_labels_match_the_overlay run
 ai::tests::request_log_line_names_no_game run
 ai::tests::translate_gate_order run
 ai::tests::unlinked_target_contributes_nothing run
+commands::ai::tests::a_refused_provider_pick_announces_no_change run
 commands::games::tests::complete_scan_carries_playtime_across run
 commands::games::tests::complete_scan_drops_uninstalled_games run
 commands::games::tests::complete_scan_keeps_other_sources run
@@ -95,6 +97,7 @@ models::tests::new_install_has_no_saved_provider run
 models::tests::overlay_hints_default_matches_rust run
 npm_lock_policy::committed_lock_meets_the_policy run
 npm_lock_policy::planted_locks_are_judged_by_each_rule run
+overlay::tests::a_closed_target_is_announced_to_the_page run
 overlay::tests::classify_cases run
 overlay::tests::every_overlay_hide_goes_through_overlay_hide run
 overlay::tests::frame_host_resolves_to_the_hosted_app run

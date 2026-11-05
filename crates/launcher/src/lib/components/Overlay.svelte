@@ -1,9 +1,12 @@
 <script lang="ts">
   import { onMount, tick } from 'svelte';
+  import { on as onEvent } from 'svelte/events';
   import { invoke, Channel } from '@tauri-apps/api/core';
   import { listen } from '@tauri-apps/api/event';
   import { hashHue } from '../utils/accent';
   import { ANOTHER_HINT_TURN, FULL_ANSWER_TURN, showHintChips } from '../utils/hints';
+  import { sendsQuestion } from '../utils/keys';
+  import { unsavedPick } from '../utils/pick';
   import { PROVIDERS, modelName, type ModelNames, type Provider } from '../stores/companion.svelte';
   import type { LauncherSettings } from '../settings';
   import Markdown from './Markdown.svelte';
@@ -83,6 +86,7 @@
   });
   let provider = $state<Provider>('gemini');
   let savedProvider: Provider | null = null;
+  const pick = unsavedPick<Provider>();
   let dropdownOpen = $state(false);
   let tab = $state<'chat' | 'translate'>('chat');
   // The chat screenshot: taken by the image button, shown above the input, and
@@ -182,10 +186,22 @@
     });
   });
 
-  // Svelte action: when the chat list gets shorter (a screenshot preview shows
-  // under it), its scroll position stays fixed from the top, which would leave
-  // a list that was at its bottom scrolled up and unfollowed. Keep it there.
+  // Where the chat list stood when it was last scrolled: null at its bottom,
+  // else its scrollTop. The list is rebuilt, at its top, on every switch back
+  // to the Chat tab.
+  let chatScrollTop: number | null = null;
+
+  // Svelte action: put a rebuilt chat list back where it stood. And when the
+  // list gets shorter (a screenshot preview shows under it), its scroll
+  // position stays fixed from the top, which would leave a list that was at
+  // its bottom scrolled up and unfollowed. Keep it there.
   function keepBottom(el: HTMLDivElement) {
+    el.scrollTop = chatScrollTop ?? el.scrollHeight;
+    const remember = () => {
+      const atBottom = el.scrollHeight - el.scrollTop - el.clientHeight <= FOLLOW_SLACK;
+      chatScrollTop = atBottom ? null : el.scrollTop;
+    };
+    const stopRemembering = onEvent(el, 'scroll', remember);
     let height = el.clientHeight;
     const observer = new ResizeObserver(() => {
       const wasAtBottom = el.scrollHeight - el.scrollTop - height <= FOLLOW_SLACK;
@@ -196,6 +212,7 @@
     return {
       destroy() {
         observer.disconnect();
+        stopRemembering();
       },
     };
   }
@@ -217,9 +234,11 @@
   async function selectProvider(p: Provider) {
     provider = p;
     savedProvider = p;
+    pick.picked(p);
     dropdownOpen = false;
     try {
       await invoke('set_active_provider', { provider: p });
+      pick.saved();
     } catch {
       /* selection still applies for this session */
     }
@@ -554,7 +573,7 @@
   }
 
   function onKeydown(event: KeyboardEvent) {
-    if (event.key === 'Enter' && !event.shiftKey) {
+    if (sendsQuestion(event)) {
       event.preventDefault();
       void send();
     }
@@ -600,8 +619,12 @@
     translateBusy = true;
     translateError = '';
     try {
-      const res = await invoke<{ text: string }>('translate_screen', { shotId });
+      const res = await invoke<{ text: string; cut_short: string | null }>('translate_screen', {
+        shotId,
+      });
       translateText = res.text;
+      // A translation cut short keeps its text with the reason under it.
+      translateError = res.cut_short ?? '';
     } catch (err) {
       translateError = String(err);
       translateText = '';
@@ -655,7 +678,7 @@
       // new install, nothing picked yet) or an unknown one (a hand-edited
       // state file) is no saved provider, so the first available one is used.
       const saved = settings.active_provider;
-      savedProvider = saved && saved in PROVIDERS ? (saved as Provider) : null;
+      savedProvider = pick.after(saved && saved in PROVIDERS ? (saved as Provider) : null);
     } catch {
       /* defaults apply */
     }
@@ -698,6 +721,10 @@
         // Wait for the DOM: `game` above flips canSend, and a still-disabled
         // input silently refuses focus.
         void tick().then(() => inputEl?.focus());
+      }),
+      listen('target-window-closed', () => {
+        // The window this panel names was found closed, so nothing may use it.
+        game = null;
       }),
       listen('providers-changed', () => {
         void loadSavedProvider();
@@ -1130,10 +1157,13 @@
         <div class="translate-result">
           {#if translateBusy}
             <div class="thinking"><i></i><i></i><i></i></div>
-          {:else if translateError}
-            <div style="color: var(--color-err);" class="te-title">{translateError}</div>
-          {:else if translateText}
-            <div class="translate-text">{translateText}</div>
+          {:else if translateText || translateError}
+            {#if translateText}
+              <div class="translate-text">{translateText}</div>
+            {/if}
+            {#if translateError}
+              <div style="color: var(--color-err);" class="te-title">{translateError}</div>
+            {/if}
           {:else if !availability.gemini}
             <div class="translate-empty">
               <div class="te-title">Translation needs a Gemini key.</div>

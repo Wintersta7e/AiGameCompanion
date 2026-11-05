@@ -112,6 +112,12 @@ mod imp {
         if let Err(error) = session.SetIsBorderRequired(false) {
             tracing::debug!("could not disable the capture border: {error}");
         }
+        // Leave the mouse pointer out: the panel's buttons sit over the game,
+        // so it would be drawn into the screenshot and could cover text.
+        // Cosmetic like the border, so a failure must not fail the capture.
+        if let Err(error) = session.SetIsCursorCaptureEnabled(false) {
+            tracing::debug!("could not leave the cursor out of the capture: {error}");
+        }
 
         let result = session
             .StartCapture()

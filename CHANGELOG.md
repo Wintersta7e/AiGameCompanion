@@ -43,6 +43,40 @@ All notable changes to this project are documented here. The format is based on
   damaged library file, or one with entries it could not read, left an empty or
   shorter library with no word of the copy it had kept. The main window now
   names that copy once per start.
+- **A failed Codex or Claude question no longer writes your question into the
+  launcher log.** When the CLI failed, the last lines of its error output went
+  to the log and into the error shown in the panel, and Codex repeats the
+  whole prompt there. The log now keeps how the CLI ended and its own error
+  lines, and the panel shows the CLI's reason, not your question.
+- **A Codex answer line written as JSON is shown as written.** A line such as
+  a config or save snippet was dropped, cut down to one of its values, or
+  turned the whole answer into an error.
+- **A Gemini answer cut off by its length limit or a safety stop says so.** It
+  ended as a complete answer and went back to Gemini as one; the text that
+  arrived now stays with the reason under it, and it is left out of the next
+  question.
+- **Quitting while Claude or Codex answers now stops the answer.** The CLI kept
+  running on your account after the launcher closed, and a Codex screenshot
+  stayed on disk until the next start.
+- **Claude and Codex installed with npm on Windows are found.** Only a
+  standalone install was detected, so an npm install showed the provider as
+  unavailable even though the CLI worked in a terminal.
+- **A provider you pick stays picked when the launcher cannot save it.** When
+  the library file could not be read, the pick jumped back to the saved
+  provider at once, and the next question went to that one.
+- **A translation cut short keeps the text that arrived.** The translate tab
+  showed only the stop reason; it now shows the text with the reason under it.
+- **Enter that confirms Japanese, Chinese or Korean input no longer sends the
+  question.** The half-converted question went to the provider, and the
+  converted text was left behind in the input.
+- **Screenshots leave out the mouse pointer.** Taking one from the panel drew
+  the pointer into the game screenshot, where it could cover text.
+- **The chat stays where you left it when you switch tabs.** Coming back from
+  the Translate tab showed the first messages instead of the latest.
+- **The panel stops showing a closed game as linked.** After the linked window
+  closed, the panel kept it as linked with the screenshot buttons on, and a
+  translation or a second screenshot said no game was linked. The panel now
+  lets go of the window once it is found closed and says it is no longer open.
 
 ## 2.1.0 - 2026-10-07
 

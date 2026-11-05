@@ -330,9 +330,9 @@ pub(crate) fn capture_target(target: Option<&GameInfo>) -> Option<(i64, u32)> {
         .map(|game| (game.hwnd, game.pid))
 }
 
-/// Why a take found no window to capture, given the target `stored` before
-/// it was checked to be alive.
-fn missing_target(stored: Option<&GameInfo>) -> &'static str {
+/// Why a take or a translation found no window to use, given the target
+/// `stored` before it was checked to be alive.
+pub(crate) fn missing_target(stored: Option<&GameInfo>) -> &'static str {
     if capture_target(stored).is_some() {
         WINDOW_CLOSED
     } else {

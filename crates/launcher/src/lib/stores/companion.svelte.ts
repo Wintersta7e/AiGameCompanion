@@ -6,6 +6,7 @@
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import type { LauncherSettings } from '../settings';
+import { unsavedPick } from '../utils/pick';
 
 export type Provider = 'gemini' | 'claude' | 'openai';
 
@@ -95,12 +96,20 @@ export function getProviderMeta(): ProviderMeta {
   return PROVIDERS[provider];
 }
 
+const pick = unsavedPick<Provider>();
+
 export function setProvider(p: Provider): void {
   provider = p;
   providerChosen = true;
-  void invoke('set_active_provider', { provider: p }).catch(() => {
-    /* selection still applies for this session */
-  });
+  pick.picked(p);
+  void invoke('set_active_provider', { provider: p }).then(
+    () => {
+      pick.saved();
+    },
+    () => {
+      /* selection still applies for this session */
+    },
+  );
 }
 
 /**
@@ -111,8 +120,9 @@ export async function loadProvider(): Promise<void> {
   try {
     const settings = await invoke<LauncherSettings>('get_settings');
     const saved = settings.active_provider;
-    if (saved && saved in PROVIDERS) {
-      provider = saved as Provider;
+    const shown = pick.after(saved && saved in PROVIDERS ? (saved as Provider) : null);
+    if (shown) {
+      provider = shown;
       providerChosen = true;
     }
   } catch {

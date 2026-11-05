@@ -220,7 +220,7 @@ fn main() {
                 .menu(&menu)
                 .on_menu_event(|app, event| match event.id().as_ref() {
                     "show" => show_main_window(app),
-                    "quit" => std::process::exit(0),
+                    "quit" => quit_launcher(app),
                     _ => {}
                 })
                 .on_tray_icon_event(|tray, event| {
@@ -252,7 +252,7 @@ fn main() {
                 } else {
                     // Real close: force exit so any background threads (CLI
                     // detection, global-shortcut) do not keep the process alive.
-                    std::process::exit(0);
+                    quit_launcher(window.app_handle());
                 }
             }
         })
@@ -294,6 +294,19 @@ fn main() {
     // Tauri's event loop has exited (all windows closed). Force-terminate so no
     // background thread keeps the process alive.
     std::process::exit(code);
+}
+
+/// Quit from the tray or the main window. `std::process::exit` runs no
+/// destructors, so the running AI request is ended and its screenshot deleted
+/// first.
+#[expect(
+    clippy::exit,
+    reason = "background threads (CLI detection, global-shortcut) keep the process alive unless it force-exits"
+)]
+fn quit_launcher(app: &tauri::AppHandle) -> ! {
+    app.state::<AiState>()
+        .stop_for_exit(ai::shots_dir(app).as_deref());
+    std::process::exit(0)
 }
 
 #[cfg(test)]

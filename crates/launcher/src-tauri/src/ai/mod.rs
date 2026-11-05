@@ -25,7 +25,7 @@ pub(crate) use cli::{detect_all, sweep_shots, CliConfig};
 /// chosen. Each window keeps its own copy; without this, CLI detection that
 /// finishes after startup, or a choice made in the other window, left a stale
 /// provider switch on screen.
-pub(crate) fn notify_providers_changed(app: &AppHandle) {
+pub(crate) fn notify_providers_changed<R: tauri::Runtime>(app: &AppHandle<R>) {
     crate::util::log_if_err(
         "announce a provider change",
         app.emit("providers-changed", ()),
@@ -35,6 +35,9 @@ pub(crate) fn notify_providers_changed(app: &AppHandle) {
 /// Backstop timeout for a single request, covering a hung CLI that never closes
 /// stdout. Gemini has its own (shorter) HTTP timeout, so this is the CLI ceiling.
 const REQUEST_TIMEOUT: std::time::Duration = std::time::Duration::from_mins(3);
+/// How long quitting waits for a running request to end before it deletes the
+/// screenshot files and exits anyway.
+const EXIT_WAIT: std::time::Duration = std::time::Duration::from_secs(2);
 
 /// The provider a request targets. Serialized lowercase to match the overlay UI
 /// (`"gemini"` / `"claude"` / `"openai"`).
@@ -228,6 +231,37 @@ impl AiState {
     fn clear_if(&self, request_id: u64) {
         let mut guard = self.active.lock();
         guard.take_if(|active| active.request_id == request_id);
+    }
+
+    /// End the running request, then delete every Codex screenshot file, before
+    /// the launcher exits. `std::process::exit` runs no destructors: without
+    /// this, quitting while an answer streamed left the CLI answering on the
+    /// user's account and its screenshot on disk until the next start.
+    pub(crate) fn stop_for_exit(&self, shots_dir: Option<&std::path::Path>) {
+        let active = self.active.lock().take();
+        if let Some(active) = active {
+            active.handle.abort();
+            // The request's future is dropped on a runtime thread; waiting for
+            // that is what kills the CLI and deletes its screenshot.
+            let handle = active.handle;
+            let ended = tauri::async_runtime::block_on(async move {
+                tokio::time::timeout(EXIT_WAIT, handle).await
+            });
+            if ended.is_ok() {
+                tracing::info!("Stopped the running request before exit");
+            } else {
+                tracing::warn!(
+                    "The running request did not stop within {} s of exit",
+                    EXIT_WAIT.as_secs()
+                );
+            }
+        }
+        if let Some(dir) = shots_dir {
+            let removed = sweep_shots(dir);
+            if removed > 0 {
+                tracing::info!("Removed {removed} screenshot file(s) before exit");
+            }
+        }
     }
 }
 
@@ -631,15 +665,16 @@ pub(crate) const fn translate_gate(
 /// Translate any foreign text in the held translate screenshot `shot_id` to
 /// English via Gemini. A one-shot call, independent of the chat request slot.
 /// The screenshot is claimed first: a refusal sends nothing and keeps it held.
-pub(crate) async fn translate_held(app: &AppHandle, shot_id: u64) -> Result<String, String> {
+pub(crate) async fn translate_held(app: &AppHandle, shot_id: u64) -> Result<Translation, String> {
     let provider = Provider::Gemini;
+    let stored = crate::overlay::stored_game(app);
     let game = crate::overlay::linked_game(app);
     let target = crate::shots::capture_target(game.as_ref());
     let key = gemini::load_config();
     if let Err(block) = translate_gate(target.is_some(), key.is_ok(), provider.takes_screenshot()) {
         tracing::info!("Translate: refused: {}", block.code());
         return Err(match block {
-            TranslateBlock::NotLinked => crate::overlay::NO_LINKED_GAME.to_owned(),
+            TranslateBlock::NotLinked => crate::shots::missing_target(stored.as_ref()).to_owned(),
             TranslateBlock::Unavailable => key.err().unwrap_or_default(),
             TranslateBlock::NoScreenshots => format!(
                 "{} can't receive screenshots, so it can't translate.",
@@ -684,7 +719,7 @@ pub(crate) async fn translate_held(app: &AppHandle, shot_id: u64) -> Result<Stri
         None,
     );
     let mut out = String::new();
-    gemini::stream(
+    let streamed = gemini::stream(
         &messages,
         &system,
         Some(screenshot),
@@ -695,8 +730,34 @@ pub(crate) async fn translate_held(app: &AppHandle, shot_id: u64) -> Result<Stri
             Ok(())
         },
     )
-    .await?;
-    Ok(out.trim().to_owned())
+    .await;
+    translation_outcome(&out, streamed)
+}
+
+/// A translation as the overlay shows it: the text, and why it ended early
+/// when it did.
+#[derive(Debug, PartialEq, Eq, Serialize)]
+pub(crate) struct Translation {
+    pub text: String,
+    pub cut_short: Option<String>,
+}
+
+/// What a translation stream leaves the user: `text` is what arrived. A
+/// stream that fails after some text keeps it with the reason; one that
+/// failed before any text is only the error.
+fn translation_outcome(text: &str, streamed: Result<(), String>) -> Result<Translation, String> {
+    let text = text.trim().to_owned();
+    match streamed {
+        Ok(()) => Ok(Translation {
+            text,
+            cut_short: None,
+        }),
+        Err(error) if !text.is_empty() => Ok(Translation {
+            text,
+            cut_short: Some(error),
+        }),
+        Err(error) => Err(error),
+    }
 }
 
 #[cfg(test)]
@@ -987,13 +1048,14 @@ mod tests {
 
     #[test]
     fn every_provider_change_is_announced() {
-        // One definition plus its five callers: CLI detection at startup,
-        // set_active_provider, set_gemini_key, recheck_clis, update_settings.
+        // Its five callers: CLI detection at startup, set_active_provider,
+        // set_gemini_key, recheck_clis, update_settings. The definition is
+        // generic, so its name is followed by `<`, not `(`.
         let needle = concat!("notify_providers", "_changed(");
         let (files, count) = crate::util::count_in_sources(needle, None);
         println!("scanned {files} files, found {count} occurrence(s) of {needle}");
         assert!(files > 0, "the source scan found no files");
-        assert_eq!(count, 6, "a provider change that no window hears about");
+        assert_eq!(count, 5, "a provider change that no window hears about");
     }
 
     /// Every provider. A new variant fails to compile in the match; add it to
