@@ -25,9 +25,9 @@ use commands::settings::HotkeyStatus;
 use overlay::OverlayState;
 use state::AppState;
 use tauri::{
+    Manager,
     menu::{MenuBuilder, MenuItemBuilder},
     tray::TrayIconBuilder,
-    Manager,
 };
 use tauri_plugin_autostart::{MacosLauncher, ManagerExt};
 use tauri_plugin_global_shortcut::{Code, GlobalShortcutExt, Modifiers, Shortcut, ShortcutState};

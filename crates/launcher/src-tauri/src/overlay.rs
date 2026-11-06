@@ -131,17 +131,17 @@ pub(crate) fn hide(app: &AppHandle) {
     if let Some(game) = live_game(app) {
         focus_window(game.hwnd);
     }
-    if let (Some(shown), Some(now), Some(scale)) = (shown, now, scale) {
-        if placement::user_moved(shown.applied, now) {
-            remember_placement(
-                app,
-                OverlayPlacement {
-                    panel: now,
-                    reference: shown.reference,
-                    scale,
-                },
-            );
-        }
+    if let (Some(shown), Some(now), Some(scale)) = (shown, now, scale)
+        && placement::user_moved(shown.applied, now)
+    {
+        remember_placement(
+            app,
+            OverlayPlacement {
+                panel: now,
+                reference: shown.reference,
+                scale,
+            },
+        );
     }
 }
 
@@ -801,20 +801,20 @@ mod imp {
 
     use super::GameInfo;
     use crate::placement::Rect;
-    use windows::core::{BOOL, PCWSTR, PWSTR};
     use windows::Win32::Foundation::{CloseHandle, HWND, LPARAM};
     use windows::Win32::Storage::FileSystem::{
         GetFileVersionInfoSizeW, GetFileVersionInfoW, VerQueryValueW,
     };
     use windows::Win32::System::Threading::{
-        OpenProcess, QueryFullProcessImageNameW, PROCESS_NAME_WIN32,
-        PROCESS_QUERY_LIMITED_INFORMATION,
+        OpenProcess, PROCESS_NAME_WIN32, PROCESS_QUERY_LIMITED_INFORMATION,
+        QueryFullProcessImageNameW,
     };
     use windows::Win32::UI::WindowsAndMessaging::{
         EnumChildWindows, GetClassNameW, GetForegroundWindow, GetWindowInfo, GetWindowTextW,
-        GetWindowThreadProcessId, IsIconic, IsWindow, SetForegroundWindow, SetWindowPos,
-        ShowWindow, HWND_TOPMOST, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SW_RESTORE, WINDOWINFO,
+        GetWindowThreadProcessId, HWND_TOPMOST, IsIconic, IsWindow, SW_RESTORE, SWP_NOACTIVATE,
+        SWP_NOMOVE, SWP_NOSIZE, SetForegroundWindow, SetWindowPos, ShowWindow, WINDOWINFO,
     };
+    use windows::core::{BOOL, PCWSTR, PWSTR};
 
     pub(super) fn foreground_game(self_pid: u32) -> Option<GameInfo> {
         // SAFETY: GetForegroundWindow takes no arguments; it may return null,

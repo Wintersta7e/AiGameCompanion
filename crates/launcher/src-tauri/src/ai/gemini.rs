@@ -195,19 +195,18 @@ fn build_request(
         })
         .collect();
 
-    if let Some(data) = screenshot {
-        if let Some(last_user) = contents
+    if let Some(data) = screenshot
+        && let Some(last_user) = contents
             .iter_mut()
             .rev()
             .find(|content| content.role == "user")
-        {
-            last_user.parts.push(Part::InlineData {
-                inline_data: InlineData {
-                    mime_type: "image/png".to_owned(),
-                    data,
-                },
-            });
-        }
+    {
+        last_user.parts.push(Part::InlineData {
+            inline_data: InlineData {
+                mime_type: "image/png".to_owned(),
+                data,
+            },
+        });
     }
 
     let system_instruction = if system_prompt.trim().is_empty() {
@@ -459,10 +458,10 @@ fn stream_error_message(json: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::{
-        build_request, http_error_message, process_sse_lines, resolve_model, stream_error_message,
-        validate_model, ChatMessage, Part,
+        ChatMessage, Part, build_request, http_error_message, process_sse_lines, resolve_model,
+        stream_error_message, validate_model,
     };
-    use crate::ai::prompt::{assemble, PromptKind};
+    use crate::ai::prompt::{PromptKind, assemble};
 
     #[test]
     fn resolve_model_precedence() {

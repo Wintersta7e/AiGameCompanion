@@ -845,11 +845,11 @@ fn fitted_size(w: u32, h: u32, max_w: u32, max_h: u32) -> (u32, u32) {
 
 #[cfg(test)]
 mod tests {
-    use super::{capture_target, claim_shot, HeldShot, HotkeyAction, Prepared, ShotHeld};
-    use super::{client_box, fit_within, prepare, source, Frame, ShotSlot, ShotStore};
-    use super::{missing_target, NOT_HELD, WINDOW_CLOSED};
-    use super::{ShotInfo, ShotRefusal, Take};
+    use super::{Frame, ShotSlot, ShotStore, client_box, fit_within, prepare, source};
+    use super::{HeldShot, HotkeyAction, Prepared, ShotHeld, capture_target, claim_shot};
+    use super::{NOT_HELD, WINDOW_CLOSED, missing_target};
     use super::{SHOT_MAX_BYTES, SHOT_MAX_H, SHOT_MAX_W, SOURCE_MAX_H, SOURCE_MAX_W};
+    use super::{ShotInfo, ShotRefusal, Take};
     use crate::overlay::GameInfo;
     use crate::placement::Rect;
     use crate::region::PixelRect;

@@ -59,7 +59,6 @@ mod imp {
 
     use std::time::{Duration, Instant};
 
-    use windows::core::{factory, Interface};
     use windows::Graphics::Capture::{
         Direct3D11CaptureFrame, Direct3D11CaptureFramePool, GraphicsCaptureItem,
     };
@@ -68,16 +67,17 @@ mod imp {
     use windows::Win32::Foundation::{HMODULE, HWND, RECT};
     use windows::Win32::Graphics::Direct3D::D3D_DRIVER_TYPE_HARDWARE;
     use windows::Win32::Graphics::Direct3D11::{
+        D3D11_CPU_ACCESS_READ, D3D11_CREATE_DEVICE_BGRA_SUPPORT, D3D11_MAP_READ,
+        D3D11_MAPPED_SUBRESOURCE, D3D11_SDK_VERSION, D3D11_TEXTURE2D_DESC, D3D11_USAGE_STAGING,
         D3D11CreateDevice, ID3D11Device, ID3D11DeviceContext, ID3D11Texture2D,
-        D3D11_CPU_ACCESS_READ, D3D11_CREATE_DEVICE_BGRA_SUPPORT, D3D11_MAPPED_SUBRESOURCE,
-        D3D11_MAP_READ, D3D11_SDK_VERSION, D3D11_TEXTURE2D_DESC, D3D11_USAGE_STAGING,
     };
-    use windows::Win32::Graphics::Dwm::{DwmGetWindowAttribute, DWMWA_EXTENDED_FRAME_BOUNDS};
+    use windows::Win32::Graphics::Dwm::{DWMWA_EXTENDED_FRAME_BOUNDS, DwmGetWindowAttribute};
     use windows::Win32::Graphics::Dxgi::IDXGIDevice;
     use windows::Win32::System::WinRT::Direct3D11::{
         CreateDirect3D11DeviceFromDXGIDevice, IDirect3DDxgiInterfaceAccess,
     };
     use windows::Win32::System::WinRT::Graphics::Capture::IGraphicsCaptureItemInterop;
+    use windows::core::{Interface, factory};
 
     const FRAME_TIMEOUT: Duration = Duration::from_secs(2);
     const FRAME_POLL_INTERVAL: Duration = Duration::from_millis(16);

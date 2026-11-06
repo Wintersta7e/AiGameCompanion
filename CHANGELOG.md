@@ -4,7 +4,7 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## Unreleased
+## 2.2.0 - 2026-11-06
 
 ### Added
 
@@ -20,6 +20,11 @@ All notable changes to this project are documented here. The format is based on
   turn it off or delete every saved chat.
 - **"Where was I?"** After a break of four hours or more, one click asks Sage to
   recap the chat so far.
+
+### Security
+
+- **The TLS libraries behind the launcher's own HTTPS connections are updated**
+  to versions that fix published security advisories.
 
 ### Fixed
 
@@ -85,6 +90,11 @@ All notable changes to this project are documented here. The format is based on
   closed, the panel kept it as linked with the screenshot buttons on, and a
   translation or a second screenshot said no game was linked. The panel now
   lets go of the window once it is found closed and says it is no longer open.
+
+### Infrastructure
+
+- **Dependencies refreshed, including Tauri 2.12; the project builds with Rust
+  1.99.1.**
 
 ## 2.1.0 - 2026-10-07
 

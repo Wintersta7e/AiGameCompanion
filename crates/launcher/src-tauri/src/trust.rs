@@ -55,7 +55,7 @@ mod tests {
     use std::path::{Path, PathBuf};
     use tauri::http::HeaderMap;
     use tauri::ipc::{CallbackFn, InvokeBody};
-    use tauri::test::{get_ipc_response, mock_builder, MockRuntime, INVOKE_KEY};
+    use tauri::test::{INVOKE_KEY, MockRuntime, get_ipc_response, mock_builder};
     use tauri::webview::InvokeRequest;
     use tauri::{Url, WebviewUrl, WebviewWindow, WebviewWindowBuilder};
 

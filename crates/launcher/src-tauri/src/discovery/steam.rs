@@ -213,20 +213,20 @@ fn collect_exes(dir: &Path, out: &mut Vec<(PathBuf, u64)>, depth: u32) {
         let path = entry.path();
         if path.is_dir() {
             collect_exes(&path, out, depth + 1);
-        } else if let Some(ext) = path.extension() {
-            if ext.eq_ignore_ascii_case("exe") {
-                let file_name_lower = path
-                    .file_stem()
-                    .map_or_default(|s| s.to_string_lossy().to_lowercase());
+        } else if let Some(ext) = path.extension()
+            && ext.eq_ignore_ascii_case("exe")
+        {
+            let file_name_lower = path
+                .file_stem()
+                .map_or_default(|s| s.to_string_lossy().to_lowercase());
 
-                let is_skip = SKIP_PATTERNS
-                    .iter()
-                    .any(|pat| file_name_lower.contains(pat));
+            let is_skip = SKIP_PATTERNS
+                .iter()
+                .any(|pat| file_name_lower.contains(pat));
 
-                if !is_skip {
-                    let size = entry.metadata().map_or(0, |m| m.len());
-                    out.push((path, size));
-                }
+            if !is_skip {
+                let size = entry.metadata().map_or(0, |m| m.len());
+                out.push((path, size));
             }
         }
     }
