@@ -144,7 +144,9 @@ jobs:
     # flags the exe has today. Any SHA256 it prints is this run's build. The
     # release checklist runs the same script on the zip that is published. A C
     # dependency once put 83 home-directory paths into a release binary;
-    # source-level scanners cannot see that.
+    # source-level scanners cannot see that. It then makes the release assets
+    # from that build with scripts/release-assets.sh (the zip, an SBOM of the
+    # Rust and of the npm dependencies, SHA256SUMS) and checks them.
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     permissions:
@@ -186,6 +188,11 @@ jobs:
         uses: taiki-e/install-action@1e29709c0ec63babbe8f266397a465f29a825f91 # v2.87.31
         with:
           tool: cargo-xwin@${{ steps.pins.outputs.CARGO_XWIN }}
+          fallback: none
+      - name: Install cargo-cyclonedx
+        uses: taiki-e/install-action@1e29709c0ec63babbe8f266397a465f29a825f91 # v2.87.31
+        with:
+          tool: cargo-cyclonedx@${{ steps.pins.outputs.CARGO_CYCLONEDX }}
           fallback: none
       - name: Install LLVM
         run: sudo apt-get update && sudo apt-get install -y clang llvm lld

@@ -1910,6 +1910,15 @@ declare_table() {
 	row name='binary audit' tags=release-audit category=ci-only target=any requires='release build' \
 		tools=strings,llvm-readobj,sha256sum count='^audit: ' zero='files ([0-9]+)' \
 		cmd='scripts/binary-audit.sh audit --public-runner release crates/launcher/dist'
+	# The release assets: the zip, a Rust and an npm SBOM, and SHA256SUMS.
+	row name='release assets' tags=release-audit category=ci-only target=any requires='release build' \
+		tools=rust,node,npm,cargo-cyclonedx,jq,zip count='^release assets: files' \
+		zero='^release assets: files ([0-9]+)' \
+		cmd="v=\$(scripts/release-assets.sh version) && scripts/release-assets.sh \"\${v}\" release/assets"
+	row name='release assets check' tags=release-audit category=ci-only target=any requires='release assets' \
+		tools=rust,jq,unzip,cmp,sha256sum,strings,llvm-readobj count='^release assets check: |^audit: ' \
+		zero='^release assets check: files ([0-9]+)' \
+		cmd="v=\$(scripts/release-assets.sh version) && scripts/release-assets.sh check \"\${v}\" release/assets"
 	row name='secret scan self-test' tags=secrets category=both target=any tools=gitleaks,git \
 		count='^secret scan self-test: ' zero='cases run ([0-9]+)' \
 		cmd='source scripts/ci-check.sh && secret_scan_self_test'
