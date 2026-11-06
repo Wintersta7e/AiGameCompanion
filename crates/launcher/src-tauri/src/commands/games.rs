@@ -176,21 +176,21 @@ fn do_launch(app: &tauri::AppHandle, game_id: &str) -> Result<(), String> {
     } else {
         // Non-Steam: watch by executable name, resolving it on demand if needed.
         let mut exe_name = game.exe_name.clone();
-        if exe_name.is_empty() {
-            if let Some(dir) = &game.install_dir {
-                let (resolved_name, resolved_path) =
-                    discovery::steam::resolve_game_exe(std::path::Path::new(dir));
-                exe_name = resolved_name;
-                // Cache the resolved exe for next time.
-                let mut launcher = state.launcher.lock();
-                if let Some(g) = launcher.games.iter_mut().find(|g| g.id == game_id) {
-                    g.exe_name.clone_from(&exe_name);
-                    g.exe_path = resolved_path;
-                }
-                drop(launcher);
-                if let Err(e) = state.save() {
-                    tracing::warn!("Failed to cache resolved exe: {e}");
-                }
+        if exe_name.is_empty()
+            && let Some(dir) = &game.install_dir
+        {
+            let (resolved_name, resolved_path) =
+                discovery::steam::resolve_game_exe(std::path::Path::new(dir));
+            exe_name = resolved_name;
+            // Cache the resolved exe for next time.
+            let mut launcher = state.launcher.lock();
+            if let Some(g) = launcher.games.iter_mut().find(|g| g.id == game_id) {
+                g.exe_name.clone_from(&exe_name);
+                g.exe_path = resolved_path;
+            }
+            drop(launcher);
+            if let Err(e) = state.save() {
+                tracing::warn!("Failed to cache resolved exe: {e}");
             }
         }
         // No process name to watch -- reset to idle (the game did launch).
@@ -240,7 +240,7 @@ pub(crate) fn open_game_logs(app: tauri::AppHandle) -> Result<(), String> {
 mod tests {
     #![allow(let_underscore_drop, reason = "test cleanup is best-effort")]
 
-    use super::{merge_scan, ScanOutcome};
+    use super::{ScanOutcome, merge_scan};
     use crate::models::{Game, GameSource};
 
     fn game(id: &str, name: &str, minutes: u64) -> Game {

@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Manager};
 
 use crate::overlay::GameInfo;
-use crate::shots::{floor_px, Frame};
+use crate::shots::{Frame, floor_px};
 use crate::state::AppState;
 
 /// A rectangle in a frame's pixels, its origin at the frame's top-left corner.
@@ -169,7 +169,7 @@ pub(crate) fn linked_region(app: &AppHandle, game: Option<&GameInfo>) -> Option<
 
 #[cfg(test)]
 mod tests {
-    use super::{framed, region_to_pixels, PixelRect, RegionError, TranslateRegion, MIN_REGION_PX};
+    use super::{MIN_REGION_PX, PixelRect, RegionError, TranslateRegion, framed, region_to_pixels};
     use crate::shots::Frame;
     use std::path::Path;
 

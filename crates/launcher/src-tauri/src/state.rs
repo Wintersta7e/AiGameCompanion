@@ -439,7 +439,7 @@ mod tests {
 
     use super::*;
     use crate::models::{Game, GameSource};
-    use crate::placement::{place, MonitorArea, OverlayPlacement, Placed, PlacedFrom, Rect};
+    use crate::placement::{MonitorArea, OverlayPlacement, Placed, PlacedFrom, Rect, place};
     use std::path::Path;
 
     /// Unique temp path per test (process id + label) so parallel tests

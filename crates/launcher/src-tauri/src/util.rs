@@ -403,12 +403,12 @@ pub(crate) fn strip_test_modules(src: &str) -> String {
     let mut kept = String::with_capacity(src.len());
     let (mut at, mut depth) = (0, 0_usize);
     while at < chars.len() {
-        if depth == 0 {
-            if let Some(body) = test_module_body(&chars, at) {
-                depth = 1;
-                at = body;
-                continue;
-            }
+        if depth == 0
+            && let Some(body) = test_module_body(&chars, at)
+        {
+            depth = 1;
+            at = body;
+            continue;
         }
         let end = token_end(&chars, at);
         if depth == 0 {
@@ -615,7 +615,9 @@ pub(crate) fn helper() { NEEDLE(); }
         let (files, whole) = count_in_sources(needle, None);
         let per_file = count_in_sources_by_file(needle);
         let outside: usize = per_file.iter().map(|(_, count)| count).sum();
-        println!("{files} files scanned; {needle}: {whole} in whole files, {outside} outside test modules");
+        println!(
+            "{files} files scanned; {needle}: {whole} in whole files, {outside} outside test modules"
+        );
         assert_eq!(per_file.len(), files);
         assert!(whole >= 1);
         assert_eq!(outside, 0);
@@ -642,9 +644,10 @@ pub(crate) fn helper() { NEEDLE(); }
                 .count();
             println!("{kind}: {count} files");
         }
-        assert!(scan
-            .files
-            .contains(&PathBuf::from("src/lib/components/Overlay.svelte")));
+        assert!(
+            scan.files
+                .contains(&PathBuf::from("src/lib/components/Overlay.svelte"))
+        );
         assert!(scan.files.contains(&PathBuf::from("index.html")));
         for file in &scan.files {
             let source = file.starts_with("src")
