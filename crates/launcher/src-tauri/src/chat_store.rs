@@ -13,11 +13,12 @@ use std::collections::HashMap;
 use std::fmt;
 use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
+use std::time::SystemTime;
 
-use chrono::{DateTime, TimeDelta, Utc};
 use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Manager};
+use time::{Duration, OffsetDateTime};
 
 use crate::ai::search::{MAX_SEARCH_REPORT_BYTES, SearchReport, resend_answer};
 use crate::ai::{ChatMessage, Provider};
@@ -42,7 +43,8 @@ pub(crate) const DELETE_PARTIAL: &str = "Some saved chats could not be deleted."
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct SavedExchange {
-    pub(crate) saved_at: DateTime<Utc>,
+    #[serde(with = "time::serde::rfc3339")]
+    pub(crate) saved_at: OffsetDateTime,
     pub(crate) question: String,
     pub(crate) answer: String,
     pub(crate) provider: Provider,
@@ -230,8 +232,8 @@ fn parse_chat_file(text: &str, key: &str) -> Parsed {
 
 /// Remove the exchanges saved more than `EXPIRY_DAYS` before `now`; one saved
 /// exactly that long ago stays. Returns how many were removed.
-fn prune_expired(entries: &mut Vec<SavedExchange>, now: DateTime<Utc>) -> usize {
-    let Some(cutoff) = now.checked_sub_signed(TimeDelta::days(EXPIRY_DAYS)) else {
+fn prune_expired(entries: &mut Vec<SavedExchange>, now: OffsetDateTime) -> usize {
+    let Some(cutoff) = now.checked_sub(Duration::days(EXPIRY_DAYS)) else {
         return 0;
     };
     let before = entries.len();
@@ -393,10 +395,9 @@ impl ChatStore {
         if self.memory.lock().keys.contains_key(key) {
             return;
         }
-        let entry = self
-            .dir
-            .as_deref()
-            .map_or_else(KeyEntry::empty, |dir| read_key(dir, key, mode, Utc::now()));
+        let entry = self.dir.as_deref().map_or_else(KeyEntry::empty, |dir| {
+            read_key(dir, key, mode, OffsetDateTime::now_utc())
+        });
         // In memory before the I/O lock goes, so the startup pass skips this file.
         self.memory
             .lock()
@@ -419,10 +420,9 @@ impl ChatStore {
         if status != KeyStatus::Unread || mode.read_only {
             return status;
         }
-        let read = self
-            .dir
-            .as_deref()
-            .map_or_else(KeyEntry::empty, |dir| read_key(dir, key, mode, Utc::now()));
+        let read = self.dir.as_deref().map_or_else(KeyEntry::empty, |dir| {
+            read_key(dir, key, mode, OffsetDateTime::now_utc())
+        });
         if let Some(entry) = self.memory.lock().keys.get_mut(key) {
             let session = std::mem::replace(&mut entry.entries, read.entries);
             entry.entries.extend(session);
@@ -512,7 +512,7 @@ impl ChatStore {
             return save_state(mode, chat.status, chat.write_failed);
         };
         let hash = file_hash(key);
-        let expired = prune_expired(&mut chat.entries, Utc::now());
+        let expired = prune_expired(&mut chat.entries, OffsetDateTime::now_utc());
         let kept = if let Some(bytes) = too_large(key, &entry) {
             log_skipped(&hash, bytes);
             false
@@ -675,11 +675,11 @@ impl ChatStore {
     /// its modification time; one that cannot be deleted is tried again at
     /// the next start. Nothing changes in read-only mode, and nothing is added
     /// to memory. Takes the I/O lock per file. Blocks on file I/O.
-    pub(crate) fn startup_pass(&self, mode: StoreMode, now: DateTime<Utc>) {
+    pub(crate) fn startup_pass(&self, mode: StoreMode, now: OffsetDateTime) {
         let Some(dir) = self.dir.as_deref().filter(|_| !mode.read_only) else {
             return;
         };
-        let Some(cutoff) = now.checked_sub_signed(TimeDelta::days(EXPIRY_DAYS)) else {
+        let Some(cutoff) = now.checked_sub(Duration::days(EXPIRY_DAYS)) else {
             return;
         };
         let names: Vec<String> = match std::fs::read_dir(dir) {
@@ -746,10 +746,10 @@ fn delete_expired(path: &Path) -> Expired {
 
 /// Delete the store file at `path` when it was last changed before `cutoff`;
 /// one whose time cannot be read stays.
-fn delete_if_older(path: &Path, cutoff: DateTime<Utc>) -> Expired {
+fn delete_if_older(path: &Path, cutoff: OffsetDateTime) -> Expired {
     let older = std::fs::metadata(path)
         .and_then(|meta| meta.modified())
-        .is_ok_and(|at| DateTime::<Utc>::from(at) < cutoff);
+        .is_ok_and(|at| at < SystemTime::from(cutoff));
     if older {
         delete_expired(path)
     } else {
@@ -762,7 +762,12 @@ fn delete_if_older(path: &Path, cutoff: DateTime<Utc>) -> Expired {
 /// backup first, and stays as it is when that fails. A file that cannot be
 /// read, or whose key is not the one its name is the hash of, is deleted only
 /// once it was last changed before `cutoff`.
-fn expire_chat(dir: &Path, hash: &ChatHash, now: DateTime<Utc>, cutoff: DateTime<Utc>) -> Expired {
+fn expire_chat(
+    dir: &Path,
+    hash: &ChatHash,
+    now: OffsetDateTime,
+    cutoff: OffsetDateTime,
+) -> Expired {
     let path = chat_file(dir, hash);
     let text = match read_with_retry(
         &path,
@@ -810,7 +815,7 @@ fn expire_chat(dir: &Path, hash: &ChatHash, now: DateTime<Utc>, cutoff: DateTime
 /// Delete an expired copy of a chat file at `path`: a leftover `.tmp` last
 /// changed before `cutoff`, or a backup whose newest exchange was saved before
 /// it -- by its modification time when it holds no exchange that reads.
-fn expire_copy(path: &Path, tmp: bool, cutoff: DateTime<Utc>) -> Expired {
+fn expire_copy(path: &Path, tmp: bool, cutoff: OffsetDateTime) -> Expired {
     let newest = (!tmp)
         .then(|| std::fs::read_to_string(path).ok())
         .flatten()
@@ -972,7 +977,7 @@ fn write_chat(dir: &Path, hash: &ChatHash, text: &str) -> std::io::Result<()> {
 /// key's chat, is Locked. A damaged one is kept as a backup and the chat starts
 /// from what could be read; read-only, or when no backup can be written, it is
 /// Locked instead and what could be read is shown.
-fn read_key(dir: &Path, key: &str, mode: StoreMode, now: DateTime<Utc>) -> KeyEntry {
+fn read_key(dir: &Path, key: &str, mode: StoreMode, now: OffsetDateTime) -> KeyEntry {
     let hash = file_hash(key);
     let path = chat_file(dir, &hash);
     let tmp = path.with_extension("json.tmp");
@@ -1150,7 +1155,7 @@ mod tests {
         dir
     }
 
-    fn exchange(question: &str, saved_at: DateTime<Utc>) -> SavedExchange {
+    fn exchange(question: &str, saved_at: OffsetDateTime) -> SavedExchange {
         SavedExchange {
             saved_at,
             question: question.to_owned(),
@@ -1191,7 +1196,7 @@ mod tests {
         store.append_exchange(
             key,
             snapshot.clear_generation,
-            Some(exchange("Saved?", Utc::now())),
+            Some(exchange("Saved?", OffsetDateTime::now_utc())),
             mode,
         )
     }
@@ -1201,7 +1206,7 @@ mod tests {
     }
 
     /// Every file in `dir`, sorted: name, size and modification time.
-    fn listing(dir: &Path) -> Vec<(String, u64, std::time::SystemTime)> {
+    fn listing(dir: &Path) -> Vec<(String, u64, SystemTime)> {
         let mut files: Vec<_> = std::fs::read_dir(dir)
             .unwrap()
             .map(|entry| {
@@ -1263,7 +1268,10 @@ mod tests {
 
         std::fs::write(
             &path,
-            file_text(key, &[entry(&exchange("Where next?", Utc::now()))]),
+            file_text(
+                key,
+                &[entry(&exchange("Where next?", OffsetDateTime::now_utc()))],
+            ),
         )
         .unwrap();
         let shown = serde_json::to_value(view(&dir, key, WRITABLE)).unwrap();
@@ -1308,7 +1316,7 @@ mod tests {
     }
 
     fn good() -> serde_json::Value {
-        entry(&exchange("Where next?", Utc::now()))
+        entry(&exchange("Where next?", OffsetDateTime::now_utc()))
     }
 
     #[test]
@@ -1410,7 +1418,7 @@ mod tests {
         // One entry of two unreadable (a provider this build does not know).
         let key = "exe:partial";
         let path = path_of(dir, key);
-        let mut unknown = entry(&exchange("Who is this?", Utc::now()));
+        let mut unknown = entry(&exchange("Who is this?", OffsetDateTime::now_utc()));
         unknown["provider"] = serde_json::json!("elsewhere");
         let text = file_text(key, &[good, unknown]);
         std::fs::write(&path, &text).unwrap();
@@ -1448,7 +1456,10 @@ mod tests {
 
         let key = "exe:tmp-and-file";
         let path = path_of(dir, key);
-        let newer = file_text(key, &[entry(&exchange("From the .tmp", Utc::now()))]);
+        let newer = file_text(
+            key,
+            &[entry(&exchange("From the .tmp", OffsetDateTime::now_utc()))],
+        );
         std::fs::write(&path, file_text(key, std::slice::from_ref(&good))).unwrap();
         std::fs::write(tmp_of(&path), &newer).unwrap();
         let shown = view(dir, key, WRITABLE);
@@ -1495,7 +1506,10 @@ mod tests {
         let readable = "exe:readable";
         std::fs::write(
             path_of(&dir, readable),
-            file_text(readable, &[entry(&exchange("Where next?", Utc::now()))]),
+            file_text(
+                readable,
+                &[entry(&exchange("Where next?", OffsetDateTime::now_utc()))],
+            ),
         )
         .unwrap();
         let corrupt = "exe:corrupt";
@@ -1555,7 +1569,7 @@ mod tests {
         let saved = store.append_exchange(
             readable,
             snapshot.clear_generation,
-            Some(exchange("Kept?", Utc::now())),
+            Some(exchange("Kept?", OffsetDateTime::now_utc())),
             READ_ONLY,
         );
         let tail = store.snapshot(readable, Provider::Gemini).tail;
@@ -1629,7 +1643,7 @@ mod tests {
         let saved = store.append_exchange(
             "exe:a",
             asked.clear_generation,
-            Some(exchange("Late?", Utc::now())),
+            Some(exchange("Late?", OffsetDateTime::now_utc())),
             WRITABLE,
         );
         let tail = store.snapshot("exe:a", Provider::Gemini).tail;
@@ -1679,7 +1693,7 @@ mod tests {
     fn sized(question: &str, bytes: usize) -> SavedExchange {
         SavedExchange {
             answer: "a".repeat(bytes - question.len()),
-            ..exchange(question, Utc::now())
+            ..exchange(question, OffsetDateTime::now_utc())
         }
     }
 
@@ -1740,7 +1754,7 @@ mod tests {
     }
 
     fn tail_caps(dir: &Path, key: &str) {
-        let now = Utc::now();
+        let now = OffsetDateTime::now_utc();
         // At most 20 exchanges are sent: the newest ones.
         let many: Vec<_> = (0..25).map(|n| exchange(&format!("Q{n}"), now)).collect();
         let store = store_holding(dir, key, &many);
@@ -1806,7 +1820,7 @@ mod tests {
 
     fn entries_too_large(dir: &Path, key: &str) {
         let path = path_of(dir, key);
-        let now = Utc::now();
+        let now = OffsetDateTime::now_utc();
         // An answer that cannot fit is stored nowhere; a report of exactly 32 KiB is kept.
         let searched = |bytes| SavedExchange {
             search: Some(report_of(bytes)),
@@ -1852,11 +1866,11 @@ mod tests {
 
     fn expiry(dir: &Path, key: &str) {
         let path = path_of(dir, key);
-        let now = Utc::now();
+        let now = OffsetDateTime::now_utc();
         // Older than 700 days is removed at load; exactly 700 days stays.
         let mut boundary = vec![
-            exchange("701 days", now - TimeDelta::days(701)),
-            exchange("700 days", now - TimeDelta::days(700)),
+            exchange("701 days", now - Duration::days(701)),
+            exchange("700 days", now - Duration::days(700)),
         ];
         prune_expired(&mut boundary, now);
         let kept: Vec<&str> = boundary.iter().map(|x| x.question.as_str()).collect();
@@ -1865,9 +1879,9 @@ mod tests {
             dir,
             key,
             &[
-                exchange("Expired", now - TimeDelta::days(701)),
+                exchange("Expired", now - Duration::days(701)),
                 // The test's own run time must not push it past the boundary.
-                exchange("Kept", now - TimeDelta::days(700) + TimeDelta::minutes(5)),
+                exchange("Kept", now - Duration::days(700) + Duration::minutes(5)),
             ],
         );
         let shown = store.show(key, WRITABLE);
@@ -1883,7 +1897,7 @@ mod tests {
         let store = store_holding(dir, key, &[exchange("Expiring", now)]);
         std::fs::write(tmp_of(&path), "{}").unwrap();
         store.memory.lock().keys.get_mut(key).unwrap().entries[0].saved_at =
-            now - TimeDelta::days(701);
+            now - Duration::days(701);
         let saved = append(&store, key, sized("Huge", 262_144));
         println!(
             "last entry expired at write: {saved:?}, files {:?}",
@@ -1902,7 +1916,7 @@ mod tests {
     fn grounded_answers_go_only_to_gemini() {
         let dir = temp_dir("grounded");
         let key = "exe:grounded";
-        let now = Utc::now();
+        let now = OffsetDateTime::now_utc();
         let stored = [
             SavedExchange {
                 answer: "Grounded answer.".to_owned(),
@@ -2012,14 +2026,14 @@ mod tests {
                 note: SearchNote::QueriesOnly,
                 hints: true,
             }),
-            ..exchange("Second?", Utc::now())
+            ..exchange("Second?", OffsetDateTime::now_utc())
         };
         let saved = [
-            exchange("First?", Utc::now()),
+            exchange("First?", OffsetDateTime::now_utc()),
             searched,
             SavedExchange {
                 screenshot: true,
-                ..exchange("Third?", Utc::now())
+                ..exchange("Third?", OffsetDateTime::now_utc())
             },
         ];
         for exchange in &saved {
@@ -2087,7 +2101,7 @@ mod tests {
     }
 
     /// The listing of `key`'s files only.
-    fn listing_of(dir: &Path, key: &str) -> Vec<(String, u64, std::time::SystemTime)> {
+    fn listing_of(dir: &Path, key: &str) -> Vec<(String, u64, SystemTime)> {
         let hash = file_hash(key).to_string();
         listing(dir)
             .into_iter()
@@ -2174,7 +2188,7 @@ mod tests {
         // A Locked chat is emptied on screen; every file stays.
         let locked = "exe:locked";
         let path = path_of(&dir, locked);
-        let mut unknown = entry(&exchange("Who is this?", Utc::now()));
+        let mut unknown = entry(&exchange("Who is this?", OffsetDateTime::now_utc()));
         unknown["provider"] = serde_json::json!("elsewhere");
         std::fs::write(&path, file_text(locked, &[good(), unknown])).unwrap();
         std::fs::write(tmp_of(&path), "older").unwrap();
@@ -2298,7 +2312,12 @@ mod tests {
         let store = ChatStore::new(Some(dir.clone()));
         store.load("exe:off", OFF);
         let shown = store.show("exe:off", OFF);
-        let saved = append_in(&store, "exe:off", OFF, exchange("Kept?", Utc::now()));
+        let saved = append_in(
+            &store,
+            "exe:off",
+            OFF,
+            exchange("Kept?", OffsetDateTime::now_utc()),
+        );
         let after = store.show("exe:off", OFF);
         println!(
             "off: shown {:?}, saved {saved:?}, view {:?}, folder exists {}",
@@ -2369,12 +2388,27 @@ mod tests {
     /// while it was on already holds them.
     fn turning_saving_on_merges_the_file_once(dir: &Path) {
         for (key, first) in [("exe:first-off", OFF), ("exe:first-on", WRITABLE)] {
-            let store = store_holding_in(dir, key, &[exchange("Before", Utc::now())], first);
+            let store = store_holding_in(
+                dir,
+                key,
+                &[exchange("Before", OffsetDateTime::now_utc())],
+                first,
+            );
             let path = path_of(dir, key);
             let stored = std::fs::read_to_string(&path).unwrap();
-            let off = append_in(&store, key, OFF, exchange("During", Utc::now()));
+            let off = append_in(
+                &store,
+                key,
+                OFF,
+                exchange("During", OffsetDateTime::now_utc()),
+            );
             let unchanged = std::fs::read_to_string(&path).unwrap() == stored;
-            let on = append_in(&store, key, WRITABLE, exchange("After", Utc::now()));
+            let on = append_in(
+                &store,
+                key,
+                WRITABLE,
+                exchange("After", OffsetDateTime::now_utc()),
+            );
             let file = file_questions(dir, key);
             let shown = store.show(key, WRITABLE);
             println!(
@@ -2393,13 +2427,13 @@ mod tests {
     }
 
     /// Write `text` to `path`, last modified `days` days before `now`.
-    fn seed(path: &Path, text: impl AsRef<[u8]>, now: DateTime<Utc>, days: i64) -> PathBuf {
+    fn seed(path: &Path, text: impl AsRef<[u8]>, now: OffsetDateTime, days: i64) -> PathBuf {
         std::fs::write(path, text).unwrap();
         std::fs::File::options()
             .write(true)
             .open(path)
             .unwrap()
-            .set_modified((now - TimeDelta::days(days)).into())
+            .set_modified((now - Duration::days(days)).into())
             .unwrap();
         path.to_owned()
     }
@@ -2416,8 +2450,8 @@ mod tests {
     type PassRow = (bool, &'static str, PathBuf, Vec<u8>, i64);
 
     /// Backups and `.tmp` files the pass deletes or leaves by their age.
-    fn copy_rows(dir: &Path, now: DateTime<Utc>) -> Vec<PassRow> {
-        let old = |days: i64| entry(&exchange("Old", now - TimeDelta::days(days)));
+    fn copy_rows(dir: &Path, now: OffsetDateTime) -> Vec<PassRow> {
+        let old = |days: i64| entry(&exchange("Old", now - Duration::days(days)));
         let junk = b"not a chat file".to_vec();
         let bak = |key: &str| bak_of(&path_of(dir, key));
         vec![
@@ -2467,8 +2501,8 @@ mod tests {
     }
 
     /// Chat files the pass deletes or leaves by their age, and a file it does not own.
-    fn chat_rows(dir: &Path, now: DateTime<Utc>) -> Vec<PassRow> {
-        let old = |days: i64| entry(&exchange("Old", now - TimeDelta::days(days)));
+    fn chat_rows(dir: &Path, now: OffsetDateTime) -> Vec<PassRow> {
+        let old = |days: i64| entry(&exchange("Old", now - Duration::days(days)));
         let junk = b"not a chat file".to_vec();
         let not_text = vec![0xff, 0xfe, 0xfd];
         let chat = |key: &str| path_of(dir, key);
@@ -2534,7 +2568,7 @@ mod tests {
     }
 
     /// Seed in `dir` every file the startup pass deletes or leaves by its age.
-    fn seed_pass_cases(dir: &Path, now: DateTime<Utc>) -> PassCases {
+    fn seed_pass_cases(dir: &Path, now: OffsetDateTime) -> PassCases {
         let mut cases = PassCases::default();
         for (gone, label, path, text, days) in
             copy_rows(dir, now).into_iter().chain(chat_rows(dir, now))
@@ -2551,10 +2585,10 @@ mod tests {
 
     #[test]
     fn startup_pass_expires() {
-        let now = Utc::now();
+        let now = OffsetDateTime::now_utc();
         let dir = temp_dir("startup_pass");
         let cases = seed_pass_cases(&dir, now);
-        let expired = entry(&exchange("Expired", now - TimeDelta::days(701)));
+        let expired = entry(&exchange("Expired", now - Duration::days(701)));
         let fresh = entry(&exchange("Kept", now));
         let unknown = serde_json::json!({ "kind": "note", "text": "From a newer build" });
         let half = seed(
@@ -2778,9 +2812,9 @@ mod tests {
                 note: SearchNote::None,
                 hints: false,
             }),
-            ..exchange("Where next?", Utc::now())
+            ..exchange("Where next?", OffsetDateTime::now_utc())
         };
-        let empty = exchange("Where next?", Utc::now());
+        let empty = exchange("Where next?", OffsetDateTime::now_utc());
         // `provider` names the TypeScript alias, which lives in the companion store.
         let source = format!("{chat}\n{companion}");
         let (full_fields, empty_fields) = (
@@ -2825,6 +2859,28 @@ mod tests {
         }
         assert!(!counts.is_empty(), "no source file scanned for {needle}");
         counts
+    }
+
+    /// Files written before the date library changed keep loading: every
+    /// `savedAt` came from the clock as RFC 3339 in UTC, any fraction length,
+    /// years up to 9999. A leap second never came from the clock, but a
+    /// hand-edited file may hold one, so it must parse too.
+    #[test]
+    fn saved_at_reads_chrono_written_values() {
+        let template = entry(&exchange("Where next?", OffsetDateTime::now_utc()));
+        for written in [
+            "2026-11-05T19:19:09.123456789Z",
+            "2026-11-05T19:19:09Z",
+            "9999-12-31T23:59:59.999999999Z",
+            "2016-12-31T23:59:60Z",
+        ] {
+            let mut value = template.clone();
+            value["savedAt"] = serde_json::Value::from(written);
+            let ChatEntry::Exchange(read) = serde_json::from_value(value).unwrap();
+            let text = serde_json::to_string(&ChatEntry::Exchange(read.clone())).unwrap();
+            let ChatEntry::Exchange(again) = serde_json::from_str(&text).unwrap();
+            assert_eq!(again.saved_at, read.saved_at, "{written} -> {text}");
+        }
     }
 
     #[test]

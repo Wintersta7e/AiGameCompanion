@@ -10,6 +10,7 @@ formatInitial: a name without ASCII letters keeps its first letter run
 formatInitial: an ASCII name is uppercased run
 formatInitial: an astral first letter stays one code point run
 formatInitial: punctuation and digits run
+formatLastPlayed: a UTC time and its local-offset form read the same run
 formatLastPlayed: counts back in the largest whole unit run
 formatLastPlayed: never played and unreadable dates run
 formatPlayTime: hours, with minutes only when verbose run

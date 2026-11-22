@@ -95,6 +95,7 @@ chat_store::tests::generations run
 chat_store::tests::grounded_answers_go_only_to_gemini run
 chat_store::tests::read_only_writes_nothing run
 chat_store::tests::round_trip_and_stored_shape run
+chat_store::tests::saved_at_reads_chrono_written_values run
 chat_store::tests::saving_off_writes_no_chat run
 chat_store::tests::startup_pass_expires run
 chat_store::tests::stored_types_hold_no_image_bytes run

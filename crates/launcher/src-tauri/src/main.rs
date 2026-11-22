@@ -242,7 +242,7 @@ fn main() {
                 let mode = chat_store::store_mode(&handle.state::<AppState>());
                 handle
                     .state::<chat_store::ChatStore>()
-                    .startup_pass(mode, chrono::Utc::now());
+                    .startup_pass(mode, time::OffsetDateTime::now_utc());
             });
             Ok(())
         })

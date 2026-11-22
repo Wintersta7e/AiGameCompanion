@@ -15,11 +15,11 @@ mod prompt;
 pub(crate) mod search;
 
 use base64::Engine as _;
-use chrono::{DateTime, Utc};
 use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
 use tauri::ipc::Channel;
 use tauri::{AppHandle, Emitter, Manager};
+use time::OffsetDateTime;
 
 use crate::chat_store::{ChatStore, SaveState, SavedExchange};
 use crate::overlay::{GameInfo, Identity, identity_text};
@@ -822,7 +822,8 @@ async fn finish_on_pool(
     let mode = crate::commands::chat::mode_of(app);
     let worker = app.clone();
     tauri::async_runtime::spawn_blocking(move || {
-        finish_request(head, outcome, &answer, to.draft, Utc::now(), |entry| {
+        let now = OffsetDateTime::now_utc();
+        finish_request(head, outcome, &answer, to.draft, now, |entry| {
             worker
                 .try_state::<ChatStore>()
                 .map_or(SaveState::Failed, |store| {
@@ -843,7 +844,7 @@ fn finish_request(
     outcome: Result<Option<SearchReport>, String>,
     answer: &str,
     draft: ExchangeDraft,
-    now: DateTime<Utc>,
+    now: OffsetDateTime,
     store: impl FnOnce(Option<SavedExchange>) -> SaveState,
 ) -> SageEvent {
     match outcome {
@@ -1982,7 +1983,7 @@ mod tests {
 
     fn saved(question: &str) -> SavedExchange {
         SavedExchange {
-            saved_at: Utc::now(),
+            saved_at: OffsetDateTime::now_utc(),
             question: question.to_owned(),
             answer: "Go north.".to_owned(),
             provider: Provider::Gemini,
@@ -2576,7 +2577,7 @@ mod tests {
             conversation_id: 2,
             display_generation: 3,
         };
-        let now = Utc::now();
+        let now = OffsetDateTime::now_utc();
         let draft = || ExchangeDraft {
             question: "Where next?".to_owned(),
             provider: Provider::Claude,
