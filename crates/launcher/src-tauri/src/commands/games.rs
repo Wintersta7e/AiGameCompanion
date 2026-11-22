@@ -2,6 +2,8 @@ use tauri::Emitter;
 use tauri::Manager;
 use tauri::State;
 use tauri_plugin_opener::OpenerExt;
+use time::OffsetDateTime;
+use time::format_description::well_known::Rfc3339;
 
 use crate::discovery;
 use crate::discovery::steam::ScanOutcome;
@@ -202,11 +204,15 @@ fn do_launch(app: &tauri::AppHandle, game_id: &str) -> Result<(), String> {
         }
     }
 
-    // Update last_played timestamp
+    // Update last_played timestamp. The local offset cannot be read on a
+    // multi-threaded Unix process; UTC reads the same to the frontend.
     {
+        let now = OffsetDateTime::now_local().unwrap_or_else(|_| OffsetDateTime::now_utc());
         let mut launcher = state.launcher.lock();
-        if let Some(g) = launcher.games.iter_mut().find(|g| g.id == game_id) {
-            g.last_played = Some(chrono::Local::now().to_rfc3339());
+        if let Some(g) = launcher.games.iter_mut().find(|g| g.id == game_id)
+            && let Ok(text) = now.format(&Rfc3339)
+        {
+            g.last_played = Some(text);
         }
     }
     if let Err(e) = state.save() {

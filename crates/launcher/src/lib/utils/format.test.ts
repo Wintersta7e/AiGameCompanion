@@ -32,6 +32,28 @@ void test('formatLastPlayed: counts back in the largest whole unit', () => {
   assert.equal(formatLastPlayed(ago(65 * 24 * 60 * MINUTE)), '2 months ago');
 });
 
+/** The instant of the UTC string `iso`, written at `minutes` east of UTC. */
+const atOffset = (iso: string, minutes: number): string => {
+  const wall = new Date(Date.parse(iso) + minutes * MINUTE).toISOString().slice(0, -1);
+  const abs = Math.abs(minutes);
+  const hours = String(Math.floor(abs / 60)).padStart(2, '0');
+  const mins = String(abs % 60).padStart(2, '0');
+  return `${wall}${minutes < 0 ? '-' : '+'}${hours}:${mins}`;
+};
+
+void test('formatLastPlayed: a UTC time and its local-offset form read the same', () => {
+  assert.equal(
+    formatLastPlayed('2026-11-05T19:19:09+01:00'),
+    formatLastPlayed('2026-11-05T18:19:09Z'),
+  );
+  const utc = ago(3.5 * 60 * MINUTE);
+  for (const minutes of [60, -480, 330]) {
+    const written = atOffset(utc, minutes);
+    assert.equal(Date.parse(written), Date.parse(utc), written);
+    assert.equal(formatLastPlayed(written), '3 hours ago', written);
+  }
+});
+
 void test('formatHotkeyStatus: ready when nothing failed', () => {
   assert.equal(formatHotkeyStatus([]), 'Hotkeys ready');
 });
