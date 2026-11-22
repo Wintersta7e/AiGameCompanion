@@ -352,6 +352,7 @@ install_hint() {
 	case "$1" in
 	gitleaks | actionlint) printf 'install the %s %s release archive\n' "$1" "$2" ;;
 	typos) printf 'run cargo install --locked typos-cli@%s\n' "$2" ;;
+	osv-scanner) printf 'install the osv-scanner %s release binary\n' "$2" ;;
 	*) printf 'run cargo install --locked %s@%s\n' "$1" "$2" ;;
 	esac
 }
@@ -1889,6 +1890,17 @@ declare_table() {
 	row name=cargo-deny tags=supply-chain category=both target=any tools=rust,cargo-deny \
 		count='gathered [0-9]+ crates|^advisories (ok|FAILED)' zero='gathered ([0-9]+) crates' \
 		cmd='cargo deny --locked -L info check --show-stats'
+	row name='osv scan self-test' tags=supply-chain category=both target=any tools=node \
+		count='^osv scan self-test: ' zero='cases ([0-9]+)' cmd='node crates/launcher/scripts/osv-scan.selftest.ts'
+	# osv-scanner exits 1 on any finding, accepted or not; the checker owns the verdict.
+	row name='osv scan' tags=supply-chain category=both target=any tools=osv-scanner,node,cargo-deny,rust \
+		count='^osv scan: lockfiles [0-9]+' zero='^osv scan: lockfiles [0-9]+ packages ([0-9]+)' \
+		cmd='node crates/launcher/scripts/osv-scan.ts .'
+	row name='licence list self-test' tags=supply-chain category=both target=any tools=node \
+		count='^licence list self-test: ' zero='cases ([0-9]+)' cmd='node crates/launcher/scripts/licence-list.selftest.ts'
+	row name='licence list' tags=supply-chain category=both target=any tools=node,cargo-deny,rust \
+		count='^licence list: deny [0-9]+' zero='^licence list: deny [0-9]+ config [0-9]+ npm-only [0-9]+ npm packages ([0-9]+)' \
+		cmd='node crates/launcher/scripts/licence-list.ts .'
 	row name='binary audit self-test' tags=release-audit category=both target=any \
 		tools=strings,iconv,llvm-readobj,sha256sum count='^self-test: ' zero='planted ([0-9]+)' \
 		cmd='scripts/binary-audit.sh self-test'
@@ -1898,6 +1910,15 @@ declare_table() {
 	row name='binary audit' tags=release-audit category=ci-only target=any requires='release build' \
 		tools=strings,llvm-readobj,sha256sum count='^audit: ' zero='files ([0-9]+)' \
 		cmd='scripts/binary-audit.sh audit --public-runner release crates/launcher/dist'
+	# The release assets: the zip, a Rust and an npm SBOM, and SHA256SUMS.
+	row name='release assets' tags=release-audit category=ci-only target=any requires='release build' \
+		tools=rust,node,npm,cargo-cyclonedx,jq,zip count='^release assets: files' \
+		zero='^release assets: files ([0-9]+)' \
+		cmd="v=\$(scripts/release-assets.sh version) && scripts/release-assets.sh \"\${v}\" release/assets"
+	row name='release assets check' tags=release-audit category=ci-only target=any requires='release assets' \
+		tools=rust,jq,unzip,cmp,sha256sum,strings,llvm-readobj count='^release assets check: |^audit: ' \
+		zero='^release assets check: files ([0-9]+)' \
+		cmd="v=\$(scripts/release-assets.sh version) && scripts/release-assets.sh check \"\${v}\" release/assets"
 	row name='secret scan self-test' tags=secrets category=both target=any tools=gitleaks,git \
 		count='^secret scan self-test: ' zero='cases run ([0-9]+)' \
 		cmd='source scripts/ci-check.sh && secret_scan_self_test'
@@ -1906,6 +1927,12 @@ declare_table() {
 		cmd='source scripts/ci-check.sh && secret_scan_event .'
 	row name='pin freshness report' tags=freshness category=non-blocking target=any tools=node \
 		count='^checked [0-9]+ of [0-9]+ pins' zero='^checked ([0-9]+) of' cmd='node crates/launcher/scripts/freshness.ts'
+	row name='scorecard summary self-test' tags=scorecard,workflows category=both target=any tools=node \
+		count='^scorecard summary self-test: ' zero='cases ([0-9]+)' cmd='node crates/launcher/scripts/scorecard-summary.selftest.ts'
+	# Reads the results file the Scorecard action writes in its CI job.
+	row name='scorecard summary' tags=scorecard category=non-blocking target=any tools=node \
+		count='^scorecard summary: checks [0-9]+' zero='^scorecard summary: checks ([0-9]+)' \
+		cmd='node crates/launcher/scripts/scorecard-summary.ts scorecard.json'
 	# Deletes caches: CI only; the job runs only on main, never for a pull request.
 	row name='cache prune (superseded main caches)' tags=cache-prune category=non-blocking target=any tools=node,gh \
 		events=push,schedule,workflow_dispatch count='^cache prune: listed [0-9]+ caches' zero='^cache prune: listed ([0-9]+) caches' \
@@ -1933,6 +1960,8 @@ declare_table() {
 	ci_only_item name='npm ci' \
 		reason='CI installs the frontend packages; locally they are installed by hand and npm ci would delete them'
 	ci_only_item name='aggregate job' reason="reads the needed jobs' results; nothing to run locally"
+	ci_only_item name='dependency review' \
+		reason="runs on pull requests in the supply-chain job against GitHub's dependency graph; nothing to run locally"
 }
 
 main() {

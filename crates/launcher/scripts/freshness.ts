@@ -17,6 +17,9 @@ export interface ToolSource {
   // The tool's install-action manifest; null for a tool installed by curl
   // with a checksum.
   readonly manifest: string | null;
+  // For a repository that also releases other things: the prefix of this
+  // tool's tags. Its newest release is then the newest one with the prefix.
+  readonly tagPrefix?: string;
 }
 
 // Where each tool version of scripts/ci-tools.env is released. The pin guard
@@ -27,6 +30,13 @@ export const TOOL_SOURCES: readonly ToolSource[] = [
   { key: 'CARGO_LLVM_COV', repo: 'taiki-e/cargo-llvm-cov', manifest: 'cargo-llvm-cov' },
   { key: 'ZIZMOR', repo: 'zizmorcore/zizmor', manifest: 'zizmor' },
   { key: 'TYPOS', repo: 'crate-ci/typos', manifest: 'typos' },
+  { key: 'OSV_SCANNER', repo: 'google/osv-scanner', manifest: 'osv-scanner' },
+  {
+    key: 'CARGO_CYCLONEDX',
+    repo: 'CycloneDX/cyclonedx-rust-cargo',
+    manifest: 'cargo-cyclonedx',
+    tagPrefix: 'cargo-cyclonedx-',
+  },
   { key: 'GITLEAKS', repo: 'gitleaks/gitleaks', manifest: null },
   { key: 'ACTIONLINT', repo: 'rhysd/actionlint', manifest: null },
 ];
@@ -218,16 +228,35 @@ const manifestNote = async (source: ToolSource, newest: string): Promise<string>
     : 'not in the pinned install-action manifest';
 };
 
+// The list is newest first; drafts and prereleases are never a pin.
+const newestRelease = async (source: ToolSource): Promise<unknown> => {
+  const releases = `https://api.github.com/repos/${source.repo}/releases`;
+  const prefix = source.tagPrefix;
+  if (prefix === undefined) return fetchJson(`${releases}/latest`);
+  const list = await fetchJson(`${releases}?per_page=30`);
+  const found = (Array.isArray(list) ? (list as unknown[]) : [])
+    .filter(isRecord)
+    .find(
+      (item) =>
+        typeof item['tag_name'] === 'string' &&
+        item['tag_name'].startsWith(prefix) &&
+        item['draft'] !== true &&
+        item['prerelease'] !== true,
+    );
+  if (found === undefined) throw new Unanswered(`${source.repo} has no release tagged ${prefix}*`);
+  return found;
+};
+
 const toolRow = async (source: ToolSource, today: string): Promise<Row> => {
   let pinned = '-';
   try {
     pinned = toolFile().get(source.key) ?? '';
     if (pinned === '') throw new Unanswered(`scripts/ci-tools.env has no ${source.key}`);
-    const release = await fetchJson(`https://api.github.com/repos/${source.repo}/releases/latest`);
+    const release = await newestRelease(source);
     const tag =
       isRecord(release) && typeof release['tag_name'] === 'string' ? release['tag_name'] : '';
     const published = isRecord(release) ? release['published_at'] : undefined;
-    const newest = tag.replace(/^v/u, '');
+    const newest = tag.slice(source.tagPrefix?.length ?? 0).replace(/^v/u, '');
     const date = typeof published === 'string' ? published.slice(0, 10) : '';
     if (newest === '' || !DATE.test(date))
       throw new Unanswered(`${source.repo} has no latest release with a date`);

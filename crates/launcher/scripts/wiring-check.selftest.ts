@@ -42,6 +42,19 @@ const job = (id: string, name: string, runsOn: string, tag: string): string =>
     '',
   ].join('\n');
 
+// The pull-request-only dependency review, after the supply-chain job's call.
+const REVIEW_IF = "        if: github.event_name == 'pull_request'\n";
+const REVIEW_CONFIG = '          config-file: ./.github/dependency-review-config.yml\n';
+const REVIEW_STEP = [
+  '      - name: Review the dependency changes\n',
+  REVIEW_IF,
+  '        uses: actions/dependency-review-action@a1d282b36b6f3519aa1f3fc636f609c47dddb294 # v5.0.0\n',
+  '        with:\n',
+  REVIEW_CONFIG,
+].join('');
+const SUPPLY_CALL =
+  '      - name: Run the supply-chain rows\n        run: ./scripts/ci-check.sh --job supply-chain\n';
+
 const CLEAN_CI = [
   'name: CI',
   '',
@@ -70,7 +83,7 @@ const CLEAN_CI = [
   job('rust-host', 'Host rows', 'ubuntu-24.04', 'rust-host'),
   job('frontend', 'Web rows', 'ubuntu-24.04', 'frontend'),
   job('release-audit', 'Release rows', 'ubuntu-24.04', 'release-audit'),
-  job('supply-chain', 'Dependency rows', 'ubuntu-24.04', 'supply-chain'),
+  `${job('supply-chain', 'Dependency rows', 'ubuntu-24.04', 'supply-chain')}${REVIEW_STEP}`,
   job('workflows', 'Workflow rows', 'ubuntu-24.04', 'workflows'),
   job('secrets', 'Scan rows', 'ubuntu-24.04', 'secrets'),
   '  aggregate:',
@@ -364,6 +377,14 @@ const pruneJob = (
   );
 const PRUNE = pruneJob();
 const withWrite = (text: string): string => swap(text, READ_PERMS, PRUNE_PERMS);
+const SCORECARD_PERMS = `${READ_PERMS}      actions: read\n`;
+const scorecardJob = (head = ifLine(WEEKLY), perms = SCORECARD_PERMS): string =>
+  swap(extraJob('scorecard', 'scorecard', head), READ_PERMS, perms);
+const withActionsRead = swap(
+  job('secrets', 'Scan rows', 'ubuntu-24.04', 'secrets'),
+  READ_PERMS,
+  SCORECARD_PERMS,
+);
 
 const fullCi = (
   linux = CANARY_LINUX,
@@ -371,11 +392,12 @@ const fullCi = (
   freshness = FRESHNESS,
   coverage = COVERAGE,
   prune = PRUNE,
+  scorecard = scorecardJob(),
 ): string =>
   swap(
     CLEAN_CI,
     '  aggregate:\n',
-    `${linux}${windows}${freshness}${coverage}${prune}  aggregate:\n`,
+    `${linux}${windows}${freshness}${coverage}${prune}${scorecard}  aggregate:\n`,
   );
 
 const FULL_LIST = swap(
@@ -386,7 +408,9 @@ const FULL_LIST = swap(
     row('coverage report', 'coverage', 'non-blocking', 'cargo llvm-cov --workspace --locked'),
     row('freshness report', 'freshness', 'non-blocking', 'node scripts/freshness.ts'),
     row('cache prune', 'cache-prune', 'non-blocking', 'node scripts/cache-prune.ts --delete'),
-    'rows\t11\n',
+    row('scorecard self-test', 'scorecard,workflows', 'both', 'node scripts/s.selftest.ts'),
+    row('scorecard summary', 'scorecard', 'non-blocking', 'node scripts/s.ts scorecard.json'),
+    'rows\t13\n',
   ].join('\n'),
 );
 const NEEDS =
@@ -415,7 +439,58 @@ const OTHER_WORKFLOW = [
 ].join('\n');
 
 const nonBlockingCases: readonly Case[] = [
-  full('the five non-blocking jobs pass', fullCi(), [], { counts: 'non-blocking jobs 5' }),
+  full('the six non-blocking jobs pass', fullCi(), [], { counts: 'non-blocking jobs 6' }),
+  full(
+    'the aggregate needing scorecard',
+    swap(fullCi(), NEEDS, swap(NEEDS, 'secrets]', 'secrets, scorecard]')),
+    ['aggregate'],
+  ),
+  full(
+    'scorecard without an if',
+    fullCi(undefined, undefined, undefined, undefined, undefined, scorecardJob('')),
+    ['job if'],
+  ),
+  full(
+    'scorecard whose if is another expression',
+    fullCi(
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      scorecardJob("    if: github.event_name == 'schedule'\n"),
+    ),
+    ['job if'],
+  ),
+  full(
+    'scorecard with id-token: write',
+    fullCi(
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      scorecardJob(undefined, `${SCORECARD_PERMS}      id-token: write\n`),
+    ),
+    ['permissions'],
+  ),
+  full(
+    'scorecard without actions: read',
+    fullCi(
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      scorecardJob(undefined, READ_PERMS),
+    ),
+    ['permissions'],
+  ),
+  full(
+    'actions: read on a job that is not scorecard',
+    swap(fullCi(), job('secrets', 'Scan rows', 'ubuntu-24.04', 'secrets'), withActionsRead),
+    ['permissions'],
+  ),
   full(
     'the aggregate needing canary-linux',
     swap(fullCi(), NEEDS, swap(NEEDS, 'secrets]', 'secrets, canary-linux]')),
@@ -472,7 +547,7 @@ const nonBlockingCases: readonly Case[] = [
         `    name: Extra\n${BETA_ENV}`,
       ),
     },
-    list: swap(FULL_LIST, 'rows\t11\n', `${row('extra', 'extra', 'both', 'true')}\nrows\t12\n`),
+    list: swap(FULL_LIST, 'rows\t13\n', `${row('extra', 'extra', 'both', 'true')}\nrows\t14\n`),
   }),
   full(
     'the toolchain override for every job of ci.yml',
@@ -703,9 +778,9 @@ const constantCases = (): (string | null)[] => [
     ? null
     : 'the required job names are not the two the branch rules require',
   NON_BLOCKING_JOBS.join('|') ===
-  ['canary-linux', 'canary-windows', 'freshness', 'coverage', 'cache-prune'].join('|')
+  ['canary-linux', 'canary-windows', 'freshness', 'coverage', 'cache-prune', 'scorecard'].join('|')
     ? null
-    : 'the non-blocking job list is not the four scheduled or measure-only jobs and the cache prune',
+    : 'the non-blocking job list is not the four scheduled or measure-only jobs, the cache prune and the Scorecard report',
 ];
 
 const SECRETS_JOB = job('secrets', 'Scan rows', 'ubuntu-24.04', 'secrets');
@@ -715,6 +790,40 @@ const secretsJob = (from: string, to: string): Readonly<Record<string, string>> 
 const PERMS = '    permissions:\n      contents: read\n';
 const MATCHER = '      - name: Register problem matchers\n';
 const CALL_SECRETS = '        run: ./scripts/ci-check.sh --job secrets\n';
+
+const withReview = (from: string, to: string): Readonly<Record<string, string>> =>
+  ci(swap(CLEAN_CI, REVIEW_STEP, swap(REVIEW_STEP, from, to)));
+const WITHOUT_REVIEW = swap(CLEAN_CI, REVIEW_STEP, '');
+const review = ['dependency review'];
+
+const reviewCases: readonly Case[] = [
+  {
+    name: 'the dependency review after the supply-chain call',
+    files: ci(CLEAN_CI),
+    expect: [],
+  },
+  { name: 'no dependency review step', files: ci(WITHOUT_REVIEW), expect: review },
+  {
+    name: 'the dependency review with another if',
+    files: withReview(REVIEW_IF, "        if: github.event_name != 'push'\n"),
+    expect: review,
+  },
+  {
+    name: 'the dependency review without its config file',
+    files: withReview(REVIEW_CONFIG, '          fail-on-severity: low\n'),
+    expect: review,
+  },
+  {
+    name: 'the dependency review in another job',
+    files: ci(swap(WITHOUT_REVIEW, SECRETS_JOB, `${SECRETS_JOB}${REVIEW_STEP}`)),
+    expect: review,
+  },
+  {
+    name: 'the dependency review before the runner call',
+    files: ci(swap(CLEAN_CI, `${SUPPLY_CALL}${REVIEW_STEP}`, `${REVIEW_STEP}${SUPPLY_CALL}`)),
+    expect: review,
+  },
+];
 
 const lockedCases: readonly Case[] = [
   {
@@ -889,13 +998,7 @@ const bannedCases: readonly Case[] = [
     { 'crates/launcher/src/a.rs': j('// cargo-mach', 'ete\n') },
     hit,
   ),
-  banned(
-    'a review action in a workflow',
-    { '.github/workflows/extra.yml': j('uses: actions/dependency-review-', 'action@v4\n') },
-    hit,
-  ),
   banned('an advisory tool in a script', { 'scripts/extra.sh': j('cargo ', 'audit\n') }, hit),
-  banned('a scanner in a script', { 'scripts/extra.sh': j('osv-', 'scanner scan\n') }, hit),
   banned(
     'a lockfile linter in a workflow',
     { '.github/workflows/extra.yml': j('run: lockfile-', 'lint\n') },
@@ -936,6 +1039,7 @@ const cases = [
   ...requiredCases,
   ...lockedCases,
   ...permissionCases,
+  ...reviewCases,
   ...bannedCases,
 ];
 const results = [...(await Promise.all(cases.map(runCase))), ...constantCases()];

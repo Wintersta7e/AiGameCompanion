@@ -144,7 +144,9 @@ jobs:
     # flags the exe has today. Any SHA256 it prints is this run's build. The
     # release checklist runs the same script on the zip that is published. A C
     # dependency once put 83 home-directory paths into a release binary;
-    # source-level scanners cannot see that.
+    # source-level scanners cannot see that. It then makes the release assets
+    # from that build with scripts/release-assets.sh (the zip, an SBOM of the
+    # Rust and of the npm dependencies, SHA256SUMS) and checks them.
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     permissions:
@@ -187,6 +189,11 @@ jobs:
         with:
           tool: cargo-xwin@${{ steps.pins.outputs.CARGO_XWIN }}
           fallback: none
+      - name: Install cargo-cyclonedx
+        uses: taiki-e/install-action@1e29709c0ec63babbe8f266397a465f29a825f91 # v2.87.31
+        with:
+          tool: cargo-cyclonedx@${{ steps.pins.outputs.CARGO_CYCLONEDX }}
+          fallback: none
       - name: Install LLVM
         run: sudo apt-get update && sudo apt-get install -y clang llvm lld
       - name: Install the frontend packages
@@ -202,7 +209,7 @@ jobs:
           key: xwin-sdk-${{ steps.pins.outputs.image }}-${{ steps.pins.outputs.CARGO_XWIN }}-${{ steps.pins.outputs.XWIN_SDK_VERSION }}-${{ steps.pins.outputs.XWIN_CRT_VERSION }}
 
   supply-chain:
-    name: Rust dependencies (cargo-deny)
+    name: Dependencies (cargo-deny, osv-scanner)
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     permissions:
@@ -222,13 +229,30 @@ jobs:
         run: grep -E '^[A-Z][A-Z0-9_]*=' scripts/ci-tools.env >> "$GITHUB_OUTPUT"
       - name: Install the Rust toolchain
         run: rustup toolchain install --no-self-update
+      - name: Set up Node
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version-file: .nvmrc
       - name: Install cargo-deny
         uses: taiki-e/install-action@1e29709c0ec63babbe8f266397a465f29a825f91 # v2.87.31
         with:
           tool: cargo-deny@${{ steps.pins.outputs.CARGO_DENY }}
           fallback: none
+      - name: Install osv-scanner
+        uses: taiki-e/install-action@1e29709c0ec63babbe8f266397a465f29a825f91 # v2.87.31
+        with:
+          tool: osv-scanner@${{ steps.pins.outputs.OSV_SCANNER }}
+          fallback: none
       - name: Run the supply-chain rows of ci-check.sh
         run: ./scripts/ci-check.sh --job supply-chain
+      # Reviews the pull request's dependency changes (advisories on actions
+      # and packages, npm licences) against GitHub's dependency graph. A step,
+      # not a job: on other events it is skipped and the job still passes.
+      - name: Review the dependency changes
+        if: github.event_name == 'pull_request'
+        uses: actions/dependency-review-action@a1d282b36b6f3519aa1f3fc636f609c47dddb294 # v5.0.0
+        with:
+          config-file: ./.github/dependency-review-config.yml
 
   workflows:
     name: Workflows and CI wiring (actionlint, zizmor, pins, self-checks)
@@ -506,6 +530,41 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: ./scripts/ci-check.sh --job freshness
+
+  # Reports the OpenSSF Scorecard checks of the repository, weekly or by hand.
+  # The aggregate job does not need it: it reports and never gates, since
+  # some checks cannot reach full marks under this project's release and
+  # review rules. The result is not published.
+  scorecard:
+    name: OpenSSF Scorecard report
+    if: github.event_name == 'workflow_dispatch' || github.event.schedule == '23 3 * * 0'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      actions: read # Scorecard reads the workflow runs and their settings
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Register problem matchers
+        run: echo "::add-matcher::.github/problem-matchers.json"
+      - name: Set up Node
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version-file: .nvmrc
+      - name: Run the Scorecard checks
+        uses: ossf/scorecard-action@fa7117db83c52d787ae5a89f350999701505d78e # v2.5.0
+        with:
+          results_file: scorecard.json
+          results_format: json
+          publish_results: false
+      - name: Report the Scorecard result
+        run: ./scripts/ci-check.sh --job scorecard
 
   # Deletes each main-branch cache that a newer cache of the same family
   # supersedes; otherwise every superseded set stays until GitHub's idle

@@ -1,0 +1,30 @@
+# Settings for the dependency review step of the supply-chain job in ci.yml,
+# which runs on pull requests against GitHub's dependency graph.
+fail-on-severity: low
+fail-on-scopes:
+  - runtime
+  - development
+  - unknown
+license-check: true
+vulnerability-check: true
+comment-summary-in-pr: never
+# deny.toml owns the first nine (the review cannot read it); the last three
+# are used only by npm packages. licence-list.ts checks both halves.
+allow-licenses:
+  - MIT
+  - Apache-2.0
+  - Apache-2.0 WITH LLVM-exception
+  - BSD-3-Clause
+  - ISC
+  - MPL-2.0
+  - Unicode-3.0
+  - Zlib
+  - CC0-1.0
+  - BSD-2-Clause
+  - BlueOak-1.0.0
+  - 0BSD
+# Lock-only crates: in Cargo.lock through an optional dependency, compiled for
+# neither deny.toml target, so their licence is not the product's. cargo-deny
+# still owns it if one is ever built; licence-list.ts fails then.
+allow-dependencies-licenses:
+  - pkg:cargo/webpki-root-certs
