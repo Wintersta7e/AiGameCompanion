@@ -23,3 +23,8 @@ allow-licenses:
   - BSD-2-Clause
   - BlueOak-1.0.0
   - 0BSD
+# Lock-only crates: in Cargo.lock through an optional dependency, compiled for
+# neither deny.toml target, so their licence is not the product's. cargo-deny
+# still owns it if one is ever built; licence-list.ts fails then.
+allow-dependencies-licenses:
+  - pkg:cargo/webpki-root-certs

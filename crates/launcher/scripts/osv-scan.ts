@@ -173,7 +173,7 @@ export const check = (
 };
 
 // cargo-deny reads the deny.toml [graph] targets itself.
-const listCrates = (root: string): ReadonlySet<string> | string => {
+export const listCrates = (root: string): ReadonlySet<string> | string => {
   const run = spawnSync(
     'cargo',
     ['deny', '--locked', 'list', '--layout', 'crate', '--format', 'json'],

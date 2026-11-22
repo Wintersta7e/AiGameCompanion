@@ -1,14 +1,17 @@
-// Self-test of the licence list check: literal deny.toml, review config and
-// npm lockfile texts, each with the verdict it must get.
+// Self-test of the licence list check: literal deny.toml, review config,
+// npm lockfile and Cargo.lock texts and a planted cargo-deny crate list, each
+// with the verdict it must get.
 //
 //   node crates/launcher/scripts/licence-list.selftest.ts
 import { check } from './licence-list.ts';
+import { builtCrates } from './osv-scan.ts';
 
 interface Case {
   readonly name: string;
   readonly deny?: string;
   readonly config?: string;
   readonly lock?: string;
+  readonly built?: ReadonlySet<string> | string;
   readonly expect: number;
   // A line the checker must print.
   readonly says: string;
@@ -31,15 +34,19 @@ const DENY = [
   '',
 ].join('\n');
 
-const config = (licences: readonly string[]): string =>
+const config = (licences: readonly string[], exempted: readonly string[] = []): string =>
   [
     'fail-on-severity: low',
     'license-check: true',
     'allow-licenses:',
     ...licences.map((licence) => `  - ${licence}`),
     'comment-summary-in-pr: never',
+    ...(exempted.length === 0
+      ? []
+      : ['allow-dependencies-licenses:', ...exempted.map((purl) => `  - ${purl}`)]),
     '',
   ].join('\n');
+const LICENCES = ['MIT', 'Apache-2.0 WITH LLVM-exception', 'BSD-2-Clause'];
 
 const CONFIG = config(['MIT', 'Apache-2.0 WITH LLVM-exception', 'BSD-2-Clause']);
 
@@ -56,6 +63,13 @@ const lock = (licences: readonly string[]): string =>
   });
 
 const LOCK = lock(['MIT', 'BSD-2-Clause']);
+
+const CARGO_LOCK = ['built-crate', 'unbuilt-crate']
+  .map((name) => `[[package]]\nname = "${name}"\nversion = "1.0.0"\n`)
+  .join('\n');
+const BUILT = builtCrates(
+  JSON.stringify({ 'built-crate 1.0.0 registry+planted': { licenses: ['MIT'] } }),
+);
 
 const cases: readonly Case[] = [
   {
@@ -101,11 +115,61 @@ const cases: readonly Case[] = [
     says: 'FAIL deny.toml has no [licenses] allow array',
   },
   { name: 'a malformed lockfile', lock: '{"packages": ', expect: 1, says: 'is not JSON' },
+  {
+    name: 'an exempted lock-only crate',
+    config: config(LICENCES, ['pkg:cargo/unbuilt-crate']),
+    expect: 0,
+    says: 'npm packages 2 exempt 1',
+  },
+  {
+    name: 'an exempted crate that is built',
+    config: config(LICENCES, ['pkg:cargo/built-crate']),
+    expect: 1,
+    says: 'FAIL exempted crate built-crate is built',
+  },
+  {
+    name: 'an exempted crate not in Cargo.lock',
+    config: config(LICENCES, ['pkg:cargo/gone-crate']),
+    expect: 1,
+    says: 'FAIL exempted crate gone-crate is not in Cargo.lock',
+  },
+  {
+    name: 'an exempted npm package',
+    config: config(LICENCES, ['pkg:npm/p0']),
+    expect: 1,
+    says: 'FAIL exempted package pkg:npm/p0 is not a versionless cargo purl',
+  },
+  {
+    name: 'an exempted crate with a version',
+    config: config(LICENCES, ['pkg:cargo/unbuilt-crate@1.0.0']),
+    expect: 1,
+    says: 'is not a versionless cargo purl',
+  },
+  {
+    name: 'an exemption with an empty crate list',
+    config: config(LICENCES, ['pkg:cargo/unbuilt-crate']),
+    built: builtCrates('{}'),
+    expect: 1,
+    says: 'FAIL the cargo-deny crate list is empty',
+  },
+  {
+    name: 'an exemption with an unreadable crate list',
+    config: config(LICENCES, ['pkg:cargo/unbuilt-crate']),
+    built: builtCrates('error: no Cargo.lock'),
+    expect: 1,
+    says: 'FAIL the cargo-deny crate list is not JSON',
+  },
 ];
 
 const failures: string[] = [];
 for (const c of cases) {
-  const outcome = check(c.deny ?? DENY, c.config ?? CONFIG, c.lock ?? LOCK);
+  const outcome = check(
+    c.deny ?? DENY,
+    c.config ?? CONFIG,
+    c.lock ?? LOCK,
+    CARGO_LOCK,
+    c.built ?? BUILT,
+  );
   const problems: string[] = [];
   if (outcome.code !== c.expect)
     problems.push(`exit ${String(outcome.code)}, expected ${String(c.expect)}`);

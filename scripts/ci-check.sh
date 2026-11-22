@@ -1898,7 +1898,7 @@ declare_table() {
 		cmd='node crates/launcher/scripts/osv-scan.ts .'
 	row name='licence list self-test' tags=supply-chain category=both target=any tools=node \
 		count='^licence list self-test: ' zero='cases ([0-9]+)' cmd='node crates/launcher/scripts/licence-list.selftest.ts'
-	row name='licence list' tags=supply-chain category=both target=any tools=node \
+	row name='licence list' tags=supply-chain category=both target=any tools=node,cargo-deny,rust \
 		count='^licence list: deny [0-9]+' zero='^licence list: deny [0-9]+ config [0-9]+ npm-only [0-9]+ npm packages ([0-9]+)' \
 		cmd='node crates/launcher/scripts/licence-list.ts .'
 	row name='binary audit self-test' tags=release-audit category=both target=any \
