@@ -1893,7 +1893,7 @@ declare_table() {
 	row name='osv scan self-test' tags=supply-chain category=both target=any tools=node \
 		count='^osv scan self-test: ' zero='cases ([0-9]+)' cmd='node crates/launcher/scripts/osv-scan.selftest.ts'
 	# osv-scanner exits 1 on any finding, accepted or not; the checker owns the verdict.
-	row name='osv scan' tags=supply-chain category=both target=any tools=osv-scanner,node \
+	row name='osv scan' tags=supply-chain category=both target=any tools=osv-scanner,node,cargo-deny,rust \
 		count='^osv scan: lockfiles [0-9]+' zero='^osv scan: lockfiles [0-9]+ packages ([0-9]+)' \
 		cmd='node crates/launcher/scripts/osv-scan.ts .'
 	row name='licence list self-test' tags=supply-chain category=both target=any tools=node \

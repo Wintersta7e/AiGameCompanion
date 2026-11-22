@@ -1,11 +1,12 @@
 // Self-test of the osv-scanner checker: literal osv reports against ignore
-// files planted in a throwaway directory, each with the verdict it must get.
+// files planted in a throwaway directory and a planted cargo-deny crate list,
+// each with the verdict it must get.
 //
 //   node crates/launcher/scripts/osv-scan.selftest.ts
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { check } from './osv-scan.ts';
+import { builtCrates, check } from './osv-scan.ts';
 
 interface Vuln {
   readonly id: string;
@@ -21,8 +22,10 @@ interface Case {
   readonly name: string;
   readonly report: string;
   readonly expect: number;
-  // A line the checker must print.
-  readonly says: string;
+  // The lines the checker must print.
+  readonly says: string | readonly string[];
+  // The crate list; by default every planted crate but unbuilt-crate.
+  readonly built?: ReadonlySet<string> | string;
 }
 
 const RUST_ID = 'RUSTSEC-2024-0429';
@@ -52,6 +55,18 @@ writeFileSync(
   path.join(root, 'crates', 'launcher', 'npm-audit-ignore.json'),
   JSON.stringify([{ id: NPM_ID, package: 'merge-package', reason: 'planted' }]),
 );
+
+const BUILT = builtCrates(
+  JSON.stringify(
+    Object.fromEntries(
+      ['clean-crate', 'unsound-crate', 'merge-package', 'certs', 'advised-crate'].map((name) => [
+        `${name} 1.0.0 registry+planted`,
+        { licenses: ['MIT'] },
+      ]),
+    ),
+  ),
+);
+const UNBUILT_ID = 'RUSTSEC-2026-0002';
 
 const CARGO = path.join(root, 'Cargo.lock');
 const NPM = path.join(root, 'crates', 'launcher', 'package-lock.json');
@@ -137,16 +152,46 @@ const cases: readonly Case[] = [
     says: 'scanned 1 lockfiles, not 2',
   },
   { name: 'malformed JSON', report: '{"results": [', expect: 1, says: 'not JSON' },
+  {
+    name: 'lock-only crate',
+    report: report([{ name: 'unbuilt-crate', vulns: [{ id: UNBUILT_ID }] }], []),
+    expect: 0,
+    says: [
+      `osv scan: lock-only (not built): unbuilt-crate 1.0.0 ${UNBUILT_ID}`,
+      'findings 1 accepted 0 failing 0 lock-only 1',
+    ],
+  },
+  {
+    name: 'the same finding on a built crate',
+    report: report([{ name: 'advised-crate', vulns: [{ id: UNBUILT_ID }] }], []),
+    expect: 1,
+    says: `FAIL Cargo.lock advised-crate 1.0.0 ${UNBUILT_ID}`,
+  },
+  {
+    name: 'empty crate list',
+    report: report([], []),
+    expect: 1,
+    says: 'FAIL the cargo-deny crate list is empty',
+    built: builtCrates('{}'),
+  },
+  {
+    name: 'unreadable crate list',
+    report: report([], []),
+    expect: 1,
+    says: 'FAIL the cargo-deny crate list is not JSON',
+    built: builtCrates('error: no Cargo.lock'),
+  },
 ];
 
 const failures: string[] = [];
 try {
   for (const c of cases) {
-    const outcome = check(c.report, root);
+    const outcome = check(c.report, root, c.built ?? BUILT);
     const problems: string[] = [];
     if (outcome.code !== c.expect)
       problems.push(`exit ${String(outcome.code)}, expected ${String(c.expect)}`);
-    if (!outcome.out.includes(c.says)) problems.push(`no output holding "${c.says}"`);
+    for (const line of typeof c.says === 'string' ? [c.says] : c.says)
+      if (!outcome.out.includes(line)) problems.push(`no output holding "${line}"`);
     if (problems.length > 0) failures.push(`${c.name}: ${problems.join('; ')}`);
   }
 } finally {
