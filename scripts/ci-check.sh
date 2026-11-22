@@ -1845,10 +1845,14 @@ declare_table() {
 		count=none cmd="RUSTDOCFLAGS='-D warnings' cargo doc --workspace --no-deps --all-features --locked"
 	# Coverage is measured only by its own CI job, on the Windows runner:
 	# cargo-xwin has no llvm-cov subcommand. TOTAL counts regions, so it is 0
-	# exactly when no file was measured.
+	# exactly when no file was measured. --no-rustc-wrapper: with cargo's new
+	# build-dir layout the launcher's rustc command line is long enough that
+	# Windows cargo passes it as an @argfile, which the pinned cargo-llvm-cov's
+	# wrapper cannot read, so the test binary was built without instrumentation
+	# and the report found no data.
 	row name='coverage report (Windows tests)' tags=coverage category=non-blocking target=windows \
 		tools=rust,cargo-llvm-cov requires='vite build' count='^TOTAL |^[^ ]+\.rs +[0-9]+ ' zero='^TOTAL +([0-9]+)' \
-		cmd='cargo llvm-cov --workspace --all-features --locked'
+		cmd='cargo llvm-cov --workspace --all-features --locked --no-rustc-wrapper'
 	row name='clippy (Linux host)' tags=rust-host category=both target=linux tools=rust count=none \
 		cmd='cargo clippy --workspace --all-targets --locked -- -D warnings'
 	row name='tests (Linux host)' tags=rust-host category=both target=linux tools=rust,node requires='vite build' \
