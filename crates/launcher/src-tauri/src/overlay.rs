@@ -841,7 +841,7 @@ mod imp {
                     pid = app;
                     exe = exe_path(app).unwrap_or_default();
                 }
-                None => exe = String::new(),
+                None => exe.clear(),
             }
         }
         let mut buf = [0u16; 512];
