@@ -306,9 +306,14 @@ mod tests {
             [Path::new("src/lib/settings.ts")],
             "LauncherSettings is declared once, in src/lib/settings.ts"
         );
-        assert!(!scan.hits[2].is_empty(), "no get_settings call found");
+        // A component test names the command to answer it, not to call it.
+        let calls: Vec<_> = scan.hits[2]
+            .iter()
+            .filter(|(file, _)| !file.to_string_lossy().ends_with(".test.ts"))
+            .collect();
+        assert!(!calls.is_empty(), "no get_settings call found");
         assert_eq!(
-            scan.hits[2].len(),
+            calls.len(),
             scan.hits[3].len(),
             "every get_settings call is typed with LauncherSettings"
         );

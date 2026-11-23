@@ -71,6 +71,7 @@ ai::search::tests::grounded_answers_resend_only_to_gemini run
 ai::search::tests::search_gate_table run
 ai::search::tests::search_report_mirrors_rust run
 ai::tests::a_recap_of_one_long_exchange_is_admitted run
+ai::tests::an_answer_asked_with_saving_off_is_not_reported_saved run
 ai::tests::answer_errors_stay_out_of_answer_text run
 ai::tests::ask_sage_signature_matches_the_page run
 ai::tests::availability_reads_only_the_cache run
@@ -153,6 +154,8 @@ models::tests::save_chats_defaults_on run
 npm_lock_policy::committed_lock_meets_the_policy run
 npm_lock_policy::planted_locks_are_judged_by_each_rule run
 overlay::tests::a_closed_target_is_announced_to_the_page run
+overlay::tests::a_failed_position_save_is_reported run
+overlay::tests::a_recorded_placement_keeps_the_stored_unknown_keys run
 overlay::tests::classify_cases run
 overlay::tests::every_overlay_hide_goes_through_overlay_hide run
 overlay::tests::frame_host_resolves_to_the_hosted_app run
@@ -169,6 +172,7 @@ overlay::tests::product_name_kept_only_when_informative run
 overlay::tests::product_name_read_from_the_file run
 overlay::tests::record_placement_refuses_read_only run
 overlay::tests::stored_target_is_read_only_through_overlay run
+placement::tests::a_stored_placement_keeps_unknown_keys run
 placement::tests::placement_table run
 placement::tests::reference_cases run
 placement::tests::user_moved_tolerance run
@@ -177,10 +181,12 @@ process_watch::imp::tests::a_launch_that_never_started_can_be_launched_again run
 process_watch::imp::tests::a_steam_client_gone_ends_the_session_when_last_seen run
 process_watch::imp::tests::game_finished_follows_the_play_time run
 process_watch::imp::tests::quit_books_a_running_session_once run
+region::tests::a_stored_region_keeps_unknown_keys run
 region::tests::invalid_regions_do_not_parse run
 region::tests::region_to_pixels_clamps_and_rejects run
 region::tests::stored_region_never_widens run
 region::tests::translate_region_has_one_reader_file run
+shots::tests::an_unusable_stored_region_gives_the_whole_window run
 shots::tests::capture_target_needs_a_linked_identified_window run
 shots::tests::claim_table run
 shots::tests::client_box_is_client_minus_frame_origin run
@@ -190,6 +196,7 @@ shots::tests::fit_within_keeps_the_aspect_of_odd_sizes run
 shots::tests::fit_within_leaves_small_frames_alone run
 shots::tests::fit_within_scales_large_frames run
 shots::tests::hotkey_events_name_their_slot run
+shots::tests::hotkey_take_ended_by_a_hide_is_not_shown run
 shots::tests::missing_target_tells_a_closed_window_from_no_link run
 shots::tests::newest_take_into_a_slot_wins run
 shots::tests::no_dispatch_from_hotkey_or_editing run

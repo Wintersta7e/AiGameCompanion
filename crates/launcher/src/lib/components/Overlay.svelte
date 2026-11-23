@@ -18,6 +18,7 @@
   import type { SearchReport } from '../utils/search';
   import { ANOTHER_HINT_TURN, FULL_ANSWER_TURN, showHintChips } from '../utils/hints';
   import { sendsQuestion } from '../utils/keys';
+  import { ownKeyOf } from '../utils/overlay-input';
   import { unsavedPick } from '../utils/pick';
   import { PROVIDERS, modelName, type ModelNames, type Provider } from '../stores/companion.svelte';
   import type { LauncherSettings } from '../settings';
@@ -134,6 +135,16 @@
   let hintsFirst = $state(true);
   let prompt = $state('');
   let asking = $state(false);
+  // Saving turned on or off while an answer streams: the chat reloads once the
+  // answer ends. Reloading now would replace the chat and drop the answer, and
+  // one asked with saving off is never written, so it would be lost.
+  let reloadWhenAnswered = $state(false);
+  $effect(() => {
+    if (reloadWhenAnswered && !asking) {
+      reloadWhenAnswered = false;
+      void reloadChat();
+    }
+  });
   let messages = $state<Msg[]>([]);
   // The saved chat on screen: Rust's number for it (0 = none), and whether it
   // has arrived -- nothing is sent before it has.
@@ -609,7 +620,8 @@
     ];
     const idx = messages.length - 1;
     streamIndex = idx;
-    prompt = '';
+    // A chip sends its own text: a draft the user is typing stays.
+    if (text === undefined) prompt = '';
     asking = true;
 
     // The chip says whether the screenshot went: `ask_sage` returns whether
@@ -742,14 +754,19 @@
     translateShot = afterSend(translateShot);
     translateBusy = true;
     translateError = '';
+    // The translate hotkey can show a newer screenshot while this one is
+    // translated; the result then belongs to a shot no longer on screen.
+    const stillShown = () => translateShot.kind === 'sent' && translateShot.info.id === shotId;
     try {
       const res = await invoke<{ text: string; cut_short: string | null }>('translate_screen', {
         shotId,
       });
+      if (!stillShown()) return;
       translateText = res.text;
       // A translation cut short keeps its text with the reason under it.
       translateError = res.cut_short ?? '';
     } catch (err) {
+      if (!stillShown()) return;
       translateError = String(err);
       translateText = '';
     } finally {
@@ -759,9 +776,10 @@
 
   // The hotkey stages the question with its screenshot: nothing is sent, and
   // no answer in progress is cancelled, until the user presses Enter or clicks.
+  // A draft the user is typing is kept; the preset fills only an empty field.
   async function runQuickAsk() {
     tab = 'chat';
-    prompt = QUICK_ASK;
+    if (prompt.trim() === '') prompt = QUICK_ASK;
     await tick();
     inputEl?.focus();
   }
@@ -802,7 +820,7 @@
       // new install, nothing picked yet) or an unknown one (a hand-edited
       // state file) is no saved provider, so the first available one is used.
       const saved = settings.active_provider;
-      savedProvider = pick.after(saved && saved in PROVIDERS ? (saved as Provider) : null);
+      savedProvider = pick.after(ownKeyOf(PROVIDERS, saved));
     } catch {
       /* defaults apply */
     }
@@ -855,7 +873,8 @@
         void loadSavedProvider();
       }),
       listen('saved-chats-changed', () => {
-        void reloadChat();
+        if (asking) reloadWhenAnswered = true;
+        else void reloadChat();
       }),
       listen<HotkeyAction>('translate-request', (event) => {
         // Stage only: Enter on the focused button, or a click, runs it.
@@ -1071,8 +1090,8 @@
               <div class="bubble intro">
                 {#if game?.linked}
                   Linked to {game.name || game.exe}. Ask me anything, or tap a prompt below. Take a
-                  screenshot with the image button (or Ctrl+Shift+A); you see it before anything is
-                  sent.
+                  screenshot with the image button, or press Ctrl+Shift+A to take one with a
+                  question ready; you see it before anything is sent.
                 {:else if game?.exe}
                   Nothing about this window is sent until you link it. Link {exeFile} above to ask about
                   it this session.

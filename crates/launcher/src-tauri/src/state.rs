@@ -1464,7 +1464,7 @@ pub(crate) mod tests {
                 w: 1920,
                 h: 1040,
             };
-            let loaded = app.launcher.lock().overlay_placement;
+            let loaded = app.launcher.lock().overlay_placement.clone();
             let placed = place(
                 loaded.as_ref(),
                 work,
@@ -1503,18 +1503,20 @@ pub(crate) mod tests {
                 h: 1040,
             },
             scale: 1.25,
+            ..OverlayPlacement::default()
         };
         let path = temp_state_path("placement_valid");
         std::fs::write(&path, state_with(valid)).unwrap();
         let app = AppState::load(path.clone());
-        let loaded = app.launcher.lock().overlay_placement;
+        let loaded = app.launcher.lock().overlay_placement.clone();
         println!("valid: {loaded:?}");
-        assert_eq!(loaded, Some(record));
+        assert_eq!(loaded, Some(record.clone()));
         app.save().unwrap();
         let reloaded = AppState::load(path.clone())
             .launcher
             .lock()
-            .overlay_placement;
+            .overlay_placement
+            .clone();
         assert_eq!(reloaded, Some(record), "survives a save and a reload");
         cleanup(&path);
     }

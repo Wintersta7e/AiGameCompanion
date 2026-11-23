@@ -856,8 +856,8 @@ struct SaveTo {
 
 /// The final event of a request, built on the blocking pool so saving the
 /// answer may block on file I/O. A failed join saves nothing.
-async fn finish_on_pool(
-    app: &AppHandle,
+async fn finish_on_pool<R: tauri::Runtime>(
+    app: &AppHandle<R>,
     head: EventHead,
     outcome: Result<Option<SearchReport>, String>,
     answer: String,
@@ -867,7 +867,13 @@ async fn finish_on_pool(
         Ok(_) => SageEvent::done(head, Some(SaveState::Failed), None),
         Err(message) => SageEvent::error(head, message.clone()),
     };
-    let mode = crate::commands::chat::mode_of(app);
+    // The write saves only when saving was on both when the question was
+    // asked and now, so the reply's label says what the write did.
+    let now_mode = crate::commands::chat::mode_of(app);
+    let mode = crate::chat_store::StoreMode {
+        saving: now_mode.saving && to.draft.saving,
+        ..now_mode
+    };
     let worker = app.clone();
     tauri::async_runtime::spawn_blocking(move || {
         let now = OffsetDateTime::now_utc();
@@ -2705,6 +2711,66 @@ mod tests {
             println!("hints {hints}: recap prompt {recap}, chat prompt {chat}");
             assert_eq!((recap, chat), (1, 0), "hints {hints}");
         }
+    }
+
+    /// A question asked with saving off whose answer finishes after saving was
+    /// turned on is kept in memory only, and its reply says saving was off:
+    /// the label matches what the write did.
+    #[test]
+    fn an_answer_asked_with_saving_off_is_not_reported_saved() {
+        let fixture = Fixture::new("asked_off_finished_on", 0);
+        let state_path = fixture.dir.join("launcher-state.json");
+        let app = tauri::test::mock_app();
+        app.manage(AppState::load(state_path));
+        let mode = crate::commands::chat::mode_of(app.handle());
+        assert!(
+            mode.saving && !mode.read_only,
+            "saving is on when it finishes"
+        );
+        let store = ChatStore::new(Some(fixture.dir.clone()));
+        store.load(&fixture.key, WRITABLE);
+        store.show(&fixture.key, WRITABLE);
+        let clear_generation = store
+            .snapshot(&fixture.key, Provider::Gemini)
+            .clear_generation;
+        app.manage(store);
+        let head = EventHead {
+            request_id: 1,
+            conversation_id: 2,
+            display_generation: 3,
+        };
+        let to = SaveTo {
+            key: fixture.key.clone(),
+            clear_generation,
+            draft: ExchangeDraft {
+                question: "Where next?".to_owned(),
+                provider: Provider::Gemini,
+                model: "test-model".to_owned(),
+                screenshot: false,
+                saving: false,
+            },
+        };
+        let event = tauri::async_runtime::block_on(finish_on_pool(
+            app.handle(),
+            head,
+            Ok(None),
+            "Go north.".to_owned(),
+            to,
+        ));
+        let event = serde_json::to_value(&event).unwrap();
+        let files: Vec<String> = fixture
+            .listing()
+            .into_iter()
+            .map(|(name, _, _)| name)
+            .filter(|name| name != "launcher-state.json")
+            .collect();
+        println!("reply {event}; chat files {files:?}");
+        assert_eq!(event["kind"], "done");
+        assert_eq!(event["save"], serde_json::json!({ "state": "off" }));
+        assert!(
+            files.is_empty(),
+            "an answer asked with saving off was written"
+        );
     }
 
     #[test]

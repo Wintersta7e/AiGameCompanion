@@ -14,6 +14,8 @@ export function formatLastPlayed(dateStr: string | null): string {
     if (isNaN(date.getTime())) return 'Unknown';
     const now = new Date();
     const diffMs = now.getTime() - date.getTime();
+    // A clock set back (or a time written elsewhere) puts it ahead: no "ago" fits, so show the date.
+    if (diffMs < 0) return date.toLocaleDateString();
     const diffMins = Math.floor(diffMs / 60000);
     if (diffMins < 1) return 'Just now';
     if (diffMins < 60) return `${diffMins} minute${diffMins === 1 ? '' : 's'} ago`;

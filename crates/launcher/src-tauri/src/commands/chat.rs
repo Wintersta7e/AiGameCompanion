@@ -12,7 +12,7 @@ const CLEAR_FAILED: &str = "The chat could not be cleared.";
 
 /// The store mode now. Without the launcher state nothing may be written, and
 /// with the setting unknown no chat file is read.
-pub(crate) fn mode_of(app: &AppHandle) -> StoreMode {
+pub(crate) fn mode_of<R: tauri::Runtime>(app: &AppHandle<R>) -> StoreMode {
     app.try_state::<AppState>().map_or(
         StoreMode {
             read_only: true,

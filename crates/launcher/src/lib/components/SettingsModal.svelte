@@ -127,9 +127,19 @@
     }
   }
 
-  async function saveKey() {
+  // The key save in flight, so a close started meanwhile can wait for it.
+  let keyTask: Promise<void> | null = null;
+  function saveKey(): Promise<void> {
+    if (keyTask) return keyTask;
     const key = geminiKey.trim();
-    if (!key || keySaving) return;
+    if (!key) return Promise.resolve();
+    keyTask = storeKey(key).finally(() => {
+      keyTask = null;
+    });
+    return keyTask;
+  }
+
+  async function storeKey(key: string) {
     keySaving = true;
     saveError = null;
     try {
@@ -157,15 +167,16 @@
   }
 
   // The key field persists on blur, and unmounting the modal never fires blur --
-  // so every close path flushes a pending key first, and stays open on failure
-  // rather than dropping it silently. Escape reaches this twice (dialog +
-  // window handler), hence the re-entry guard.
+  // so every close path flushes a pending key first, waits for one a blur
+  // already started (a mouse close blurs the field before its click), and stays
+  // open on failure rather than dropping it silently. Escape reaches this twice
+  // (dialog + window handler), hence the re-entry guard.
   let closing = false;
   async function closeModal() {
     if (closing) return;
     closing = true;
     try {
-      if (geminiKey.trim()) {
+      if (keyTask || geminiKey.trim()) {
         await saveKey();
         if (saveError) return;
       }
