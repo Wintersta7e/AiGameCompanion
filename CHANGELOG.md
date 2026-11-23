@@ -4,6 +4,54 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## 2.2.1 - 2026-11-23
+
+### Fixed
+
+- **An interrupted save can no longer cost you your library.** If the launcher
+  stopped mid-save and the unfinished file could not be put in place at the next
+  start, it started with an empty library that its first save wrote over the
+  only copy. It now retries, and if that still fails it runs without saving
+  anything until the file can be read.
+- **Saves survive a virus scanner or backup tool holding the file.** Library and
+  chat saves retry for a moment instead of failing, and a save that still fails
+  is shown in the main window instead of only in the log.
+- **Play time is kept when you quit the launcher during a game**, and a Steam
+  session ends when the Steam client closes instead of running to the 24-hour
+  cap.
+- **A launch that never started can be launched again** right away instead of
+  being blocked for ten minutes.
+- **The game list shows again when one Steam game is installed in two
+  libraries.** The duplicate stopped the whole list from rendering.
+- **A library or chat file saved by an editor in another text encoding** is kept
+  as a copy and reported instead of stopping the launcher from reading it.
+- **The previous run's log is kept** as `launcher.old.log`, so a crash can still
+  be looked into after the next start.
+- **Chat saving does what Settings says.** Answers given while saving is off are
+  never written, even after saving is turned back on; turning saving on shows
+  and sends the saved history; and answers kept only until you quit no longer
+  push saved ones out of the file.
+- **Switching games quickly no longer shows the wrong chat**, and a chat file
+  that could not be read fully is reported in the panel.
+- **Long answers are no longer cut off** at a fixed two- or three-minute limit;
+  a reply now stops only when the provider goes silent.
+- **Claude and Codex under WSL work with more shell setups**, including
+  profiles that read input or start another shell, and a Windows drive that
+  WSL cannot reach is named as the cause. A hung CLI check no longer delays
+  Gemini.
+- **The overlay keeps what you typed** when you use a prompt chip or Quick ask.
+- **A translation is shown only for its own screenshot**, never under a newer
+  one or over another game.
+- **Settings closes only after your API key is saved.**
+- **A screenshot whose capture was interrupted by hiding the overlay is
+  dropped** instead of appearing the next time the overlay opens.
+
+### Security
+
+- **`cookie` is updated to 0.18.3** for a published advisory. The launcher was
+  not affected (the issue needs a process that forks, which never happens on
+  Windows).
+
 ## 2.2.0 - 2026-11-06
 
 ### Added
