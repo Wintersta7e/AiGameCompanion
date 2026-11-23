@@ -67,8 +67,22 @@ impl AppState {
         // merely unreadable would destroy it.
         let tmp_path = state_path.with_extension("json.tmp");
         let probe = std::fs::metadata(&state_path);
+        // Through the writes' retries: a scanner holding the `.tmp` for a
+        // moment must not make the whole run read-only.
         let promoted = if should_promote_tmp(probe.err().map(|e| e.kind()), tmp_path.exists()) {
-            std::fs::rename(&tmp_path, &state_path)
+            rename_with_retry(
+                &tmp_path,
+                &state_path,
+                READ_ATTEMPTS,
+                READ_RETRY_DELAY,
+                |from, to| std::fs::rename(from, to),
+                |attempt, e| {
+                    tracing::warn!(
+                        "Recovering {} failed (attempt {attempt} of {READ_ATTEMPTS}): {e}",
+                        tmp_path.display()
+                    );
+                },
+            )
         } else {
             Ok(())
         };
@@ -871,24 +885,42 @@ pub(crate) mod tests {
     }
 
     /// Another program holds the `.tmp` open without delete sharing while the
-    /// launcher starts, then lets go before the first save.
+    /// launcher starts, and lets go within the rename's retries: the run
+    /// promotes it and stays writable.
     #[cfg(windows)]
     #[test]
-    fn tmp_held_at_start_makes_the_run_read_only() {
-        use std::os::windows::fs::OpenOptionsExt as _;
-        const FILE_SHARE_READ_WRITE: u32 = 0x1 | 0x2;
+    fn tmp_held_briefly_at_start_is_promoted() {
+        let path = temp_state_path("promotion_held_briefly");
+        let tmp = path.with_extension("json.tmp");
+        std::fs::write(&tmp, ONE_GAME).unwrap();
+        let release = hold_without_delete_sharing(&tmp, Duration::from_millis(300)).unwrap();
 
+        let app = AppState::load(path.clone());
+        release.join().unwrap();
+
+        assert_eq!(
+            app.load_error(),
+            None,
+            "a brief hold must not make the run read-only"
+        );
+        assert_eq!(app.launcher.lock().games[0].id, "g1");
+        assert!(!tmp.exists(), "the .tmp should be promoted");
+        assert_eq!(app.save(), Ok(()));
+        cleanup(&path);
+    }
+
+    /// The same hold kept past every retry: the run is read-only.
+    #[cfg(windows)]
+    #[test]
+    fn tmp_held_past_the_retries_makes_the_run_read_only() {
         let path = temp_state_path("promotion_held");
         let tmp = path.with_extension("json.tmp");
         std::fs::write(&tmp, ONE_GAME).unwrap();
-        let held = std::fs::OpenOptions::new()
-            .read(true)
-            .share_mode(FILE_SHARE_READ_WRITE)
-            .open(&tmp)
-            .unwrap();
+        let hold = READ_RETRY_DELAY * READ_ATTEMPTS + Duration::from_secs(1);
+        let release = hold_without_delete_sharing(&tmp, hold).unwrap();
 
         let app = AppState::load(path.clone());
-        drop(held);
+        release.join().unwrap();
 
         assert_promotion_failure_is_read_only(&app, &tmp, ONE_GAME);
         assert!(!path.exists(), "nothing may be written over the library");

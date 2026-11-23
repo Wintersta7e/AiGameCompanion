@@ -360,9 +360,9 @@ mod tests {
         Placed,
     );
 
-    #[expect(clippy::too_many_lines, reason = "one row per placement case")]
-    fn place_cases() -> [PlaceCase; 15] {
-        use PlacedFrom::{Default, Moved, Restored};
+    /// Rows with no remembered record: the default placement.
+    fn default_cases() -> [PlaceCase; 6] {
+        use PlacedFrom::Default;
         [
             (
                 "1 default 100 %",
@@ -405,6 +405,21 @@ mod tests {
                 placed(600, 200, 400, 400, Default),
             ),
             (
+                "10 monitor left of the primary",
+                None,
+                LEFT.work,
+                1.0,
+                &[LEFT, PRIMARY],
+                placed(-400, 0, 400, 1400, Default),
+            ),
+        ]
+    }
+
+    /// Rows with a remembered record: restored, moved, or ignored.
+    fn remembered_cases() -> [PlaceCase; 9] {
+        use PlacedFrom::{Default, Moved, Restored};
+        [
+            (
                 "6 exact restore",
                 Some(moved()),
                 FULL_HD,
@@ -435,14 +450,6 @@ mod tests {
                 1.25,
                 const { &[area(0, 0, 1920, 1040, 1.25)] },
                 placed(1395, 0, 525, 1040, Moved),
-            ),
-            (
-                "10 monitor left of the primary",
-                None,
-                LEFT.work,
-                1.0,
-                &[LEFT, PRIMARY],
-                placed(-400, 0, 400, 1400, Default),
             ),
             (
                 "11 re-anchor onto a negative origin",
@@ -494,13 +501,18 @@ mod tests {
 
     #[test]
     fn placement_table() {
-        assert_eq!(
-            place_cases()[13].1,
-            Some(OverlayPlacement::default()),
+        let cases: Vec<PlaceCase> = default_cases()
+            .into_iter()
+            .chain(remembered_cases())
+            .collect();
+        assert!(
+            cases
+                .iter()
+                .any(|(case, saved, ..)| *case == "14 an empty record"
+                    && *saved == Some(OverlayPlacement::default())),
             "row 14 is the empty record"
         );
         let mut wrong = Vec::new();
-        let cases = place_cases();
         for (case, saved, r, r_scale, monitors, expected) in cases.clone() {
             let placed = place(saved.as_ref(), r, r_scale, monitors);
             println!("{case}: {placed:?}");

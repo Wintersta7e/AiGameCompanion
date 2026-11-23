@@ -2,7 +2,9 @@ DetailPanel: a game still launching can be launched again from its button run
 NO_SHOT: a reset leaves nothing to send or wait for run
 Overlay: Quick ask stages its question only into an empty field run
 Overlay: a chip sends its own text and keeps the typed draft run
+Overlay: a show over another game keeps no earlier translation run
 Overlay: a translation that lands after a newer screenshot is not shown under it run
+Overlay: an earlier translation is not shown under a newer screenshot run
 Overlay: turning saving on while an answer streams keeps the answer on screen run
 SettingsModal: a key save that fails keeps the modal open with its error run
 SettingsModal: closing while the key saves waits for the save, then closes run

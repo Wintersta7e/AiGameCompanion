@@ -376,6 +376,17 @@
     else translateShot = next;
   }
 
+  // A new take starts in `slot`. A translation shown belongs to the shot
+  // being replaced, so it goes with it.
+  function startTaking(slot: ShotSlot, seq: number) {
+    setBitmap(slot, null);
+    setShot(slot, taking(seq));
+    if (slot === 'translate') {
+      translateText = '';
+      translateError = '';
+    }
+  }
+
   // Replace a slot's drawn preview, freeing the old one.
   function setBitmap(slot: ShotSlot, bitmap: ImageBitmap | null) {
     if (slot === 'chat') {
@@ -421,8 +432,7 @@
   async function takeShot(slot: ShotSlot) {
     if (!game?.linked || sendBlocked(shotOf(slot))) return;
     const seq = (shotSeq += 1);
-    setBitmap(slot, null);
-    setShot(slot, taking(seq));
+    startTaking(slot, seq);
     let info: ShotInfo | null;
     try {
       info = await invoke<ShotInfo | null>('take_shot', { slot, editRegion: false });
@@ -480,8 +490,7 @@
   function hotkeyTaking(slot: ShotSlot, take: number) {
     const seq = (shotSeq += 1);
     hotkeyTake[slot] = { seq, take };
-    setBitmap(slot, null);
-    setShot(slot, taking(seq));
+    startTaking(slot, seq);
   }
 
   // A hotkey's take finished: show it as a button take would be shown.
@@ -855,6 +864,9 @@
         chatShot = NO_SHOT;
         setBitmap('translate', null);
         translateShot = NO_SHOT;
+        // The translation shown belonged to that dropped shot, maybe another game's.
+        translateText = '';
+        translateError = '';
         game = event.payload;
         void reloadChat();
         // The overlay just became visible: CLI detection has had time to finish.

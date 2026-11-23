@@ -111,6 +111,7 @@ chat_store::tests::delete_all_empties_the_store run
 chat_store::tests::file_names_hide_the_key run
 chat_store::tests::generations run
 chat_store::tests::grounded_answers_go_only_to_gemini run
+chat_store::tests::memory_only_exchanges_keep_the_saved_ones_in_the_file run
 chat_store::tests::read_only_writes_nothing run
 chat_store::tests::round_trip_and_stored_shape run
 chat_store::tests::saved_at_reads_chrono_written_values run
@@ -241,7 +242,8 @@ state::tests::save_then_load_round_trips_games run
 state::tests::save_waits_out_a_reader_without_delete_sharing run
 state::tests::settings_are_written_only_by_their_writers run
 state::tests::shared_file_helpers_do_not_log run
-state::tests::tmp_held_at_start_makes_the_run_read_only run
+state::tests::tmp_held_briefly_at_start_is_promoted run
+state::tests::tmp_held_past_the_retries_makes_the_run_read_only run
 state::tests::tmp_is_promoted_only_when_state_is_absent run
 state::tests::transient_lock_is_retried run
 state::tests::unknown_fields_survive_a_load_and_a_save run

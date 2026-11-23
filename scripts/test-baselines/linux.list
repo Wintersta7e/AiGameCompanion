@@ -10,6 +10,7 @@ ai::cli::tests::a_long_stderr_tail_is_cut_in_the_failure_messages run
 ai::cli::tests::a_profile_printing_without_a_newline_keeps_the_answer run
 ai::cli::tests::a_profile_that_reads_stdin_never_sees_the_chat run
 ai::cli::tests::a_profile_that_starts_another_shell_still_runs_the_cli run
+ai::cli::tests::an_unmapped_windows_drive_is_named_as_the_cause run
 ai::cli::tests::blank_lines_count_toward_the_byte_cap run
 ai::cli::tests::claude_children_are_locked_down run
 ai::cli::tests::claude_input_appends_image_part_when_screenshot_present run
@@ -123,6 +124,7 @@ chat_store::tests::delete_all_empties_the_store run
 chat_store::tests::file_names_hide_the_key run
 chat_store::tests::generations run
 chat_store::tests::grounded_answers_go_only_to_gemini run
+chat_store::tests::memory_only_exchanges_keep_the_saved_ones_in_the_file run
 chat_store::tests::read_only_writes_nothing run
 chat_store::tests::round_trip_and_stored_shape run
 chat_store::tests::saved_at_reads_chrono_written_values run

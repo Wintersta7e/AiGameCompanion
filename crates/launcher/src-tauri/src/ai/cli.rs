@@ -39,6 +39,9 @@ pub(crate) const SHOTS_DIR: &str = "shots";
 /// Everything up to and including this marker is discarded, which keeps the
 /// PATH without the noise. A run that never prints it never reached the CLI.
 const WSL_SENTINEL: &str = "__AIGC_STREAM_BEGIN__";
+/// Printed on stderr instead of `WSL_SENTINEL` when `wslpath` cannot map the
+/// Windows path of a request's file: the drive is not reachable from WSL.
+const WSL_PATH_UNMAPPED: &str = "__AIGC_PATH_UNMAPPED__";
 
 /// Windows `CREATE_NO_WINDOW` flag -- prevents console popups from `wsl.exe` and
 /// other console-subsystem processes.
@@ -944,21 +947,22 @@ fn codex_wsl_script(work_dir: &str) -> String {
 /// each word quoted, reading its prompt from the file at the Windows path
 /// `prompt` -- never from stdin, which is the script itself -- and with an
 /// image, `--image=` the file at the Windows path `image`. `wslpath` turns
-/// each path into a Linux one; if that fails, the CLI does not start and
-/// `wslpath`'s own message is the error. The prompt file is deleted as soon
-/// as the CLI ends.
+/// each path into a Linux one; if that fails, the CLI does not start and the
+/// script prints `WSL_PATH_UNMAPPED` on stderr after `wslpath`'s own message.
+/// The prompt file is deleted as soon as the CLI ends.
 fn wsl_run_script(cli: &str, prompt: &str, image: Option<&str>) -> String {
+    let unmapped = format!("|| {{ printf '\\n%s\\n' {WSL_PATH_UNMAPPED} >&2; exit 1; }}; ");
     let (img, flag) = image.map_or_else(
         || (String::new(), ""),
         |image| {
             (
-                format!("img=$(wslpath -u {}) || exit 1; ", shell_escape(image)),
+                format!("img=$(wslpath -u {}) {unmapped}", shell_escape(image)),
                 " --image=\"$img\"",
             )
         },
     );
     format!(
-        "f=$(wslpath -u {}) || exit 1; {img}{}{cli}{flag} < \"$f\"; s=$?; rm -f -- \"$f\"; exit \"$s\"",
+        "f=$(wslpath -u {}) {unmapped}{img}{}{cli}{flag} < \"$f\"; s=$?; rm -f -- \"$f\"; exit \"$s\"",
         shell_escape(prompt),
         start_marker(),
     )
@@ -1579,8 +1583,19 @@ fn cli_failure_message(label: &str, stderr_tail: &[String]) -> String {
 /// shell, or whatever the profile started in its place, never reached the
 /// CLI. A profile that starts a shell which cannot run a POSIX script (fish)
 /// ends here, as does one that reads stdin. The shell's output is cut, the
-/// hint after it is not.
+/// hint after it is not. A script that could not map a file's Windows path
+/// (`WSL_PATH_UNMAPPED`) says so instead: the profile is not the cause.
 fn not_started_message(label: &str, stderr_tail: &[String]) -> String {
+    if stderr_tail
+        .iter()
+        .any(|line| line.trim_end().ends_with(WSL_PATH_UNMAPPED))
+    {
+        return format!(
+            "{label} did not start in WSL: the Windows drive is not reachable from WSL, so \
+             the question could not be handed to the CLI. Sage needs WSL to mount the Windows \
+             drives (automount in /etc/wsl.conf)."
+        );
+    }
     let reason = if stderr_tail.is_empty() {
         "the WSL shell ended before it ran the CLI".to_owned()
     } else {
@@ -1707,11 +1722,11 @@ mod tests {
         let dir = fresh_dir("home-retry-count");
         let count = dir.join("asked");
         let unix = format!(
-            "[ -f '{c}' ] && {{ echo /home/probe; exit 0; }}\n: > '{c}'; echo 'wsl: VM starting' >&2; exit 1",
+            "[ -f '{c}' ] && {{ echo /srv/probe-home; exit 0; }}\n: > '{c}'; echo 'wsl: VM starting' >&2; exit 1",
             c = count.display()
         );
         let windows = format!(
-            "if exist \"{c}\" (echo /home/probe\r\nexit /b 0)\r\ntype nul > \"{c}\"\r\necho wsl: VM starting 1>&2\r\nexit /b 1",
+            "if exist \"{c}\" (echo /srv/probe-home\r\nexit /b 0)\r\ntype nul > \"{c}\"\r\necho wsl: VM starting 1>&2\r\nexit /b 1",
             c = count.display()
         );
         let _fake = install_fake_wsl("home-retry", &unix, &windows);
@@ -1721,10 +1736,10 @@ mod tests {
         std::fs::remove_dir_all(&dir).unwrap();
         println!("first {first:?}, second {second:?}, workdir {workdir:?}");
         assert_eq!(first, None);
-        assert_eq!(second, Some("/home/probe"));
+        assert_eq!(second, Some("/srv/probe-home"));
         assert_eq!(
             workdir.as_deref(),
-            Some("/home/probe/.cache/aigc-codex-workdir")
+            Some("/srv/probe-home/.cache/aigc-codex-workdir")
         );
     }
 
@@ -1893,6 +1908,31 @@ mod tests {
         assert!(!seen.contains("SYSTEM-TEXT"), "{seen:?}");
         let error = result.unwrap_err();
         assert!(error.contains("did not start in WSL"), "{error}");
+        assert_eq!(left_files(&root), Vec::<std::path::PathBuf>::new());
+    }
+
+    /// A WSL that cannot map the prompt file's Windows path (its drive is not
+    /// mounted): the error names that, not the profile, and the CLI never runs.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn an_unmapped_windows_drive_is_named_as_the_cause() {
+        let unmapped = (
+            "wslpath",
+            "echo \"wslpath: $2: Result not representable\" >&2\nexit 1",
+        );
+        let (_fake, root) = install_profiled_wsl("unmapped", "", &[CAPTURING_CODEX, unmapped]);
+        let (result, answer) = ask_codex_in_wsl(&root).await;
+        println!("{result:?} {answer:?}");
+        let error = result.unwrap_err();
+        assert!(
+            error.contains("Windows drive is not reachable from WSL"),
+            "{error}"
+        );
+        assert!(
+            !error.contains("~/.profile"),
+            "the profile is blamed: {error}"
+        );
+        assert!(!root.join("home/capture").exists(), "the CLI ran");
         assert_eq!(left_files(&root), Vec::<std::path::PathBuf>::new());
     }
 
@@ -2533,10 +2573,11 @@ mod tests {
 
         let prompt = r"C:\files\aigc-prompt-1.txt";
         let start = start_marker();
+        let unmapped = r"|| { printf '\n%s\n' __AIGC_PATH_UNMAPPED__ >&2; exit 1; };";
         assert_eq!(
             wsl_run_script("cli 'a'", prompt, None),
             format!(
-                r#"f=$(wslpath -u 'C:\files\aigc-prompt-1.txt') || exit 1; {start}cli 'a' < "$f"; s=$?; rm -f -- "$f"; exit "$s""#
+                r#"f=$(wslpath -u 'C:\files\aigc-prompt-1.txt') {unmapped} {start}cli 'a' < "$f"; s=$?; rm -f -- "$f"; exit "$s""#
             )
         );
 
@@ -2547,7 +2588,7 @@ mod tests {
         assert_eq!(
             script,
             format!(
-                r#"f=$(wslpath -u 'C:\files\aigc-prompt-1.txt') || exit 1; img=$(wslpath -u 'C:\shots\it'\''s $(x) a.png') || exit 1; {start}cli 'a' --image="$img" < "$f"; s=$?; rm -f -- "$f"; exit "$s""#
+                r#"f=$(wslpath -u 'C:\files\aigc-prompt-1.txt') {unmapped} img=$(wslpath -u 'C:\shots\it'\''s $(x) a.png') {unmapped} {start}cli 'a' --image="$img" < "$f"; s=$?; rm -f -- "$f"; exit "$s""#
             )
         );
         assert_eq!(script.matches("--image=").count(), 1);

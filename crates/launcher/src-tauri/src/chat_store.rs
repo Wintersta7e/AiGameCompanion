@@ -981,19 +981,30 @@ fn too_large(key: &str, entry: &SavedExchange) -> Option<usize> {
     (alone > MAX_FILE_BYTES).then_some(alone)
 }
 
-/// Drop the oldest of `entries` until their file is at most `MAX_FILE_BYTES`.
-/// The newest always stays: `too_large` let it in.
+/// Drop the oldest of `entries` until those written make a file of at most
+/// `MAX_FILE_BYTES`. Those kept in memory only are capped the same way on
+/// their own, so they never push a written one out of the file. The newest of
+/// each always stays: `too_large` let it in.
 fn fit_file(key: &str, unknown: &UnknownFields, entries: &mut Vec<SavedExchange>) {
-    let sizes: Vec<usize> = entries
-        .iter()
-        .map(|exchange| compact_len(&ChatEntry::Exchange(exchange.clone())))
-        .collect();
-    // Compact JSON: the empty file, every entry, and a comma between two.
     let empty = compact_len(&StoredChat {
         key,
         entries: Vec::new(),
         unknown,
     });
+    for memory_only in [false, true] {
+        fit_part(empty, entries, memory_only);
+    }
+}
+
+/// `fit_file` for the `entries` whose `memory_only` is `memory_only`, in a
+/// file that is `empty` bytes long without them.
+fn fit_part(empty: usize, entries: &mut Vec<SavedExchange>, memory_only: bool) {
+    let sizes: Vec<usize> = entries
+        .iter()
+        .filter(|exchange| exchange.memory_only == memory_only)
+        .map(|exchange| compact_len(&ChatEntry::Exchange(exchange.clone())))
+        .collect();
+    // Compact JSON: the empty file, every entry, and a comma between two.
     let mut total = sizes.iter().fold(
         empty.saturating_add(sizes.len().saturating_sub(1)),
         |total, size| total.saturating_add(*size),
@@ -1006,7 +1017,14 @@ fn fit_file(key: &str, unknown: &UnknownFields, entries: &mut Vec<SavedExchange>
         total = total.saturating_sub(size.saturating_add(1));
         dropped += 1;
     }
-    entries.drain(..dropped);
+    let mut seen = 0;
+    entries.retain(|exchange| {
+        if exchange.memory_only != memory_only {
+            return true;
+        }
+        seen += 1;
+        seen > dropped
+    });
 }
 
 /// `key`'s chat file holding `entries`, as written: those kept in memory
@@ -2636,6 +2654,44 @@ mod tests {
             assert_eq!(store.delete_all(WRITABLE), Ok(0), "no folder");
         }
         drop(std::fs::remove_dir_all(&dir));
+    }
+
+    /// Exchanges kept in memory only never push a saved one out of the file,
+    /// and are capped on their own, oldest first.
+    #[test]
+    fn memory_only_exchanges_keep_the_saved_ones_in_the_file() {
+        let dir = temp_dir("memory_only_budget");
+        let key = "exe:memory-only-budget";
+        let saved: Vec<SavedExchange> = ["S1", "S2", "S3", "S4"]
+            .iter()
+            .map(|q| sized(q, 60 * 1024))
+            .collect();
+        let store = store_holding_in(&dir, key, &saved, WRITABLE);
+        let off: Vec<SaveState> = ["Off1", "Off2", "Off3", "Off4", "Off5"]
+            .iter()
+            .map(|q| append_in(&store, key, OFF, sized(q, 60 * 1024)))
+            .collect();
+        let on = append_in(&store, key, WRITABLE, sized("After", 1024));
+        let file = file_questions(&dir, key);
+        let shown = store.show(key, WRITABLE);
+        println!(
+            "off {off:?}, on {on:?}; file {file:?}; shown {:?}",
+            questions(&shown)
+        );
+        drop(std::fs::remove_dir_all(&dir));
+        assert_eq!(on, SaveState::On);
+        assert_eq!(
+            file,
+            ["S1", "S2", "S3", "S4", "After"],
+            "a saved exchange left the file to make room for one never written"
+        );
+        assert_eq!(
+            questions(&shown),
+            [
+                "S1", "S2", "S3", "S4", "Off2", "Off3", "Off4", "Off5", "After"
+            ],
+            "memory-only exchanges are capped on their own, oldest first"
+        );
     }
 
     #[test]

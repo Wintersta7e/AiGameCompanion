@@ -32,7 +32,10 @@ let chatView: Record<string, unknown> = {
   notice: null,
 };
 // Each translation request's shot and its reply, held until the test answers.
-const translations: { shotId: number; answer: (text: string) => void }[] = [];
+const translations: {
+  shotId: number;
+  answer: (text: string, cutShort?: string) => void;
+}[] = [];
 
 answerCommands((cmd, args) => {
   switch (cmd) {
@@ -77,8 +80,8 @@ answerCommands((cmd, args) => {
       return new Promise((resolve) => {
         translations.push({
           shotId: Number(args['shotId']),
-          answer: (text) => {
-            resolve({ text, cut_short: null });
+          answer: (text, cutShort) => {
+            resolve({ text, cut_short: cutShort ?? null });
           },
         });
       });
@@ -148,21 +151,21 @@ void test('Overlay: Quick ask stages its question only into an empty field', asy
   assert.equal(input().value, 'What should I do next here?');
 });
 
-void test('Overlay: a translation that lands after a newer screenshot is not shown under it', async () => {
-  // The translate hotkey's screenshot, as the backend reports it once held.
-  const hotkeyShot = async (take: number, id: number) => {
-    await emitEvent('translate-request', { take });
-    await emitEvent('shot-held', {
-      slot: 'translate',
-      take,
-      shot: { id, slot: 'translate', width: 10, height: 10, region: false },
-      error: null,
-    });
-  };
-  const translateButton = () =>
-    overlay.target.querySelector<HTMLButtonElement>('.translate-actions button') ?? undefined;
-  const shownText = () => overlay.target.querySelector('.translate-text')?.textContent ?? null;
+// The translate hotkey's screenshot, as the backend reports it once held.
+const hotkeyShot = async (take: number, id: number) => {
+  await emitEvent('translate-request', { take });
+  await emitEvent('shot-held', {
+    slot: 'translate',
+    take,
+    shot: { id, slot: 'translate', width: 10, height: 10, region: false },
+    error: null,
+  });
+};
+const translateButton = () =>
+  overlay.target.querySelector<HTMLButtonElement>('.translate-actions button') ?? undefined;
+const shownText = () => overlay.target.querySelector('.translate-text')?.textContent ?? null;
 
+void test('Overlay: a translation that lands after a newer screenshot is not shown under it', async () => {
   await hotkeyShot(1, 11);
   await click(translateButton());
   assert.deepEqual(
@@ -183,6 +186,26 @@ void test('Overlay: a translation that lands after a newer screenshot is not sho
   await settle();
   assert.equal(translations[1]?.shotId, 12);
   assert.equal(shownText(), 'TRANSLATION OF SHOT 12');
+});
+
+void test('Overlay: an earlier translation is not shown under a newer screenshot', async () => {
+  const first = translations.length;
+  // Shot 20 translated: its text is shown.
+  await hotkeyShot(3, 20);
+  await click(translateButton());
+  translations[first]?.answer('TRANSLATION OF SHOT 20');
+  await settle();
+  assert.equal(shownText(), 'TRANSLATION OF SHOT 20');
+
+  // Shot 21 sent; the hotkey takes shot 22 while 21 is translated.
+  await hotkeyShot(4, 21);
+  await click(translateButton());
+  await hotkeyShot(5, 22);
+  translations[first + 1]?.answer('TRANSLATION OF SHOT 21');
+  await settle();
+  assert.equal(translations[first + 1]?.shotId, 21);
+  assert.equal(shownText(), null, 'a translation of an older shot is shown under shot 22');
+  assert.equal(translateButton()?.textContent.trim(), 'Translate');
 });
 
 void test('Overlay: turning saving on while an answer streams keeps the answer on screen', async () => {
@@ -229,4 +252,27 @@ void test('Overlay: turning saving on while an answer streams keeps the answer o
   request.finish();
   await settle();
   assert.deepEqual(sageText(), ['AN OLDER ANSWER', 'THE STREAMED ANSWER'], 'the reloaded chat');
+});
+
+void test('Overlay: a show over another game keeps no earlier translation', async () => {
+  const noteShown = () => overlay.target.textContent.includes('THE ANSWER WAS CUT SHORT');
+  const first = translations.length;
+  await hotkeyShot(30, 40);
+  await click(translateButton());
+  translations[first]?.answer('TRANSLATION OF SHOT 40', 'THE ANSWER WAS CUT SHORT');
+  await settle();
+  assert.equal(shownText(), 'TRANSLATION OF SHOT 40');
+  assert.ok(noteShown());
+
+  await emitEvent('overlay-status', {
+    hwnd: 9,
+    pid: 8,
+    exe: 'other.exe',
+    title: 'Other Game',
+    name: 'Other Game',
+    linked: true,
+  });
+  await settle();
+  assert.equal(shownText(), null, 'the earlier game translation is still shown');
+  assert.ok(!noteShown(), 'the earlier game translation note is still shown');
 });
