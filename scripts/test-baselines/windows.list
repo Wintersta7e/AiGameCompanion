@@ -1,3 +1,5 @@
+ai::cli::tests::a_failed_wsl_home_lookup_is_tried_again run
+ai::cli::tests::a_long_stderr_tail_is_cut_in_the_failure_messages run
 ai::cli::tests::an_npm_installed_cli_is_found_and_runs_without_cmd_exe run
 ai::cli::tests::claude_children_are_locked_down run
 ai::cli::tests::claude_input_appends_image_part_when_screenshot_present run
@@ -13,6 +15,8 @@ ai::cli::tests::codex_input_omits_system_prompt_when_empty run
 ai::cli::tests::codex_runs_ephemeral run
 ai::cli::tests::codex_shot_failure_is_an_error run
 ai::cli::tests::codex_wsl_script_hands_the_image_over run
+ai::cli::tests::detection_gives_up_on_a_wsl_home_lookup_that_hangs run
+ai::cli::tests::detection_gives_up_on_a_wsl_that_never_answers run
 ai::cli::tests::every_wsl_spawn_uses_the_builder run
 ai::cli::tests::no_generic_claude_error_text run
 ai::cli::tests::npm_shims_resolve_like_the_batch_file run
@@ -34,6 +38,7 @@ ai::cli::tests::sweep_removes_leftover_shots run
 ai::cli::tests::system_prompt_reaches_the_clis_unchanged run
 ai::cli::tests::temp_shot_is_deleted_on_drop run
 ai::cli::tests::temp_shot_never_writes_through_an_existing_file run
+ai::cli::tests::the_native_codex_workdir_is_in_the_app_data_folder run
 ai::cli::tests::validate_model_name_accepts_typical_ids run
 ai::cli::tests::validate_model_name_rejects_empty_and_oversize run
 ai::cli::tests::validate_model_name_rejects_non_ascii run
@@ -41,7 +46,11 @@ ai::cli::tests::validate_model_name_rejects_path_traversal run
 ai::cli::tests::version_probe_escapes_the_name run
 ai::cli::tests::windows_tree::stopping_a_request_ends_the_process_its_cli_started run
 ai::cli::tests::wsl_bash_passes_script_without_a_second_shell run
+ai::cli::tests::wsl_hands_the_prompt_file_to_the_cli ignored
 ai::cli::tests::wsl_round_trips_hostile_text ignored
+ai::gemini::tests::a_gemini_answer_that_keeps_streaming_outlives_the_read_limit run
+ai::gemini::tests::a_gemini_answer_that_never_ends_stops_at_the_total_limit run
+ai::gemini::tests::a_stalled_gemini_answer_times_out run
 ai::gemini::tests::a_translation_cut_short_keeps_its_text run
 ai::gemini::tests::an_answer_cut_short_ends_with_its_stop_reason run
 ai::gemini::tests::buffers_split_utf8_and_emits_complete_text_chunks run
@@ -71,6 +80,7 @@ ai::tests::every_provider_change_is_announced run
 ai::tests::every_provider_takes_screenshots run
 ai::tests::finish_request_has_one_caller run
 ai::tests::finish_request_saves_before_done run
+ai::tests::gemini_is_offered_before_the_cli_probes_run run
 ai::tests::identity_block_is_exact_and_fenced run
 ai::tests::identity_goes_before_the_latest_question run
 ai::tests::identity_log_values run
@@ -85,6 +95,7 @@ ai::tests::refusals_come_first_and_cancel_nothing run
 ai::tests::request_log_line_names_no_game run
 ai::tests::sage_event_mirrors_rust run
 ai::tests::send_names_a_closed_linked_window run
+ai::tests::the_total_limit_ends_only_a_request_still_running run
 ai::tests::translate_gate_order run
 ai::tests::unlinked_target_contributes_nothing run
 chat_store::tests::a_chat_kept_as_a_copy_says_so_once run

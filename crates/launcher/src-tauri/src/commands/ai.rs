@@ -2,7 +2,7 @@
 //! and persisting the selected provider.
 
 use tauri::ipc::Channel;
-use tauri::{AppHandle, State};
+use tauri::{AppHandle, Manager as _, State};
 
 use crate::ai::{AiState, ChatArgs, Provider, ProviderAvailability, SageEvent};
 use crate::state::AppState;
@@ -139,20 +139,23 @@ pub(crate) async fn recheck_clis(
     state: State<'_, AppState>,
 ) -> Result<ProviderAvailability, String> {
     let model = settings_model(&state);
-    let (cfg, gemini) =
-        tokio::task::spawn_blocking(|| (crate::ai::detect_all(), crate::ai::gemini_presence()))
-            .await
-            .map_err(|error| format!("CLI re-check failed: {error}"))?;
-    ai.set_cli(cfg);
-    ai.set_gemini(gemini);
-    crate::ai::notify_providers_changed(&app);
+    let worker = app.clone();
+    tokio::task::spawn_blocking(move || {
+        worker.state::<AiState>().refresh_providers(
+            crate::ai::gemini_presence(),
+            || crate::ai::detect_all(crate::ai::local_data_dir(&worker).as_deref()),
+            || crate::ai::notify_providers_changed(&worker),
+        );
+    })
+    .await
+    .map_err(|error| format!("CLI re-check failed: {error}"))?;
     Ok(ai.availability(&model))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tauri::{Listener as _, Manager as _};
+    use tauri::Listener as _;
 
     #[test]
     fn a_refused_provider_pick_announces_no_change() {

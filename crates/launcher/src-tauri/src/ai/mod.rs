@@ -40,9 +40,20 @@ pub(crate) fn notify_providers_changed<R: tauri::Runtime>(app: &AppHandle<R>) {
     );
 }
 
-/// Backstop timeout for a single request, covering a hung CLI that never closes
-/// stdout. Gemini has its own (shorter) HTTP timeout, so this is the CLI ceiling.
+/// How long a CLI may go without writing a line, on stdout or stderr, before
+/// its request is ended as hung. Every line restarts it, so an answer that
+/// keeps arriving -- or a CLI still reporting progress -- is never cut.
 const REQUEST_TIMEOUT: std::time::Duration = std::time::Duration::from_mins(3);
+/// How long Gemini may go without sending a byte of its response.
+const GEMINI_READ_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
+/// The longest any request may run, however steadily it streams: the backstop
+/// for a provider that trickles forever.
+const REQUEST_TOTAL_TIMEOUT: std::time::Duration = std::time::Duration::from_mins(15);
+/// How long each child that CLI detection starts may run: a `wsl.exe` that
+/// never answers is killed and its CLI reported unavailable.
+const DETECT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15);
+/// What the user sees when a request ran into one of the limits above.
+const TIMED_OUT: &str = "Request timed out. Try again.";
 /// How long quitting waits for a running request to end before it deletes the
 /// screenshot files and exits anyway.
 const EXIT_WAIT: std::time::Duration = std::time::Duration::from_secs(2);
@@ -409,6 +420,27 @@ impl AiState {
         *self.gemini.lock() = presence;
     }
 
+    /// Store Gemini's `presence`, then what `detect` finds out about the
+    /// CLIs, calling `announce` after each. Gemini goes first: it needs no
+    /// WSL, so a slow or hung WSL probe never hides a stored key.
+    pub(crate) fn refresh_providers(
+        &self,
+        presence: GeminiPresence,
+        detect: impl FnOnce() -> CliConfig,
+        announce: impl Fn(),
+    ) {
+        self.set_gemini(presence);
+        announce();
+        let cfg = detect();
+        tracing::info!(
+            "CLI availability -- claude: {:?}, codex: {:?}",
+            cfg.claude,
+            cfg.codex
+        );
+        self.set_cli(cfg);
+        announce();
+    }
+
     /// Report which providers can currently serve a request, and the Gemini model
     /// a request would name given `settings_model` (the Settings choice). Gemini
     /// depends on a stored key; Claude / Codex on a detected CLI. Reads only the
@@ -706,8 +738,14 @@ async fn run(
         screenshot: png.is_some(),
         saving,
     };
-    // Codex reads a screenshot from a file, so it needs somewhere to put one.
-    let shots = (provider == Provider::Openai && png.is_some())
+    // Codex reads a screenshot from a file, and a CLI in WSL its prompt, so
+    // they need somewhere to put one.
+    let in_wsl = match provider {
+        Provider::Gemini => false,
+        Provider::Claude => cli_cfg.claude == cli::CliMode::Wsl,
+        Provider::Openai => cli_cfg.codex == cli::CliMode::Wsl,
+    };
+    let shots = ((provider == Provider::Openai && png.is_some()) || in_wsl)
         .then(|| prepare_shots_dir(&app))
         .flatten();
 
@@ -739,6 +777,7 @@ async fn run(
                     &system_prompt,
                     &messages,
                     encoded.as_deref(),
+                    shots.as_deref(),
                     on_chunk,
                 )
                 .await
@@ -752,23 +791,13 @@ async fn run(
 
     let consumer = forward_chunks(rx, channel.clone(), head);
 
-    // Backstop timeout: a hung CLI (no output, never closing stdout) would
-    // otherwise leave the join pending forever, stranding the UI on "Streaming".
-    // On elapse the futures drop -- killing any CLI child via kill_on_drop.
     let streamed = async {
         match tokio::join!(producer, consumer) {
             (Ok(()), Ok(answer)) => (Ok(()), answer),
             (Err(message), _) | (Ok(()), Err(message)) => (Err(message), String::new()),
         }
     };
-    let (result, answer) = tokio::time::timeout(REQUEST_TIMEOUT, streamed)
-        .await
-        .unwrap_or_else(|_elapsed| {
-            (
-                Err("Request timed out. Try again.".to_owned()),
-                String::new(),
-            )
-        });
+    let (result, answer) = within_total(streamed, REQUEST_TOTAL_TIMEOUT).await;
 
     release_in(&app.state::<AiState>().chat, head.request_id);
     let saved = SaveTo {
@@ -778,6 +807,19 @@ async fn run(
     };
     let event = finish_on_pool(&app, head, result.map(|()| None), answer, saved).await;
     crate::util::log_if_err("send the final sage event", channel.send(event));
+}
+
+/// `streamed`, ended with the timed-out error once it has run for `limit`.
+/// The backstop over each provider's own idle limit: a provider that keeps
+/// trickling would otherwise strand the overlay on "Streaming". On elapse the
+/// future drops, which kills any CLI child via `kill_on_drop`.
+async fn within_total(
+    streamed: impl Future<Output = (Result<(), String>, String)>,
+    limit: std::time::Duration,
+) -> (Result<(), String>, String) {
+    tokio::time::timeout(limit, streamed)
+        .await
+        .unwrap_or_else(|_elapsed| (Err(TIMED_OUT.to_owned()), String::new()))
 }
 
 /// The system prompt and messages of a chat request: the saved tail, then the
@@ -910,13 +952,15 @@ fn encode_png(png: &[u8]) -> String {
 /// Where a Codex screenshot is written while its request runs: `shots` in the
 /// app's local (not roaming) data folder. `None` if the folder is unknown.
 pub(crate) fn shots_dir(app: &AppHandle) -> Option<std::path::PathBuf> {
-    match app.path().app_local_data_dir() {
-        Ok(dir) => Some(dir.join(cli::SHOTS_DIR)),
-        Err(e) => {
-            tracing::warn!("Could not resolve the screenshot folder: {e}");
-            None
-        }
-    }
+    local_data_dir(app).map(|dir| dir.join(cli::SHOTS_DIR))
+}
+
+/// The app's local (not roaming) data folder, `None` (logged) if unknown.
+pub(crate) fn local_data_dir(app: &AppHandle) -> Option<std::path::PathBuf> {
+    app.path()
+        .app_local_data_dir()
+        .map_err(|e| tracing::warn!("Could not resolve the app's local data folder: {e}"))
+        .ok()
 }
 
 /// The screenshot folder, created if needed. `None` ends a Codex request that
@@ -1242,6 +1286,56 @@ fn translation_outcome(text: &str, streamed: Result<(), String>) -> Result<Trans
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn gemini_is_offered_before_the_cli_probes_run() {
+        let ai = AiState::default();
+        let announced = std::cell::Cell::new(0);
+        let presence = GeminiPresence {
+            key: true,
+            file_model: String::new(),
+        };
+        ai.refresh_providers(
+            presence,
+            || {
+                let during = ai.availability("");
+                println!("while the CLIs are probed: {during:?}");
+                assert!(during.gemini, "Gemini waited for the CLI probes");
+                assert_eq!(announced.get(), 1, "Gemini was not announced first");
+                CliConfig {
+                    claude: cli::CliMode::Wsl,
+                    ..CliConfig::default()
+                }
+            },
+            || announced.set(announced.get() + 1),
+        );
+        let after = ai.availability("");
+        assert!(after.gemini && after.claude);
+        assert_eq!(announced.get(), 2);
+    }
+
+    /// A request that finishes inside the total limit keeps its answer; one
+    /// still running at the limit ends with the timed-out message.
+    #[tokio::test]
+    async fn the_total_limit_ends_only_a_request_still_running() {
+        let ms = std::time::Duration::from_millis;
+        let quick = async {
+            tokio::time::sleep(ms(100)).await;
+            (Ok(()), "answer".to_owned())
+        };
+        assert_eq!(
+            within_total(quick, ms(1000)).await,
+            (Ok(()), "answer".to_owned())
+        );
+        let endless = async {
+            tokio::time::sleep(ms(5000)).await;
+            (Ok(()), "late".to_owned())
+        };
+        assert_eq!(
+            within_total(endless, ms(300)).await,
+            (Err(TIMED_OUT.to_owned()), String::new())
+        );
+    }
 
     fn target(linked: bool) -> GameInfo {
         GameInfo {

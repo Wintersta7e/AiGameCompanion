@@ -228,10 +228,49 @@ fn build_request(
     }
 }
 
+/// Where a request goes and how long it may take.
+struct Target<'a> {
+    endpoint: &'a str,
+    /// The longest wait for any byte of the response, reset by each one.
+    read: Duration,
+    /// The longest the whole request may take, however steadily it streams.
+    total: Duration,
+}
+
 /// Stream a Gemini response, passing each complete Gemini text chunk to `on_chunk`.
 ///
 /// `screenshot` is a base64-encoded PNG attached to the most recent user turn.
 pub(super) async fn stream<F>(
+    messages: &[ChatMessage],
+    system_prompt: &str,
+    screenshot: Option<String>,
+    model: &str,
+    api_key: &str,
+    on_chunk: F,
+) -> Result<(), String>
+where
+    F: FnMut(String) -> Result<(), String>,
+{
+    let target = Target {
+        endpoint: GEMINI_ENDPOINT,
+        read: super::GEMINI_READ_TIMEOUT,
+        total: super::REQUEST_TOTAL_TIMEOUT,
+    };
+    stream_to(
+        &target,
+        messages,
+        system_prompt,
+        screenshot,
+        model,
+        api_key,
+        on_chunk,
+    )
+    .await
+}
+
+/// `stream`, sent to `target`.
+async fn stream_to<F>(
+    target: &Target<'_>,
     messages: &[ChatMessage],
     system_prompt: &str,
     screenshot: Option<String>,
@@ -251,9 +290,12 @@ where
     validate_model(model)?;
 
     let request = build_request(messages, system_prompt, screenshot);
-    let url = format!("{GEMINI_ENDPOINT}/{model}:streamGenerateContent?alt=sse");
+    let url = format!("{}/{model}:streamGenerateContent?alt=sse", target.endpoint);
+    // An idle limit, restarted by every byte, under a total cap: a single
+    // total deadline cut answers that were still streaming.
     let client = reqwest::Client::builder()
-        .timeout(Duration::from_mins(2))
+        .read_timeout(target.read)
+        .timeout(target.total)
         .build()
         .map_err(|error| format!("failed to create HTTP client: {error}"))?;
     let response = client
@@ -265,7 +307,7 @@ where
         .await
         .map_err(|error| {
             if error.is_timeout() {
-                "Request timed out. Try again.".to_owned()
+                super::TIMED_OUT.to_owned()
             } else {
                 format!("Network error: {error}")
             }
@@ -283,7 +325,13 @@ where
     let mut received_text = false;
 
     while let Some(result) = stream.next().await {
-        let bytes = result.map_err(|error| format!("Stream error: {error}"))?;
+        let bytes = result.map_err(|error| {
+            if error.is_timeout() {
+                super::TIMED_OUT.to_owned()
+            } else {
+                format!("Stream error: {error}")
+            }
+        })?;
         total_bytes = total_bytes
             .checked_add(bytes.len())
             .ok_or_else(|| "Response too large. Stream aborted.".to_owned())?;
@@ -652,6 +700,117 @@ mod tests {
             candidate["finishReason"] = serde_json::json!(reason);
         }
         format!("data: {}\n", serde_json::json!({"candidates": [candidate]})).into_bytes()
+    }
+
+    /// A local stand-in for Gemini on port 0: it answers one request with
+    /// `frames`, each sent after its delay, then ends the response.
+    async fn sse_server(frames: Vec<(u64, Vec<u8>)>) -> String {
+        use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let endpoint = format!("http://{}", listener.local_addr().unwrap());
+        tokio::spawn(async move {
+            let (mut sock, _) = listener.accept().await.unwrap();
+            let mut request = Vec::new();
+            let mut buf = [0u8; 4096];
+            while !request.windows(4).any(|w| w == b"\r\n\r\n") {
+                let n = sock.read(&mut buf).await.unwrap();
+                if n == 0 {
+                    return;
+                }
+                request.extend_from_slice(&buf[..n]);
+            }
+            let head = "HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\n\
+                        transfer-encoding: chunked\r\n\r\n";
+            sock.write_all(head.as_bytes()).await.unwrap();
+            for (delay_ms, frame) in frames {
+                tokio::time::sleep(std::time::Duration::from_millis(delay_ms)).await;
+                let mut chunk = format!("{:x}\r\n", frame.len()).into_bytes();
+                chunk.extend_from_slice(&frame);
+                chunk.extend_from_slice(b"\r\n");
+                if sock.write_all(&chunk).await.is_err() {
+                    return;
+                }
+            }
+            crate::util::log_if_err("end the response", sock.write_all(b"0\r\n\r\n").await);
+        });
+        endpoint
+    }
+
+    /// Stream from `endpoint` with a read limit of `read_ms` and a total of
+    /// `total_ms`; the text that arrived, the result and how long it took.
+    async fn stream_with_limits(
+        endpoint: &str,
+        read_ms: u64,
+        total_ms: u64,
+    ) -> (String, Result<(), String>, std::time::Duration) {
+        let target = super::Target {
+            endpoint,
+            read: std::time::Duration::from_millis(read_ms),
+            total: std::time::Duration::from_millis(total_ms),
+        };
+        let started = std::time::Instant::now();
+        let mut text = String::new();
+        let result = super::stream_to(
+            &target,
+            &[turn("user", "Where is the key?")],
+            "",
+            None,
+            "gemini-test",
+            "test-key",
+            |chunk| {
+                text.push_str(&chunk);
+                Ok(())
+            },
+        )
+        .await;
+        (text, result, started.elapsed())
+    }
+
+    /// Six frames 400 ms apart: the answer takes well past the 1 s read limit
+    /// and arrives whole, because each frame restarts it.
+    #[tokio::test]
+    async fn a_gemini_answer_that_keeps_streaming_outlives_the_read_limit() {
+        let mut frames: Vec<(u64, Vec<u8>)> = (0..5)
+            .map(|i| (400, frame(&format!("{i} "), None)))
+            .collect();
+        frames.push((400, frame("done", Some("STOP"))));
+        let endpoint = sse_server(frames).await;
+        let (text, result, took) = stream_with_limits(&endpoint, 1000, 10_000).await;
+        println!("result {result:?} after {took:?}: {text:?}");
+        assert_eq!(result, Ok(()));
+        assert_eq!(text, "0 1 2 3 4 done");
+    }
+
+    /// One frame, then nothing: the request ends at the read limit with the
+    /// timed-out message, not a decoding error.
+    #[tokio::test]
+    async fn a_stalled_gemini_answer_times_out() {
+        let endpoint = sse_server(vec![
+            (0, frame("First ", None)),
+            (5000, frame("late", Some("STOP"))),
+        ])
+        .await;
+        let (text, result, took) = stream_with_limits(&endpoint, 1000, 10_000).await;
+        println!("result {result:?} after {took:?}: {text:?}");
+        assert_eq!(result, Err("Request timed out. Try again.".to_owned()));
+        assert!(
+            took < std::time::Duration::from_millis(3000),
+            "it waited {took:?}"
+        );
+    }
+
+    /// A trickle that never ends still stops at the total limit.
+    #[tokio::test]
+    async fn a_gemini_answer_that_never_ends_stops_at_the_total_limit() {
+        let frames = (0..10).map(|_| (400, frame("more ", None))).collect();
+        let endpoint = sse_server(frames).await;
+        let (_, result, took) = stream_with_limits(&endpoint, 1000, 1500).await;
+        println!("result {result:?} after {took:?}");
+        assert_eq!(result, Err("Request timed out. Try again.".to_owned()));
+        assert!(
+            took < std::time::Duration::from_millis(3000),
+            "it waited {took:?}"
+        );
     }
 
     /// Gemini sends its stop reason in the same frame as the last text when it
