@@ -22,6 +22,7 @@ use time::{Duration, OffsetDateTime};
 
 use crate::ai::search::{MAX_SEARCH_REPORT_BYTES, SearchReport, resend_answer};
 use crate::ai::{ChatMessage, Provider};
+use crate::models::UnknownFields;
 use crate::state::{
     AppState, READ_ATTEMPTS, READ_RETRY_DELAY, back_up, read_with_retry, should_promote_tmp,
 };
@@ -53,6 +54,13 @@ pub(crate) struct SavedExchange {
     pub(crate) screenshot: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) search: Option<SearchReport>,
+    /// Asked or answered while saving was off: kept on screen and sent again
+    /// for the rest of the run, never written to the chat file.
+    #[serde(skip)]
+    pub(crate) memory_only: bool,
+    /// Fields this build does not know, written back as they were read.
+    #[serde(flatten)]
+    pub(crate) unknown: UnknownFields,
 }
 
 /// One entry of a chat file. An entry of a kind this build does not know is
@@ -63,11 +71,14 @@ enum ChatEntry {
     Exchange(SavedExchange),
 }
 
-/// A chat file as written: the key it belongs to and its entries.
+/// A chat file as written: the key it belongs to, its entries, and the
+/// fields this build does not know.
 #[derive(Serialize)]
 struct StoredChat<'a> {
     key: &'a str,
     entries: Vec<ChatEntry>,
+    #[serde(flatten)]
+    unknown: &'a UnknownFields,
 }
 
 /// What a request takes from the store when it is admitted.
@@ -80,6 +91,8 @@ pub(crate) struct ChatSnapshot {
     pub(crate) clear_generation: u64,
     /// The saved exchanges sent again with the question, oldest first.
     pub(crate) tail: Vec<ChatMessage>,
+    /// How many exchanges the chat holds, sent again or not.
+    pub(crate) exchanges: usize,
 }
 
 /// Whether this run may change saved chats.
@@ -135,6 +148,19 @@ pub(crate) struct ChatView {
     pub(crate) display_generation: u64,
     pub(crate) exchanges: Vec<SavedExchange>,
     pub(crate) save: SaveState,
+    /// Part or all of the chat file could not be read and a copy was kept;
+    /// handed out once, so the panel says it once per run.
+    pub(crate) notice: Option<ChatNotice>,
+}
+
+/// Why the chat on screen holds less than its file did.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum ChatNotice {
+    /// The file was not a chat file: the chat starts empty.
+    Damaged,
+    /// Some entries could not be read and were left out.
+    Partial,
 }
 
 /// A chat file's name without its extension: a hash of the game key.
@@ -176,6 +202,8 @@ pub(crate) fn chats_dir(app: &AppHandle) -> Option<PathBuf> {
 /// What a chat file held for the key it was read for.
 struct Parsed {
     entries: Vec<SavedExchange>,
+    /// The file's fields this build does not know.
+    unknown: UnknownFields,
     /// Entries that could not be read and were left out.
     dropped: usize,
     /// Whether the file names the key it was read for.
@@ -189,6 +217,7 @@ struct Parsed {
 struct StoredFile {
     key: String,
     entries: Vec<SavedExchange>,
+    unknown: UnknownFields,
     dropped: usize,
 }
 
@@ -197,26 +226,35 @@ struct StoredFile {
 /// build does not know -- is dropped and counted, never logged: the error
 /// could quote the chat.
 fn parse_stored(text: &str) -> Option<StoredFile> {
-    let value = serde_json::from_str::<serde_json::Value>(text).ok()?;
-    let key = value.get("key")?.as_str()?.to_owned();
-    let raw = value.get("entries")?.as_array()?;
+    let serde_json::Value::Object(mut unknown) = serde_json::from_str(text).ok()? else {
+        return None;
+    };
+    let Some(serde_json::Value::String(key)) = unknown.remove("key") else {
+        return None;
+    };
+    let Some(serde_json::Value::Array(raw)) = unknown.remove("entries") else {
+        return None;
+    };
+    let total = raw.len();
     let entries: Vec<SavedExchange> = raw
-        .iter()
-        .filter_map(|entry| serde_json::from_value::<ChatEntry>(entry.clone()).ok())
+        .into_iter()
+        .filter_map(|entry| serde_json::from_value::<ChatEntry>(entry).ok())
         .map(|ChatEntry::Exchange(exchange)| exchange)
         .collect();
     Some(StoredFile {
         key,
-        dropped: raw.len() - entries.len(),
+        dropped: total - entries.len(),
         entries,
+        unknown,
     })
 }
 
 /// Parse a chat file's text read for `key`.
 fn parse_chat_file(text: &str, key: &str) -> Parsed {
-    parse_stored(text).map_or(
-        Parsed {
+    parse_stored(text).map_or_else(
+        || Parsed {
             entries: Vec::new(),
+            unknown: UnknownFields::new(),
             dropped: 0,
             key_matches: true,
             corrupt: true,
@@ -224,6 +262,7 @@ fn parse_chat_file(text: &str, key: &str) -> Parsed {
         |file| Parsed {
             key_matches: file.key == key,
             entries: file.entries,
+            unknown: file.unknown,
             dropped: file.dropped,
             corrupt: false,
         },
@@ -310,7 +349,7 @@ enum KeyStatus {
     /// Not read, or not kept: never replaced this run.
     Locked,
     /// First used while saving was off, so its file was not read; it is read
-    /// before the chat is next saved or cleared.
+    /// before the chat is next saved or cleared, or loaded with saving on.
     Unread,
 }
 
@@ -318,34 +357,36 @@ enum KeyStatus {
 #[derive(Debug)]
 struct KeyEntry {
     entries: Vec<SavedExchange>,
+    /// The file's fields this build does not know, written back with it.
+    unknown: UnknownFields,
+    /// Not yet shown: part or all of the file was left out and kept as a copy.
+    notice: Option<ChatNotice>,
     status: KeyStatus,
     /// The last change to its files failed.
     write_failed: bool,
 }
 
 impl KeyEntry {
-    const fn empty() -> Self {
+    fn with_status(status: KeyStatus) -> Self {
         Self {
             entries: Vec::new(),
-            status: KeyStatus::Loaded,
+            unknown: UnknownFields::new(),
+            notice: None,
+            status,
             write_failed: false,
         }
     }
 
-    const fn locked() -> Self {
-        Self {
-            entries: Vec::new(),
-            status: KeyStatus::Locked,
-            write_failed: false,
-        }
+    fn empty() -> Self {
+        Self::with_status(KeyStatus::Loaded)
     }
 
-    const fn unread() -> Self {
-        Self {
-            entries: Vec::new(),
-            status: KeyStatus::Unread,
-            write_failed: false,
-        }
+    fn locked() -> Self {
+        Self::with_status(KeyStatus::Locked)
+    }
+
+    fn unread() -> Self {
+        Self::with_status(KeyStatus::Unread)
     }
 }
 
@@ -378,10 +419,19 @@ impl ChatStore {
     }
 
     /// Read `key`'s chat into memory, once. With saving off the file is not
-    /// read and the chat starts empty. Blocks on file I/O.
+    /// read and the chat starts empty; the first load with saving on reads it
+    /// then. Blocks on file I/O.
     pub(crate) fn load(&self, key: &str, mode: StoreMode) {
-        if self.memory.lock().keys.contains_key(key) {
-            return;
+        let held = self.memory.lock().keys.get(key).map(|entry| entry.status);
+        match held {
+            Some(KeyStatus::Unread) if mode.saving => {
+                let io = self.io.lock();
+                self.merge_unread(key, mode);
+                drop(io);
+                return;
+            }
+            Some(_) => return,
+            None => {}
         }
         if !mode.saving {
             self.memory
@@ -426,9 +476,29 @@ impl ChatStore {
         if let Some(entry) = self.memory.lock().keys.get_mut(key) {
             let session = std::mem::replace(&mut entry.entries, read.entries);
             entry.entries.extend(session);
+            entry.unknown = read.unknown;
+            entry.notice = read.notice;
             entry.status = read.status;
         }
         read.status
+    }
+
+    /// `read_unread` for a load. When the file added exchanges to the chat on
+    /// screen, it counts as another chat, so the next `show` gives it a new
+    /// generation and the page replaces what it shows. The caller holds the
+    /// I/O lock.
+    fn merge_unread(&self, key: &str, mode: StoreMode) {
+        let held = |memory: &Memory| memory.keys.get(key).map_or(0, |entry| entry.entries.len());
+        let before = held(&self.memory.lock());
+        self.read_unread(key, mode);
+        let mut memory = self.memory.lock();
+        let on_screen = memory
+            .displayed
+            .as_ref()
+            .is_some_and(|(shown, _)| shown == key);
+        if on_screen && held(&memory) > before {
+            memory.displayed = None;
+        }
     }
 
     /// Put `key`'s chat on screen and return it. Showing the chat already on
@@ -444,12 +514,13 @@ impl ChatStore {
             memory.display_generation += 1;
             memory.displayed = Some((key.to_owned(), generation));
         }
-        let (exchanges, save) = memory.keys.get(key).map_or_else(
-            || (Vec::new(), save_state(mode, KeyStatus::Locked, false)),
+        let (exchanges, save, notice) = memory.keys.get_mut(key).map_or_else(
+            || (Vec::new(), save_state(mode, KeyStatus::Locked, false), None),
             |entry| {
                 (
                     entry.entries.clone(),
                     save_state(mode, entry.status, entry.write_failed),
+                    entry.notice.take(),
                 )
             },
         );
@@ -457,6 +528,7 @@ impl ChatStore {
             display_generation: memory.display_generation,
             exchanges,
             save,
+            notice,
         }
     }
 
@@ -476,6 +548,7 @@ impl ChatStore {
                 .keys
                 .get(key)
                 .map_or_else(Vec::new, |chat| resend_tail(&chat.entries, provider)),
+            exchanges: memory.keys.get(key).map_or(0, |chat| chat.entries.len()),
         }
     }
 
@@ -491,7 +564,9 @@ impl ChatStore {
     /// (`Skipped`), and the oldest exchanges go until the file fits. A chat
     /// that may not be written, or with saving off, is fitted the same way, in
     /// memory only. With saving on, a chat first used while it was off reads
-    /// its file first. Blocks on file I/O.
+    /// its file first. An answer saved with saving off, or to a question asked
+    /// while it was off (`memory_only`), stays in memory only, also through
+    /// later saves. Blocks on file I/O.
     pub(crate) fn append_exchange(
         &self,
         key: &str,
@@ -508,9 +583,12 @@ impl ChatStore {
         let Some(chat) = memory.keys.get_mut(key) else {
             return save_state(mode, KeyStatus::Locked, false);
         };
-        let Some(entry) = entry.filter(|_| current == clear_generation) else {
+        let Some(mut entry) = entry.filter(|_| current == clear_generation) else {
             return save_state(mode, chat.status, chat.write_failed);
         };
+        // Saving off when it was asked or now: this run keeps it, the file never.
+        entry.memory_only |= !mode.saving;
+        let to_file = !entry.memory_only;
         let hash = file_hash(key);
         let expired = prune_expired(&mut chat.entries, OffsetDateTime::now_utc());
         let kept = if let Some(bytes) = too_large(key, &entry) {
@@ -518,19 +596,23 @@ impl ChatStore {
             false
         } else {
             chat.entries.push(entry);
-            fit_file(key, &mut chat.entries);
+            fit_file(key, &chat.unknown, &mut chat.entries);
             true
         };
         let answer_state = |state| if kept { state } else { skipped(state) };
         if mode.read_only
             || !mode.saving
             || chat.status != KeyStatus::Loaded
-            || (!kept && expired == 0)
+            || (!(kept && to_file) && expired == 0)
         {
             return answer_state(save_state(mode, chat.status, chat.write_failed));
         }
-        // A chat left with no exchange has no file.
-        let text = (!chat.entries.is_empty()).then(|| file_json(key, &chat.entries));
+        // A chat left with no exchange to write has no file.
+        let text = chat
+            .entries
+            .iter()
+            .any(|exchange| !exchange.memory_only)
+            .then(|| file_json(key, &chat.unknown, &chat.entries));
         drop(memory);
         let written = self.dir.as_deref().map(|dir| {
             text.map_or_else(
@@ -560,6 +642,19 @@ impl ChatStore {
     /// No chat is on screen.
     pub(crate) fn hide(&self) {
         self.memory.lock().displayed = None;
+    }
+
+    /// No chat is on screen, when the one on screen is `key`'s: a load that
+    /// lost the race to a newer one leaves the newer chat where it is.
+    pub(crate) fn hide_if(&self, key: &str) {
+        let mut memory = self.memory.lock();
+        if memory
+            .displayed
+            .as_ref()
+            .is_some_and(|(shown, _)| shown == key)
+        {
+            memory.displayed = None;
+        }
     }
 
     /// Start the chat on screen afresh: empty it and delete its file, `.tmp`
@@ -593,6 +688,8 @@ impl ChatStore {
         let display_generation = memory.display_generation;
         let status = memory.keys.get_mut(key).map_or(KeyStatus::Locked, |entry| {
             entry.entries.clear();
+            entry.unknown.clear();
+            entry.notice = None;
             entry.status
         });
         drop(memory);
@@ -602,6 +699,8 @@ impl ChatStore {
             let read = self.read_unread(key, mode);
             if let Some(entry) = self.memory.lock().keys.get_mut(key) {
                 entry.entries.clear();
+                entry.unknown.clear();
+                entry.notice = None;
             }
             read
         } else {
@@ -627,6 +726,7 @@ impl ChatStore {
             display_generation,
             exchanges: Vec::new(),
             save: save_state(mode, status, write_failed),
+            notice: None,
         })
     }
 
@@ -800,7 +900,8 @@ fn expire_chat(
     let written = if emptied {
         remove_chat(dir, hash)
     } else {
-        file_json(&file.key, &file.entries).and_then(|text| write_chat(dir, hash, &text))
+        file_json(&file.key, &file.unknown, &file.entries)
+            .and_then(|text| write_chat(dir, hash, &text))
     };
     match written {
         Ok(()) if emptied => Expired::Deleted,
@@ -814,12 +915,14 @@ fn expire_chat(
 
 /// Delete an expired copy of a chat file at `path`: a leftover `.tmp` last
 /// changed before `cutoff`, or a backup whose newest exchange was saved before
-/// it -- by its modification time when it holds no exchange that reads.
+/// it -- by its modification time when it holds no exchange that reads, or
+/// one that does not, whose age this build cannot tell.
 fn expire_copy(path: &Path, tmp: bool, cutoff: OffsetDateTime) -> Expired {
     let newest = (!tmp)
         .then(|| std::fs::read_to_string(path).ok())
         .flatten()
         .and_then(|text| parse_stored(&text))
+        .filter(|file| file.dropped == 0)
         .and_then(|file| file.entries.iter().map(|exchange| exchange.saved_at).max());
     match newest {
         Some(newest) if newest < cutoff => delete_expired(path),
@@ -873,22 +976,35 @@ fn too_large(key: &str, entry: &SavedExchange) -> Option<usize> {
     let alone = compact_len(&StoredChat {
         key,
         entries: vec![ChatEntry::Exchange(entry.clone())],
+        unknown: &UnknownFields::new(),
     });
     (alone > MAX_FILE_BYTES).then_some(alone)
 }
 
-/// Drop the oldest of `entries` until their file is at most `MAX_FILE_BYTES`.
-/// The newest always stays: `too_large` let it in.
-fn fit_file(key: &str, entries: &mut Vec<SavedExchange>) {
-    let sizes: Vec<usize> = entries
-        .iter()
-        .map(|exchange| compact_len(&ChatEntry::Exchange(exchange.clone())))
-        .collect();
-    // Compact JSON: the empty file, every entry, and a comma between two.
+/// Drop the oldest of `entries` until those written make a file of at most
+/// `MAX_FILE_BYTES`. Those kept in memory only are capped the same way on
+/// their own, so they never push a written one out of the file. The newest of
+/// each always stays: `too_large` let it in.
+fn fit_file(key: &str, unknown: &UnknownFields, entries: &mut Vec<SavedExchange>) {
     let empty = compact_len(&StoredChat {
         key,
         entries: Vec::new(),
+        unknown,
     });
+    for memory_only in [false, true] {
+        fit_part(empty, entries, memory_only);
+    }
+}
+
+/// `fit_file` for the `entries` whose `memory_only` is `memory_only`, in a
+/// file that is `empty` bytes long without them.
+fn fit_part(empty: usize, entries: &mut Vec<SavedExchange>, memory_only: bool) {
+    let sizes: Vec<usize> = entries
+        .iter()
+        .filter(|exchange| exchange.memory_only == memory_only)
+        .map(|exchange| compact_len(&ChatEntry::Exchange(exchange.clone())))
+        .collect();
+    // Compact JSON: the empty file, every entry, and a comma between two.
     let mut total = sizes.iter().fold(
         empty.saturating_add(sizes.len().saturating_sub(1)),
         |total, size| total.saturating_add(*size),
@@ -901,14 +1017,32 @@ fn fit_file(key: &str, entries: &mut Vec<SavedExchange>) {
         total = total.saturating_sub(size.saturating_add(1));
         dropped += 1;
     }
-    entries.drain(..dropped);
+    let mut seen = 0;
+    entries.retain(|exchange| {
+        if exchange.memory_only != memory_only {
+            return true;
+        }
+        seen += 1;
+        seen > dropped
+    });
 }
 
-/// `key`'s chat file holding `entries`, as written.
-fn file_json(key: &str, entries: &[SavedExchange]) -> std::io::Result<String> {
+/// `key`'s chat file holding `entries`, as written: those kept in memory
+/// only are left out.
+fn file_json(
+    key: &str,
+    unknown: &UnknownFields,
+    entries: &[SavedExchange],
+) -> std::io::Result<String> {
     let stored = StoredChat {
         key,
-        entries: entries.iter().cloned().map(ChatEntry::Exchange).collect(),
+        unknown,
+        entries: entries
+            .iter()
+            .filter(|exchange| !exchange.memory_only)
+            .cloned()
+            .map(ChatEntry::Exchange)
+            .collect(),
     };
     serde_json::to_string(&stored).map_err(std::io::Error::from)
 }
@@ -928,7 +1062,8 @@ fn remove_chat(dir: &Path, hash: &ChatHash) -> std::io::Result<()> {
 /// The exchanges a request to `provider` sends again, oldest first: each
 /// question as a user turn and its answer as an assistant turn. The newest
 /// `MAX_TAIL_EXCHANGES` at most, and only while their text stays within
-/// `MAX_TAIL_BYTES`, so a newest exchange over it sends no history.
+/// `MAX_TAIL_BYTES`; a newest exchange over it is sent alone, cut to it, so a
+/// chat that holds an exchange always sends one.
 fn resend_tail(entries: &[SavedExchange], provider: Provider) -> Vec<ChatMessage> {
     let mut bytes = 0_usize;
     let mut sent = Vec::new();
@@ -938,6 +1073,11 @@ fn resend_tail(entries: &[SavedExchange], provider: Provider) -> Vec<ChatMessage
             .saturating_add(exchange.question.len())
             .saturating_add(answer.len());
         if bytes > MAX_TAIL_BYTES {
+            if sent.is_empty() {
+                let question = cut_to(&exchange.question, MAX_TAIL_BYTES);
+                let answer = cut_to(answer, MAX_TAIL_BYTES - question.len());
+                sent.push((question, answer));
+            }
             break;
         }
         sent.push((exchange.question.as_str(), answer));
@@ -959,6 +1099,12 @@ fn resend_tail(entries: &[SavedExchange], provider: Provider) -> Vec<ChatMessage
         .collect()
 }
 
+/// The start of `text`, at most `bytes` long, cut on a character boundary.
+fn cut_to(text: &str, bytes: usize) -> &str {
+    text.get(..text.floor_char_boundary(bytes))
+        .unwrap_or_default()
+}
+
 /// Replace `hash`'s chat file in `dir` with `text` atomically: write a
 /// `.tmp`, flush it to disk, then rename it over the file.
 fn write_chat(dir: &Path, hash: &ChatHash, text: &str) -> std::io::Result<()> {
@@ -970,7 +1116,14 @@ fn write_chat(dir: &Path, hash: &ChatHash, text: &str) -> std::io::Result<()> {
     file.write_all(text.as_bytes())?;
     file.sync_all()?;
     drop(file);
-    std::fs::rename(&tmp, &path)
+    crate::state::rename_with_retry(
+        &tmp,
+        &path,
+        READ_ATTEMPTS,
+        READ_RETRY_DELAY,
+        |from, to| std::fs::rename(from, to),
+        |attempt, e| log_write_retry(hash, attempt, e.kind()),
+    )
 }
 
 /// Read `key`'s file in `dir`. A file that cannot be read, or holds another
@@ -993,31 +1146,34 @@ fn read_key(dir: &Path, key: &str, mode: StoreMode, now: OffsetDateTime) -> KeyE
         }
         log_promoted(&hash);
     }
-    let text = match read_with_retry(
+    let bytes = match read_with_retry(
         &path,
         READ_ATTEMPTS,
         READ_RETRY_DELAY,
-        |path| std::fs::read_to_string(path),
+        |path| std::fs::read(path),
         |attempt, e| log_read_retry(&hash, attempt, e.kind()),
     ) {
-        Ok(text) => text,
+        Ok(bytes) => bytes,
         Err(e) if e.kind() == ErrorKind::NotFound => return KeyEntry::empty(),
         Err(e) => {
             log_unreadable(&hash, e.kind());
             return KeyEntry::locked();
         }
     };
-    let parsed = parse_chat_file(&text, key);
+    // Bytes that are not UTF-8 (an editor's UTF-16 save) parse as nothing, so
+    // they are a damaged file: kept as a backup, the chat starting empty.
+    let parsed = parse_chat_file(std::str::from_utf8(&bytes).unwrap_or_default(), key);
     if !parsed.key_matches {
         log_key_mismatch(&hash);
         return KeyEntry::locked();
     }
     let mut status = KeyStatus::Loaded;
+    let mut notice = None;
     if parsed.corrupt || parsed.dropped > 0 {
         if mode.read_only {
             status = KeyStatus::Locked;
         } else {
-            match back_up(&path, text.as_bytes()) {
+            match back_up(&path, &bytes) {
                 Ok(kept) if kept.reused => log_backup_reused(&hash),
                 Ok(_) => log_backed_up(&hash),
                 Err(e) => {
@@ -1026,12 +1182,21 @@ fn read_key(dir: &Path, key: &str, mode: StoreMode, now: OffsetDateTime) -> KeyE
                 }
             }
         }
+        if status == KeyStatus::Loaded {
+            notice = Some(if parsed.corrupt {
+                ChatNotice::Damaged
+            } else {
+                ChatNotice::Partial
+            });
+        }
     }
     let mut entries = parsed.entries;
     let expired = prune_expired(&mut entries, now);
     log_loaded(&hash, entries.len(), parsed.dropped, expired);
     KeyEntry {
         entries,
+        unknown: parsed.unknown,
+        notice,
         status,
         write_failed: false,
     }
@@ -1058,6 +1223,12 @@ fn log_promoted(hash: &ChatHash) {
 
 fn log_read_retry(hash: &ChatHash, attempt: u32, kind: ErrorKind) {
     tracing::warn!("Chat {hash}: reading failed (attempt {attempt} of {READ_ATTEMPTS}): {kind}");
+}
+
+fn log_write_retry(hash: &ChatHash, attempt: u32, kind: ErrorKind) {
+    tracing::warn!(
+        "Chat {hash}: replacing the file failed (attempt {attempt} of {READ_ATTEMPTS}): {kind}"
+    );
 }
 
 fn log_unreadable(hash: &ChatHash, kind: ErrorKind) {
@@ -1164,6 +1335,8 @@ mod tests {
             model: "test-model".to_owned(),
             screenshot: false,
             search: None,
+            memory_only: false,
+            unknown: UnknownFields::new(),
         }
     }
 
@@ -1653,6 +1826,161 @@ mod tests {
         drop(std::fs::remove_dir_all(&dir));
     }
 
+    #[test]
+    fn a_stale_load_leaves_the_newer_chat_on_screen() {
+        let dir = temp_dir("stale_load");
+        let (first, second) = ("exe:first-game", "exe:second-game");
+        let store = store_holding(
+            &dir,
+            second,
+            &[exchange("Earlier", OffsetDateTime::now_utc())],
+        );
+        // The first game's load is still running when the second's runs whole.
+        store.load(first, WRITABLE);
+        store.load(second, WRITABLE);
+        let shown = store.show(second, WRITABLE);
+        // The first game's load ends: it is no longer the target.
+        store.hide_if(first);
+        let asked = store.snapshot(second, Provider::Gemini);
+        println!(
+            "page generation {} snapshot generation {} displayed {}",
+            shown.display_generation, asked.display_generation, asked.displayed
+        );
+        assert!(asked.displayed, "the chat on screen was hidden");
+        assert_eq!(asked.display_generation, shown.display_generation);
+        let cleared = store.clear(Some(second), shown.display_generation, WRITABLE);
+        assert!(cleared.is_ok(), "New chat was refused: {cleared:?}");
+
+        // Its own key still hides the chat on screen.
+        store.hide_if(second);
+        assert!(!store.snapshot(second, Provider::Gemini).displayed);
+        drop(std::fs::remove_dir_all(&dir));
+    }
+
+    #[test]
+    fn turning_saving_on_shows_and_sends_the_saved_chat() {
+        let dir = temp_dir("saving_on_shows");
+        let key = "exe:saving-on-shows";
+        // A chat saved in an earlier run; this run starts with saving off.
+        drop(store_holding(
+            &dir,
+            key,
+            &[exchange("Before", OffsetDateTime::now_utc())],
+        ));
+        let store = ChatStore::new(Some(dir.clone()));
+        store.load(key, OFF);
+        let first = store.show(key, OFF);
+        append_in(
+            &store,
+            key,
+            OFF,
+            exchange("During", OffsetDateTime::now_utc()),
+        );
+        // Saving is turned on: the overlay loads the chat again.
+        store.load(key, WRITABLE);
+        let shown = store.show(key, WRITABLE);
+        let tail = store.snapshot(key, Provider::Gemini).tail;
+        let sent: Vec<&str> = tail.iter().map(|turn| turn.content.as_str()).collect();
+        println!(
+            "first generation {} shown generation {} shown {:?} sent {sent:?}",
+            first.display_generation,
+            shown.display_generation,
+            questions(&shown)
+        );
+        assert_eq!(questions(&shown), ["Before", "During"]);
+        assert!(
+            shown.display_generation > first.display_generation,
+            "the page would keep the chat it shows"
+        );
+        assert_eq!(sent, ["Before", "Go north.", "During", "Go north."]);
+
+        // A chat that gained nothing from its file stays the one on screen.
+        let other = "exe:saving-on-empty";
+        store.load(other, OFF);
+        let empty = store.show(other, OFF);
+        store.load(other, WRITABLE);
+        let again = store.show(other, WRITABLE);
+        assert_eq!(again.display_generation, empty.display_generation);
+        drop(std::fs::remove_dir_all(&dir));
+    }
+
+    #[test]
+    fn a_save_keeps_the_fields_this_build_does_not_know() {
+        let dir = temp_dir("unknown_fields");
+        let key = "exe:unknown-fields";
+        let now = OffsetDateTime::now_utc();
+        // Written by a newer build: a field on an exchange and one at the top.
+        let mut newer = entry(&exchange("Before", now));
+        newer["pinned"] = serde_json::json!(true);
+        let mut text: serde_json::Value = serde_json::from_str(&file_text(key, &[newer])).unwrap();
+        text["version"] = serde_json::json!(3);
+        let path = path_of(&dir, key);
+        std::fs::write(&path, text.to_string()).unwrap();
+
+        let store = ChatStore::new(Some(dir.clone()));
+        store.load(key, WRITABLE);
+        store.show(key, WRITABLE);
+        let saved = append(&store, key, exchange("After", now));
+        let written = std::fs::read_to_string(&path).unwrap();
+        println!("save {saved:?}, file {written}");
+        let file: serde_json::Value = serde_json::from_str(&written).unwrap();
+        assert_eq!(saved, SaveState::On);
+        assert_eq!(file["version"], 3, "the top-level field was erased");
+        assert_eq!(
+            file["entries"][0]["pinned"], true,
+            "the exchange field was erased"
+        );
+        assert_eq!(
+            file["entries"][1].get("pinned"),
+            None,
+            "a new exchange gained it"
+        );
+        assert_eq!(written.matches("\"kind\"").count(), 2, "one kind per entry");
+        assert_eq!(file_questions(&dir, key), ["Before", "After"]);
+        drop(std::fs::remove_dir_all(&dir));
+    }
+
+    #[test]
+    fn a_chat_kept_as_a_copy_says_so_once() {
+        let dir = temp_dir("chat_notice");
+        let damaged = "exe:damaged";
+        std::fs::write(path_of(&dir, damaged), "{ not json").unwrap();
+        let partial = "exe:partial";
+        let unknown = serde_json::json!({ "kind": "note", "text": "From a newer build" });
+        std::fs::write(
+            path_of(&dir, partial),
+            file_text(partial, &[good(), unknown]),
+        )
+        .unwrap();
+        let store = ChatStore::new(Some(dir.clone()));
+        for (key, expected) in [
+            (damaged, ChatNotice::Damaged),
+            (partial, ChatNotice::Partial),
+        ] {
+            store.load(key, WRITABLE);
+            let first = store.show(key, WRITABLE);
+            let again = store.show(key, WRITABLE);
+            println!(
+                "{key}: save {:?}, notice {:?} then {:?}, exchanges {}",
+                first.save,
+                first.notice,
+                again.notice,
+                first.exchanges.len()
+            );
+            assert_eq!(first.notice, Some(expected), "{key}: the first show");
+            assert_eq!(again.notice, None, "{key}: told twice");
+            assert!(bak_of(&path_of(&dir, key)).exists(), "{key}: no copy kept");
+        }
+
+        // Read-only, no copy is kept: the save line already says why.
+        let other = ChatStore::new(Some(dir.clone()));
+        let key = "exe:damaged-read-only";
+        std::fs::write(path_of(&dir, key), "{ not json").unwrap();
+        other.load(key, READ_ONLY);
+        assert_eq!(other.show(key, READ_ONLY).notice, None, "read-only");
+        drop(std::fs::remove_dir_all(&dir));
+    }
+
     /// A store that loaded and showed `key`'s chat from a file holding `exchanges`.
     fn store_holding(dir: &Path, key: &str, exchanges: &[SavedExchange]) -> ChatStore {
         store_holding_in(dir, key, exchanges, WRITABLE)
@@ -1769,13 +2097,35 @@ mod tests {
         assert_eq!(sent.first().map(String::as_str), Some("Q5"), "oldest sent");
         assert_eq!(sent.last().map(String::as_str), Some("Q24"), "newest sent");
 
-        // A newest exchange of exactly 32 KiB is sent alone; a byte more sends no history.
-        for (bytes, expected) in [(32_768, vec!["Newest"]), (32_769, vec![])] {
+        // A newest exchange of 32 KiB or more is sent alone, cut to the budget.
+        for bytes in [32_768, 32_769, 100_000] {
             let store = store_holding(dir, key, &[exchange("Older", now), sized("Newest", bytes)]);
-            let sent = tail_questions(&store, key, Provider::Gemini);
-            println!("newest of {bytes} bytes: sent {sent:?}");
-            assert_eq!(sent, expected, "newest exchange of {bytes} bytes");
+            let tail = store.snapshot(key, Provider::Gemini).tail;
+            let sent: Vec<&str> = tail.iter().map(|turn| turn.content.as_str()).collect();
+            let total: usize = sent.iter().map(|text| text.len()).sum();
+            println!(
+                "newest of {bytes} bytes: {} turns, {total} bytes",
+                sent.len()
+            );
+            assert_eq!(sent.len(), 2, "newest exchange of {bytes} bytes");
+            assert_eq!(
+                sent.first(),
+                Some(&"Newest"),
+                "newest exchange of {bytes} bytes"
+            );
+            assert_eq!(total, MAX_TAIL_BYTES, "newest exchange of {bytes} bytes");
         }
+        // A question alone over the budget is cut too, on a character boundary.
+        let long_question = exchange(&"\u{e9}".repeat(MAX_TAIL_BYTES), now);
+        let store = store_holding(dir, key, &[long_question]);
+        let tail = store.snapshot(key, Provider::Gemini).tail;
+        let total: usize = tail.iter().map(|turn| turn.content.len()).sum();
+        println!(
+            "a question over the budget: {} turns, {total} bytes",
+            tail.len()
+        );
+        assert_eq!(tail.len(), 2, "a question over the budget");
+        assert!(total <= MAX_TAIL_BYTES && total > 0, "{total} bytes");
     }
 
     fn file_cap(dir: &Path, key: &str) {
@@ -1993,7 +2343,10 @@ mod tests {
                 .collect();
             println!("long grounded, {provider:?}: {turns:?}");
             if matches!(provider, Provider::Gemini) {
-                assert!(tail.is_empty(), "Gemini: an answer over 32 KiB was sent");
+                // Too long to send whole: it goes alone, cut to the budget.
+                let bytes: usize = tail.iter().map(|turn| turn.content.len()).sum();
+                assert_eq!(tail.len(), 2, "Gemini: the long exchange alone");
+                assert_eq!(bytes, MAX_TAIL_BYTES, "Gemini: the cut long exchange");
             } else {
                 let texts: Vec<&str> = tail.iter().map(|turn| turn.content.as_str()).collect();
                 assert_eq!(
@@ -2303,6 +2656,44 @@ mod tests {
         drop(std::fs::remove_dir_all(&dir));
     }
 
+    /// Exchanges kept in memory only never push a saved one out of the file,
+    /// and are capped on their own, oldest first.
+    #[test]
+    fn memory_only_exchanges_keep_the_saved_ones_in_the_file() {
+        let dir = temp_dir("memory_only_budget");
+        let key = "exe:memory-only-budget";
+        let saved: Vec<SavedExchange> = ["S1", "S2", "S3", "S4"]
+            .iter()
+            .map(|q| sized(q, 60 * 1024))
+            .collect();
+        let store = store_holding_in(&dir, key, &saved, WRITABLE);
+        let off: Vec<SaveState> = ["Off1", "Off2", "Off3", "Off4", "Off5"]
+            .iter()
+            .map(|q| append_in(&store, key, OFF, sized(q, 60 * 1024)))
+            .collect();
+        let on = append_in(&store, key, WRITABLE, sized("After", 1024));
+        let file = file_questions(&dir, key);
+        let shown = store.show(key, WRITABLE);
+        println!(
+            "off {off:?}, on {on:?}; file {file:?}; shown {:?}",
+            questions(&shown)
+        );
+        drop(std::fs::remove_dir_all(&dir));
+        assert_eq!(on, SaveState::On);
+        assert_eq!(
+            file,
+            ["S1", "S2", "S3", "S4", "After"],
+            "a saved exchange left the file to make room for one never written"
+        );
+        assert_eq!(
+            questions(&shown),
+            [
+                "S1", "S2", "S3", "S4", "Off2", "Off3", "Off4", "Off5", "After"
+            ],
+            "memory-only exchanges are capped on their own, oldest first"
+        );
+    }
+
     #[test]
     fn saving_off_writes_no_chat() {
         let root = temp_dir("saving_off");
@@ -2385,7 +2776,9 @@ mod tests {
 
     /// With saving turned on, the next answer of a key first loaded while it
     /// was off puts the file's exchanges before this session's; a key loaded
-    /// while it was on already holds them.
+    /// while it was on already holds them. An answer given while saving was
+    /// off stays on screen but never reaches the file, also once saving is on,
+    /// and so does one asked while it was off and answered after it went on.
     fn turning_saving_on_merges_the_file_once(dir: &Path) {
         for (key, first) in [("exe:first-off", OFF), ("exe:first-on", WRITABLE)] {
             let store = store_holding_in(
@@ -2417,12 +2810,31 @@ mod tests {
             );
             assert_eq!((off, on), (SaveState::Off, SaveState::On), "{key}");
             assert!(unchanged, "{key}: saving off wrote the file");
-            assert_eq!(file, ["Before", "During", "After"], "{key}: the file");
+            assert_eq!(file, ["Before", "After"], "{key}: the file");
             assert_eq!(
                 questions(&shown),
                 ["Before", "During", "After"],
                 "{key}: shown"
             );
+
+            // Asked with saving off, answered after it was turned on.
+            let stored = std::fs::read_to_string(&path).unwrap();
+            let late = SavedExchange {
+                memory_only: true,
+                ..exchange("Asked off", OffsetDateTime::now_utc())
+            };
+            let saved = append_in(&store, key, WRITABLE, late);
+            let unchanged = std::fs::read_to_string(&path).unwrap() == stored;
+            let shown = store.show(key, WRITABLE);
+            println!(
+                "{key}: asked off, answered on: {saved:?} (file unchanged {unchanged}), shown {:?}",
+                questions(&shown)
+            );
+            assert!(
+                unchanged,
+                "{key}: an answer asked with saving off was written"
+            );
+            assert_eq!(questions(&shown).last(), Some(&"Asked off"), "{key}");
         }
     }
 
@@ -2452,6 +2864,12 @@ mod tests {
     /// Backups and `.tmp` files the pass deletes or leaves by their age.
     fn copy_rows(dir: &Path, now: OffsetDateTime) -> Vec<PassRow> {
         let old = |days: i64| entry(&exchange("Old", now - Duration::days(days)));
+        // An exchange naming a provider this build does not know.
+        let unreadable = |days: i64| {
+            let mut unknown = old(days);
+            unknown["provider"] = serde_json::json!("elsewhere");
+            unknown
+        };
         let junk = b"not a chat file".to_vec();
         let bak = |key: &str| bak_of(&path_of(dir, key));
         vec![
@@ -2481,6 +2899,21 @@ mod tests {
                 "backup whose newest entry is 699 days old",
                 path_of(dir, "New backup").with_extension("json.bak.2"),
                 file_text("New backup", &[old(702), old(699)]).into_bytes(),
+                701,
+            ),
+            // The entries this build cannot read may be recent: the file's age decides.
+            (
+                false,
+                "backup of old entries and an unreadable one, 1 day",
+                bak("Unreadable backup new"),
+                file_text("Unreadable backup new", &[old(701), unreadable(1)]).into_bytes(),
+                1,
+            ),
+            (
+                true,
+                "backup of old entries and an unreadable one, 701 days",
+                bak("Unreadable backup old"),
+                file_text("Unreadable backup old", &[old(702), unreadable(701)]).into_bytes(),
                 701,
             ),
             (
@@ -2679,16 +3112,26 @@ mod tests {
         );
 
         // Saving off, an expired entry is still removed.
-        let dir = temp_dir("startup_pass_off");
+        let off = temp_dir("startup_pass_off");
         seed(
-            &path_of(&dir, "Half expired"),
+            &path_of(&off, "Half expired"),
             file_text("Half expired", &[expired, fresh]),
             now,
             0,
         );
-        ChatStore::new(Some(dir.clone())).startup_pass(OFF, now);
-        println!("saving off: {:#?}", listing(&dir));
-        assert_eq!(file_questions(&dir, "Half expired"), ["Kept"], "saving off");
+        ChatStore::new(Some(off.clone())).startup_pass(OFF, now);
+        println!("saving off: {:#?}", listing(&off));
+        assert_eq!(file_questions(&off, "Half expired"), ["Kept"], "saving off");
+        remove_all(&[&dir, &off]);
+    }
+
+    /// Remove each folder a test made, and fail when one is left.
+    fn remove_all(folders: &[&Path]) {
+        for folder in folders {
+            drop(std::fs::remove_dir_all(folder));
+            println!("{} left: {}", folder.display(), folder.exists());
+            assert!(!folder.exists(), "the test left {}", folder.display());
+        }
     }
 
     /// The `state` and `reason` literals of every `SaveState` equal those of
@@ -2838,15 +3281,40 @@ mod tests {
             display_generation: 2,
             exchanges: vec![full],
             save: SaveState::On,
+            notice: Some(ChatNotice::Partial),
+        };
+        let unset = ChatView {
+            notice: None,
+            ..view.clone()
         };
         let fields = crate::util::json_fields(&serde_json::to_value(&view).unwrap());
+        let unset = crate::util::json_fields(&serde_json::to_value(&unset).unwrap());
         let typescript = crate::util::ts_fields(chat, "interface ChatView {");
         println!("ChatView: Rust {fields:?}, TypeScript {typescript:?}");
         assert!(
             !fields.is_empty() && !typescript.is_empty(),
             "no fields read from Rust or TypeScript"
         );
-        let mismatches = crate::util::mirror_mismatches(&typescript, &fields, &fields, &source);
+        let mismatches = crate::util::mirror_mismatches(&typescript, &fields, &unset, &source);
+        assert!(mismatches.is_empty(), "{mismatches:#?}");
+
+        let notices: Vec<String> = [ChatNotice::Damaged, ChatNotice::Partial]
+            .into_iter()
+            .map(|notice| {
+                // A new variant fails to compile here; add it to the list too.
+                match notice {
+                    ChatNotice::Damaged | ChatNotice::Partial => {}
+                }
+                serde_json::to_value(notice)
+                    .unwrap()
+                    .as_str()
+                    .unwrap()
+                    .to_owned()
+            })
+            .collect();
+        let names: Vec<&str> = notices.iter().map(String::as_str).collect();
+        println!("ChatNotice: {names:?}");
+        let mismatches = crate::util::alias_mismatches(chat, "ChatNotice", &names);
         assert!(mismatches.is_empty(), "{mismatches:#?}");
     }
 
@@ -2904,6 +3372,58 @@ mod tests {
                 assert_eq!(count, 0, "{needle} in {}", file.display());
             }
         }
+    }
+
+    /// A chat file that is not UTF-8 is a damaged file: kept as it was, and
+    /// the chat starts empty and is saved. It is read once, not retried.
+    #[test]
+    fn a_chat_that_is_not_utf8_is_kept_and_saved_again() {
+        let dir = temp_dir("utf16");
+        let key = "exe:utf16";
+        let path = path_of(&dir, key);
+        let bytes = crate::state::tests::utf16le(&file_text(key, &[good()]));
+        std::fs::write(&path, &bytes).unwrap();
+
+        let started = std::time::Instant::now();
+        let shown = view(&dir, key, WRITABLE);
+        let took = started.elapsed();
+        println!(
+            "utf16: {:?}, {} exchanges, took {took:?}",
+            shown.save,
+            shown.exchanges.len()
+        );
+
+        assert_eq!(
+            shown.save,
+            SaveState::On,
+            "a re-encoded file locked the chat"
+        );
+        assert_eq!(std::fs::read(bak_of(&path)).unwrap(), bytes);
+        assert!(took < READ_RETRY_DELAY, "the read was retried: {took:?}");
+        assert_eq!(append_to(&dir, key, WRITABLE), SaveState::On);
+        drop(std::fs::remove_dir_all(&dir));
+    }
+
+    /// A reader sharing read and write but not delete -- a scanner or backup
+    /// tool -- holds the chat file briefly while it is replaced.
+    #[cfg(windows)]
+    #[test]
+    fn a_write_waits_out_a_reader_without_delete_sharing() {
+        let dir = temp_dir("write_held");
+        let key = "Held";
+        let path = path_of(&dir, key);
+        std::fs::write(&path, file_text(key, &[])).unwrap();
+        let release =
+            crate::state::hold_without_delete_sharing(&path, std::time::Duration::from_millis(300))
+                .unwrap();
+
+        let newer = file_text(key, &[good()]);
+        let written = write_chat(&dir, &file_hash(key), &newer);
+        release.join().unwrap();
+
+        assert!(written.is_ok(), "{written:?}");
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), newer);
+        drop(std::fs::remove_dir_all(&dir));
     }
 
     #[test]

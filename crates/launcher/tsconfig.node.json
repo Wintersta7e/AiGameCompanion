@@ -1,6 +1,6 @@
 {
   // The Node program: code that runs in Node, not in the WebView --
-  // the package-root config files, the gate helpers under scripts/ and the unit tests.
+  // the package-root config files, the gate helpers under scripts/, the unit tests and their test support.
   // tsconfig.json (the app program) excludes the tests, so the two programs never share an include.
   "extends": "./tsconfig.json",
   "compilerOptions": {
@@ -10,6 +10,6 @@
     "allowImportingTsExtensions": true,
     "noEmit": true
   },
-  "include": ["*.js", "*.ts", "scripts/*.ts", "src/**/*.test.ts"],
+  "include": ["*.js", "*.ts", "scripts/*.ts", "src/**/*.test.ts", "src/lib/test-support/*.ts"],
   "exclude": []
 }

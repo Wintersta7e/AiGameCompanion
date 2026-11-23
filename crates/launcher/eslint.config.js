@@ -142,9 +142,10 @@ export default defineConfig([
     },
   },
   {
-    // Gate helpers and unit tests run in Node; typescript-eslint caps its
-    // default project at 8 files, so they use the Node program directly.
-    files: ['scripts/*.ts', 'src/**/*.test.ts'],
+    // Gate helpers, unit tests and their test support run in Node;
+    // typescript-eslint caps its default project at 8 files, so they use the
+    // Node program directly.
+    files: ['scripts/*.ts', 'src/**/*.test.ts', 'src/lib/test-support/*.ts'],
     languageOptions: {
       globals: { ...globals.node },
       parserOptions: { projectService: false, project: './tsconfig.node.json' },

@@ -18,10 +18,29 @@ export interface SavedExchange {
   search?: SearchReport;
 }
 
+/**
+ * Why the chat on screen holds less than its saved file did; a copy of the
+ * file was kept. A view carries it once per run, the first time it is shown.
+ */
+export type ChatNotice = 'damaged' | 'partial';
+
 export interface ChatView {
   displayGeneration: number;
   exchanges: SavedExchange[];
   save: SaveState;
+  notice: ChatNotice | null;
+}
+
+/** The panel's line for a chat kept as a copy; `''` when there is none. */
+export function chatNoticeText(notice: ChatNotice | null): string {
+  switch (notice) {
+    case 'damaged':
+      return "This game's saved chat could not be read, so it starts empty. A copy of the file was kept in the saved chats folder.";
+    case 'partial':
+      return "Part of this game's saved chat could not be read and was left out. A copy of the file was kept in the saved chats folder.";
+    case null:
+      return '';
+  }
 }
 
 /** What the page does with a view: clear the chat, replace it, or only update its status. */

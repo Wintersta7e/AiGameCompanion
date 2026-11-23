@@ -4,6 +4,7 @@
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Manager};
 
+use crate::models::UnknownFields;
 use crate::overlay::GameInfo;
 use crate::shots::{Frame, floor_px};
 use crate::state::AppState;
@@ -27,14 +28,17 @@ const ROUNDING_SLACK: f64 = 1e-6;
 
 /// The part of a game's window a translation keeps: fractions of the window's
 /// client area, so it holds across window modes and resolutions. Only a region
-/// inside the window loads; anything else fails its entry.
-#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+/// inside the window loads; anything else fails its entry. Keys a newer build
+/// stored beside these are kept and written back.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(try_from = "RawRegion")]
 pub(crate) struct TranslateRegion {
     x: f64,
     y: f64,
     w: f64,
     h: f64,
+    #[serde(flatten)]
+    unknown: UnknownFields,
 }
 
 /// A region as stored, before it is checked.
@@ -44,13 +48,21 @@ struct RawRegion {
     y: f64,
     w: f64,
     h: f64,
+    #[serde(flatten)]
+    unknown: UnknownFields,
 }
 
 impl TryFrom<RawRegion> for TranslateRegion {
     type Error = &'static str;
 
     fn try_from(raw: RawRegion) -> Result<Self, Self::Error> {
-        let RawRegion { x, y, w, h } = raw;
+        let RawRegion {
+            x,
+            y,
+            w,
+            h,
+            unknown,
+        } = raw;
         let finite = [x, y, w, h].iter().all(|value| value.is_finite());
         let inside = x >= 0.0
             && y >= 0.0
@@ -59,7 +71,13 @@ impl TryFrom<RawRegion> for TranslateRegion {
             && x + w <= 1.0 + EDGE_SLACK
             && y + h <= 1.0 + EDGE_SLACK;
         if finite && inside {
-            Ok(Self { x, y, w, h })
+            Ok(Self {
+                x,
+                y,
+                w,
+                h,
+                unknown,
+            })
         } else {
             Err("not a region inside the window")
         }
@@ -372,5 +390,15 @@ mod tests {
             outside.is_empty(),
             "translate_region field access outside region.rs and models.rs: {outside:?}"
         );
+    }
+
+    /// A newer build's extra keys inside a stored region are written back.
+    #[test]
+    fn a_stored_region_keeps_unknown_keys() {
+        let stored = r#"{"x":0.1,"y":0.1,"w":0.5,"h":0.5,"monitor":2,"note":{"by":"newer"}}"#;
+        let written = serde_json::to_value(region(stored)).unwrap();
+        println!("written back: {written}");
+        let expected: serde_json::Value = serde_json::from_str(stored).unwrap();
+        assert_eq!(written, expected);
     }
 }

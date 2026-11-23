@@ -68,7 +68,7 @@ fn merge_scan(existing: &[Game], outcome: ScanOutcome) -> Vec<Game> {
 }
 
 #[tauri::command]
-pub(crate) async fn scan_games(state: State<'_, AppState>) -> Result<Vec<Game>, String> {
+pub(crate) async fn scan_games(app: tauri::AppHandle) -> Result<Vec<Game>, String> {
     tracing::info!("scan_games: starting Steam discovery");
     let (tx, rx) = tokio::sync::oneshot::channel();
     std::thread::spawn(move || {
@@ -83,47 +83,38 @@ pub(crate) async fn scan_games(state: State<'_, AppState>) -> Result<Vec<Game>, 
         outcome.games.len(),
         outcome.complete
     );
+    Ok(store_scan(&app, outcome))
+}
 
+/// Fold `outcome` into the library and save it; the games the page shows.
+fn store_scan<R: tauri::Runtime>(app: &tauri::AppHandle<R>, outcome: ScanOutcome) -> Vec<Game> {
+    let state = app.state::<AppState>();
     let mut launcher = state.launcher.lock();
     launcher.games = merge_scan(&launcher.games, outcome);
     let games = launcher.games.clone();
     drop(launcher);
-    if let Err(e) = state.save() {
-        tracing::error!("Failed to save state: {e}");
-    }
-    Ok(games)
+    state.save_or_notify(app, "The scanned library");
+    games
 }
 
 #[tauri::command]
 pub(crate) async fn launch_game(game_id: String, app: tauri::AppHandle) -> Result<String, String> {
-    // Reserve the session slot atomically (guard + insert) so two rapid launches
-    // cannot both start the same game.
-    {
-        let state = app.state::<AppState>();
-        let mut sessions = state.active_sessions.lock();
-        if sessions.contains(&game_id) {
-            return Err("This game is already running".to_string());
-        }
-        sessions.insert(game_id.clone());
-    }
+    let token = crate::process_watch::reserve(&app.state::<AppState>(), &game_id)?;
 
-    match do_launch(&app, &game_id) {
+    match do_launch(&app, &game_id, token) {
         Ok(()) => Ok("launching".to_string()),
         Err(e) => {
             // Release the reservation so the game can be launched again.
-            app.state::<AppState>()
-                .active_sessions
-                .lock()
-                .remove(&game_id);
+            crate::process_watch::release(&app.state::<AppState>(), &game_id, token);
             Err(e)
         }
     }
 }
 
 /// Launch the game and attach the playtime watcher. The caller has already
-/// reserved `game_id` in `active_sessions`; on `Err` the caller releases it, and
-/// on the no-watcher path this releases it after emitting a terminal event.
-fn do_launch(app: &tauri::AppHandle, game_id: &str) -> Result<(), String> {
+/// reserved `game_id` as the launch `token`; on `Err` the caller releases it,
+/// and on the no-watcher path this releases it after emitting a terminal event.
+fn do_launch(app: &tauri::AppHandle, game_id: &str, token: u64) -> Result<(), String> {
     let state = app.state::<AppState>();
 
     let game = {
@@ -169,12 +160,24 @@ fn do_launch(app: &tauri::AppHandle, game_id: &str) -> Result<(), String> {
         }
     }
 
+    after_start(app, &game, token);
+    Ok(())
+}
+
+/// The game `game` was started as the launch `token`: record the launch, then
+/// attach the session watcher. The last played time goes first because the
+/// page reloads the library on the `game-finished` that ends an unwatched
+/// launch.
+fn after_start<R: tauri::Runtime>(app: &tauri::AppHandle<R>, game: &Game, token: u64) {
+    let state = app.state::<AppState>();
+    let game_id = game.id.as_str();
+    record_launch(app, game_id, &game.name);
     // Attach the session watcher. Steam games are watched via Steam's own
     // running-flag (keyed by appid): authoritative, and no exe guessing. The
     // launch branch above already validated the appid is present + all-digits.
     if game.source == GameSource::Steam {
-        let app_id = game.source_id.unwrap_or_default();
-        crate::process_watch::spawn_steam_watch(app.clone(), game_id.to_owned(), app_id);
+        let app_id = game.source_id.clone().unwrap_or_default();
+        crate::process_watch::spawn_steam_watch(app.clone(), game_id.to_owned(), app_id, token);
     } else {
         // Non-Steam: watch by executable name, resolving it on demand if needed.
         let mut exe_name = game.exe_name.clone();
@@ -191,21 +194,28 @@ fn do_launch(app: &tauri::AppHandle, game_id: &str) -> Result<(), String> {
                 g.exe_path = resolved_path;
             }
             drop(launcher);
-            if let Err(e) = state.save() {
-                tracing::warn!("Failed to cache resolved exe: {e}");
-            }
+            state.save_or_notify(app, &format!("The executable found for {}", game.name));
         }
         // No process name to watch -- reset to idle (the game did launch).
         if exe_name.is_empty() {
             crate::util::log_if_err("emit game-finished", app.emit("game-finished", game_id));
-            state.active_sessions.lock().remove(game_id);
+            crate::process_watch::release(&state, game_id, token);
         } else {
-            crate::process_watch::spawn_game_watch(app.clone(), game_id.to_owned(), exe_name);
+            crate::process_watch::spawn_game_watch(
+                app.clone(),
+                game_id.to_owned(),
+                exe_name,
+                token,
+            );
         }
     }
+}
 
-    // Update last_played timestamp. The local offset cannot be read on a
-    // multi-threaded Unix process; UTC reads the same to the frontend.
+/// Set the last played time of `game_id`, named `name`, to now and save it.
+/// The local offset cannot be read on a multi-threaded Unix process; UTC reads
+/// the same to the frontend.
+fn record_launch<R: tauri::Runtime>(app: &tauri::AppHandle<R>, game_id: &str, name: &str) {
+    let state = app.state::<AppState>();
     {
         let now = OffsetDateTime::now_local().unwrap_or_else(|_| OffsetDateTime::now_utc());
         let mut launcher = state.launcher.lock();
@@ -215,11 +225,7 @@ fn do_launch(app: &tauri::AppHandle, game_id: &str) -> Result<(), String> {
             g.last_played = Some(text);
         }
     }
-    if let Err(e) = state.save() {
-        tracing::error!("Failed to save state: {e}");
-    }
-
-    Ok(())
+    state.save_or_notify(app, &format!("The last played time of {name}"));
 }
 
 #[tauri::command]
@@ -449,5 +455,110 @@ mod tests {
         println!("after the scan: {saved}");
         assert_eq!(saved["notes"], "my notes", "lost in the scan: {saved}");
         assert_eq!(saved["play_time_minutes"], 300);
+    }
+}
+
+#[cfg(test)]
+mod event_order_tests {
+    use tauri::{Listener as _, Manager as _};
+
+    use super::after_start;
+    use crate::models::{Game, GameSource};
+    use crate::state::AppState;
+
+    /// A launched game with no process to watch tells the page it ended; the
+    /// page then reloads the library, so the last played time must be in the
+    /// state by then.
+    #[test]
+    fn game_finished_follows_the_last_played_time() {
+        let dir =
+            std::env::temp_dir().join(format!("aigc_launcher_event_order_{}", std::process::id()));
+        drop(std::fs::remove_dir_all(&dir));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("launcher-state.json");
+        std::fs::write(
+            &path,
+            r#"{"games":[{"id":"g1","name":"Foo","source":"manual"}],"settings":{}}"#,
+        )
+        .unwrap();
+        let app = tauri::test::mock_app();
+        app.manage(AppState::load(path));
+        let handle = app.handle().clone();
+        let seen = std::sync::Arc::new(parking_lot::Mutex::new(Vec::new()));
+        let record = std::sync::Arc::clone(&seen);
+        app.listen_any("game-finished", move |_| {
+            let launcher = handle.state::<AppState>().launcher.lock().games[0]
+                .last_played
+                .clone();
+            record.lock().push(launcher);
+        });
+        let token = crate::process_watch::reserve(&app.state::<AppState>(), "g1").unwrap();
+        let game = Game {
+            id: "g1".to_owned(),
+            name: "Foo".to_owned(),
+            source: GameSource::Manual,
+            ..Game::default()
+        };
+
+        after_start(app.handle(), &game, token);
+        drop(std::fs::remove_dir_all(&dir));
+
+        let seen = std::mem::take(&mut *seen.lock());
+        assert_eq!(seen.len(), 1, "game-finished was not emitted once");
+        assert!(
+            seen[0].is_some(),
+            "the page reloads before the last played time is set"
+        );
+        assert!(app.state::<AppState>().active_sessions.lock().is_empty());
+    }
+}
+
+#[cfg(test)]
+mod failed_save_tests {
+    use super::{ScanOutcome, record_launch, store_scan};
+    use crate::state::tests::failing_saves;
+    use std::time::Duration;
+
+    const ONE_GAME: &str =
+        r#"{"games":[{"id":"g1","name":"Foo","source":"manual"}],"settings":{}}"#;
+
+    /// The library a scan found is shown, and the page learns it was not saved.
+    #[test]
+    fn a_failed_scan_save_reaches_the_page() {
+        let saves = failing_saves("scan", ONE_GAME);
+
+        let games = store_scan(
+            saves.app.handle(),
+            ScanOutcome {
+                games: Vec::new(),
+                complete: true,
+            },
+        );
+
+        assert_eq!(games.len(), 1, "a manual game is kept by every scan");
+        let reported = saves.reported.recv_timeout(Duration::from_secs(5));
+        println!("reported: {reported:?}");
+        assert!(
+            reported.is_ok_and(
+                |message| message.starts_with("The scanned library could not be saved: ")
+            ),
+            "the page was not told the scan was not saved"
+        );
+    }
+
+    #[test]
+    fn a_failed_last_played_save_reaches_the_page() {
+        let saves = failing_saves("launch", ONE_GAME);
+
+        record_launch(saves.app.handle(), "g1", "Foo");
+
+        let reported = saves.reported.recv_timeout(Duration::from_secs(5));
+        println!("reported: {reported:?}");
+        assert!(
+            reported
+                .is_ok_and(|message| message
+                    .starts_with("The last played time of Foo could not be saved: ")),
+            "the page was not told the launch was not saved"
+        );
     }
 }

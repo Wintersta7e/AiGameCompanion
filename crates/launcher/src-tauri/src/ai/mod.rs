@@ -40,9 +40,20 @@ pub(crate) fn notify_providers_changed<R: tauri::Runtime>(app: &AppHandle<R>) {
     );
 }
 
-/// Backstop timeout for a single request, covering a hung CLI that never closes
-/// stdout. Gemini has its own (shorter) HTTP timeout, so this is the CLI ceiling.
+/// How long a CLI may go without writing a line, on stdout or stderr, before
+/// its request is ended as hung. Every line restarts it, so an answer that
+/// keeps arriving -- or a CLI still reporting progress -- is never cut.
 const REQUEST_TIMEOUT: std::time::Duration = std::time::Duration::from_mins(3);
+/// How long Gemini may go without sending a byte of its response.
+const GEMINI_READ_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
+/// The longest any request may run, however steadily it streams: the backstop
+/// for a provider that trickles forever.
+const REQUEST_TOTAL_TIMEOUT: std::time::Duration = std::time::Duration::from_mins(15);
+/// How long each child that CLI detection starts may run: a `wsl.exe` that
+/// never answers is killed and its CLI reported unavailable.
+const DETECT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15);
+/// What the user sees when a request ran into one of the limits above.
+const TIMED_OUT: &str = "Request timed out. Try again.";
 /// How long quitting waits for a running request to end before it deletes the
 /// screenshot files and exits anyway.
 const EXIT_WAIT: std::time::Duration = std::time::Duration::from_secs(2);
@@ -313,6 +324,8 @@ struct ExchangeDraft {
     provider: Provider,
     model: String,
     screenshot: bool,
+    /// Whether chat saving was on when the question was admitted.
+    saving: bool,
 }
 
 /// A lane's in-flight request. Aborting `handle` cancels the request and --
@@ -405,6 +418,27 @@ impl AiState {
     /// Store what `gemini_presence` read.
     pub(crate) fn set_gemini(&self, presence: GeminiPresence) {
         *self.gemini.lock() = presence;
+    }
+
+    /// Store Gemini's `presence`, then what `detect` finds out about the
+    /// CLIs, calling `announce` after each. Gemini goes first: it needs no
+    /// WSL, so a slow or hung WSL probe never hides a stored key.
+    pub(crate) fn refresh_providers(
+        &self,
+        presence: GeminiPresence,
+        detect: impl FnOnce() -> CliConfig,
+        announce: impl Fn(),
+    ) {
+        self.set_gemini(presence);
+        announce();
+        let cfg = detect();
+        tracing::info!(
+            "CLI availability -- claude: {:?}, codex: {:?}",
+            cfg.claude,
+            cfg.codex
+        );
+        self.set_cli(cfg);
+        announce();
     }
 
     /// Report which providers can currently serve a request, and the Gemini model
@@ -519,7 +553,7 @@ pub(crate) fn admit_chat(
         return Err(refuse(RefusalCode::GameChanged, GAME_CHANGED));
     }
     let accepts_image = args.provider.takes_screenshot() && !args.recap;
-    if args.recap && snapshot.tail.is_empty() {
+    if args.recap && snapshot.exchanges == 0 {
         return Err(refuse(RefusalCode::NothingToRecap, NOTHING_TO_RECAP));
     }
     let search =
@@ -625,6 +659,8 @@ pub(crate) fn ask(app: &AppHandle, args: ChatArgs, channel: &Channel<SageEvent>)
     let managed = app.try_state::<ChatStore>();
     let store = managed.as_ref().map_or(&unmanaged, |store| store.inner());
     let provider = args.provider;
+    // An answer is saved only if saving was on when its question was asked.
+    let saving = crate::commands::chat::mode_of(app).saving;
     let (worker, events) = (app.clone(), channel.clone());
     let admission = admit_and_install(
         args,
@@ -633,7 +669,7 @@ pub(crate) fn ask(app: &AppHandle, args: ChatArgs, channel: &Channel<SageEvent>)
         app.state::<AiState>().inner(),
         store,
         app.state::<ShotStore>().inner(),
-        |head, kind| tauri::async_runtime::spawn(run(worker, provider, head, kind, events)),
+        |head, kind| tauri::async_runtime::spawn(run(worker, provider, head, kind, events, saving)),
     );
     match admission {
         Admission::Started { log } => {
@@ -667,6 +703,7 @@ async fn run(
     head: EventHead,
     kind: RequestKind,
     channel: Channel<SageEvent>,
+    saving: bool,
 ) {
     let RequestKind::Chat {
         target,
@@ -699,9 +736,16 @@ async fn run(
         provider,
         model: model.clone(),
         screenshot: png.is_some(),
+        saving,
     };
-    // Codex reads a screenshot from a file, so it needs somewhere to put one.
-    let shots = (provider == Provider::Openai && png.is_some())
+    // Codex reads a screenshot from a file, and a CLI in WSL its prompt, so
+    // they need somewhere to put one.
+    let in_wsl = match provider {
+        Provider::Gemini => false,
+        Provider::Claude => cli_cfg.claude == cli::CliMode::Wsl,
+        Provider::Openai => cli_cfg.codex == cli::CliMode::Wsl,
+    };
+    let shots = ((provider == Provider::Openai && png.is_some()) || in_wsl)
         .then(|| prepare_shots_dir(&app))
         .flatten();
 
@@ -733,6 +777,7 @@ async fn run(
                     &system_prompt,
                     &messages,
                     encoded.as_deref(),
+                    shots.as_deref(),
                     on_chunk,
                 )
                 .await
@@ -746,23 +791,13 @@ async fn run(
 
     let consumer = forward_chunks(rx, channel.clone(), head);
 
-    // Backstop timeout: a hung CLI (no output, never closing stdout) would
-    // otherwise leave the join pending forever, stranding the UI on "Streaming".
-    // On elapse the futures drop -- killing any CLI child via kill_on_drop.
     let streamed = async {
         match tokio::join!(producer, consumer) {
             (Ok(()), Ok(answer)) => (Ok(()), answer),
             (Err(message), _) | (Ok(()), Err(message)) => (Err(message), String::new()),
         }
     };
-    let (result, answer) = tokio::time::timeout(REQUEST_TIMEOUT, streamed)
-        .await
-        .unwrap_or_else(|_elapsed| {
-            (
-                Err("Request timed out. Try again.".to_owned()),
-                String::new(),
-            )
-        });
+    let (result, answer) = within_total(streamed, REQUEST_TOTAL_TIMEOUT).await;
 
     release_in(&app.state::<AiState>().chat, head.request_id);
     let saved = SaveTo {
@@ -772,6 +807,19 @@ async fn run(
     };
     let event = finish_on_pool(&app, head, result.map(|()| None), answer, saved).await;
     crate::util::log_if_err("send the final sage event", channel.send(event));
+}
+
+/// `streamed`, ended with the timed-out error once it has run for `limit`.
+/// The backstop over each provider's own idle limit: a provider that keeps
+/// trickling would otherwise strand the overlay on "Streaming". On elapse the
+/// future drops, which kills any CLI child via `kill_on_drop`.
+async fn within_total(
+    streamed: impl Future<Output = (Result<(), String>, String)>,
+    limit: std::time::Duration,
+) -> (Result<(), String>, String) {
+    tokio::time::timeout(limit, streamed)
+        .await
+        .unwrap_or_else(|_elapsed| (Err(TIMED_OUT.to_owned()), String::new()))
 }
 
 /// The system prompt and messages of a chat request: the saved tail, then the
@@ -808,8 +856,8 @@ struct SaveTo {
 
 /// The final event of a request, built on the blocking pool so saving the
 /// answer may block on file I/O. A failed join saves nothing.
-async fn finish_on_pool(
-    app: &AppHandle,
+async fn finish_on_pool<R: tauri::Runtime>(
+    app: &AppHandle<R>,
     head: EventHead,
     outcome: Result<Option<SearchReport>, String>,
     answer: String,
@@ -819,7 +867,13 @@ async fn finish_on_pool(
         Ok(_) => SageEvent::done(head, Some(SaveState::Failed), None),
         Err(message) => SageEvent::error(head, message.clone()),
     };
-    let mode = crate::commands::chat::mode_of(app);
+    // The write saves only when saving was on both when the question was
+    // asked and now, so the reply's label says what the write did.
+    let now_mode = crate::commands::chat::mode_of(app);
+    let mode = crate::chat_store::StoreMode {
+        saving: now_mode.saving && to.draft.saving,
+        ..now_mode
+    };
     let worker = app.clone();
     tauri::async_runtime::spawn_blocking(move || {
         let now = OffsetDateTime::now_utc();
@@ -857,6 +911,8 @@ fn finish_request(
                 model: draft.model,
                 screenshot: draft.screenshot,
                 search: search.clone(),
+                memory_only: !draft.saving,
+                unknown: crate::models::UnknownFields::new(),
             });
             let save = store(entry);
             SageEvent::done(head, Some(save), search)
@@ -902,13 +958,15 @@ fn encode_png(png: &[u8]) -> String {
 /// Where a Codex screenshot is written while its request runs: `shots` in the
 /// app's local (not roaming) data folder. `None` if the folder is unknown.
 pub(crate) fn shots_dir(app: &AppHandle) -> Option<std::path::PathBuf> {
-    match app.path().app_local_data_dir() {
-        Ok(dir) => Some(dir.join(cli::SHOTS_DIR)),
-        Err(e) => {
-            tracing::warn!("Could not resolve the screenshot folder: {e}");
-            None
-        }
-    }
+    local_data_dir(app).map(|dir| dir.join(cli::SHOTS_DIR))
+}
+
+/// The app's local (not roaming) data folder, `None` (logged) if unknown.
+pub(crate) fn local_data_dir(app: &AppHandle) -> Option<std::path::PathBuf> {
+    app.path()
+        .app_local_data_dir()
+        .map_err(|e| tracing::warn!("Could not resolve the app's local data folder: {e}"))
+        .ok()
 }
 
 /// The screenshot folder, created if needed. `None` ends a Codex request that
@@ -1234,6 +1292,56 @@ fn translation_outcome(text: &str, streamed: Result<(), String>) -> Result<Trans
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn gemini_is_offered_before_the_cli_probes_run() {
+        let ai = AiState::default();
+        let announced = std::cell::Cell::new(0);
+        let presence = GeminiPresence {
+            key: true,
+            file_model: String::new(),
+        };
+        ai.refresh_providers(
+            presence,
+            || {
+                let during = ai.availability("");
+                println!("while the CLIs are probed: {during:?}");
+                assert!(during.gemini, "Gemini waited for the CLI probes");
+                assert_eq!(announced.get(), 1, "Gemini was not announced first");
+                CliConfig {
+                    claude: cli::CliMode::Wsl,
+                    ..CliConfig::default()
+                }
+            },
+            || announced.set(announced.get() + 1),
+        );
+        let after = ai.availability("");
+        assert!(after.gemini && after.claude);
+        assert_eq!(announced.get(), 2);
+    }
+
+    /// A request that finishes inside the total limit keeps its answer; one
+    /// still running at the limit ends with the timed-out message.
+    #[tokio::test]
+    async fn the_total_limit_ends_only_a_request_still_running() {
+        let ms = std::time::Duration::from_millis;
+        let quick = async {
+            tokio::time::sleep(ms(100)).await;
+            (Ok(()), "answer".to_owned())
+        };
+        assert_eq!(
+            within_total(quick, ms(1000)).await,
+            (Ok(()), "answer".to_owned())
+        );
+        let endless = async {
+            tokio::time::sleep(ms(5000)).await;
+            (Ok(()), "late".to_owned())
+        };
+        assert_eq!(
+            within_total(endless, ms(300)).await,
+            (Err(TIMED_OUT.to_owned()), String::new())
+        );
+    }
 
     fn target(linked: bool) -> GameInfo {
         GameInfo {
@@ -1990,6 +2098,8 @@ mod tests {
             model: "test-model".to_owned(),
             screenshot: false,
             search: None,
+            memory_only: false,
+            unknown: crate::models::UnknownFields::new(),
         }
     }
 
@@ -2522,6 +2632,39 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_recap_of_one_long_exchange_is_admitted() {
+        let long = Fixture::new("recap_long", 0);
+        let snapshot = long.store.snapshot(&long.key, Provider::Gemini);
+        let save = long.store.append_exchange(
+            &long.key,
+            snapshot.clear_generation,
+            Some(SavedExchange {
+                answer: "a".repeat(33 * 1024),
+                ..saved("A long walkthrough?")
+            }),
+            WRITABLE,
+        );
+        let tail = long.store.snapshot(&long.key, Provider::Gemini).tail;
+        let bytes: usize = tail.iter().map(|turn| turn.content.len()).sum();
+        println!("save {save:?}, tail of {} turns, {bytes} bytes", tail.len());
+        assert_eq!(save, SaveState::On);
+        assert_eq!(tail.len(), 2, "the long exchange was not sent again");
+        assert!(bytes <= 32 * 1024, "the tail is over its budget: {bytes}");
+
+        let game = target(true);
+        let ai = AiState::default();
+        let shots = ShotStore::default();
+        let (admission, spawned) = drive(recap_args(2), Some(&game), &ai, &long, &shots);
+        let Admission::Started { log } = admission else {
+            panic!("a recap of a chat holding one long exchange was refused");
+        };
+        println!("recap: {log}");
+        assert_eq!(spawned, 1);
+        assert!(log.contains("turns: 3"), "{log}");
+        ai.cancel(2);
+    }
+
+    #[tokio::test]
     async fn recap_admission() {
         let empty = Fixture::new("recap_empty", 0);
         let filled = Fixture::new("recap_filled", 1);
@@ -2570,6 +2713,66 @@ mod tests {
         }
     }
 
+    /// A question asked with saving off whose answer finishes after saving was
+    /// turned on is kept in memory only, and its reply says saving was off:
+    /// the label matches what the write did.
+    #[test]
+    fn an_answer_asked_with_saving_off_is_not_reported_saved() {
+        let fixture = Fixture::new("asked_off_finished_on", 0);
+        let state_path = fixture.dir.join("launcher-state.json");
+        let app = tauri::test::mock_app();
+        app.manage(AppState::load(state_path));
+        let mode = crate::commands::chat::mode_of(app.handle());
+        assert!(
+            mode.saving && !mode.read_only,
+            "saving is on when it finishes"
+        );
+        let store = ChatStore::new(Some(fixture.dir.clone()));
+        store.load(&fixture.key, WRITABLE);
+        store.show(&fixture.key, WRITABLE);
+        let clear_generation = store
+            .snapshot(&fixture.key, Provider::Gemini)
+            .clear_generation;
+        app.manage(store);
+        let head = EventHead {
+            request_id: 1,
+            conversation_id: 2,
+            display_generation: 3,
+        };
+        let to = SaveTo {
+            key: fixture.key.clone(),
+            clear_generation,
+            draft: ExchangeDraft {
+                question: "Where next?".to_owned(),
+                provider: Provider::Gemini,
+                model: "test-model".to_owned(),
+                screenshot: false,
+                saving: false,
+            },
+        };
+        let event = tauri::async_runtime::block_on(finish_on_pool(
+            app.handle(),
+            head,
+            Ok(None),
+            "Go north.".to_owned(),
+            to,
+        ));
+        let event = serde_json::to_value(&event).unwrap();
+        let files: Vec<String> = fixture
+            .listing()
+            .into_iter()
+            .map(|(name, _, _)| name)
+            .filter(|name| name != "launcher-state.json")
+            .collect();
+        println!("reply {event}; chat files {files:?}");
+        assert_eq!(event["kind"], "done");
+        assert_eq!(event["save"], serde_json::json!({ "state": "off" }));
+        assert!(
+            files.is_empty(),
+            "an answer asked with saving off was written"
+        );
+    }
+
     #[test]
     fn finish_request_saves_before_done() {
         let head = EventHead {
@@ -2583,6 +2786,7 @@ mod tests {
             provider: Provider::Claude,
             model: "test-model".to_owned(),
             screenshot: true,
+            saving: true,
         };
         let mut calls = Vec::new();
         let event = finish_request(head, Ok(None), "text", draft(), now, |entry| {
@@ -2599,10 +2803,26 @@ mod tests {
             model: "test-model".to_owned(),
             screenshot: true,
             search: None,
+            memory_only: false,
+            unknown: crate::models::UnknownFields::new(),
         };
         assert_eq!(calls, [Some(expected)], "the saved entry");
         assert_eq!(event["kind"], "done");
         assert_eq!(event["save"], serde_json::json!({ "state": "failed" }));
+
+        // Asked while saving was off: the answer is kept in memory only.
+        let asked_off = ExchangeDraft {
+            saving: false,
+            ..draft()
+        };
+        let mut calls = Vec::new();
+        finish_request(head, Ok(None), "text", asked_off, now, |entry| {
+            calls.push(entry);
+            SaveState::On
+        });
+        let memory_only: Vec<_> = calls.iter().flatten().map(|x| x.memory_only).collect();
+        println!("asked with saving off: memory only {memory_only:?}");
+        assert_eq!(memory_only, [true], "an answer asked with saving off");
 
         let mut calls = Vec::new();
         let event = finish_request(head, Ok(None), " \n", draft(), now, |entry| {

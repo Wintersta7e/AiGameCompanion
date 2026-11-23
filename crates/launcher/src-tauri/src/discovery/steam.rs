@@ -120,7 +120,9 @@ pub(crate) fn scan_steam_dir(steam_dir: &SteamDir) -> ScanOutcome {
             };
 
             let install_dir = library.resolve_app_dir(&app);
-            let install_exists = install_dir.exists();
+            // An empty `installdir` resolves to `steamapps/common` itself, under
+            // which every game's exe would match this one.
+            let install_exists = !app.install_dir.trim().is_empty() && install_dir.exists();
             let app_id = app.app_id;
 
             let cover_art_path = Some(format!("{STEAM_CDN}/{app_id}/library_600x900_2x.jpg"));
@@ -130,7 +132,7 @@ pub(crate) fn scan_steam_dir(steam_dir: &SteamDir) -> ScanOutcome {
                 None
             };
 
-            games.push(Game {
+            let game = Game {
                 id: format!("steam_{app_id}"),
                 name,
                 source: GameSource::Steam,
@@ -142,7 +144,18 @@ pub(crate) fn scan_steam_dir(steam_dir: &SteamDir) -> ScanOutcome {
                 last_played: None,
                 play_time_minutes: 0,
                 unknown: crate::models::UnknownFields::new(),
-            });
+            };
+            // The same manifest in two libraries (a stale copy left after
+            // moving the install, a library listed twice) is one game, the one
+            // whose install dir exists: two games under one id stop the
+            // page's keyed game list from rendering.
+            match games.iter_mut().find(|g| g.id == game.id) {
+                Some(seen) if seen.install_dir.is_none() && game.install_dir.is_some() => {
+                    *seen = game;
+                }
+                Some(_) => {}
+                None => games.push(game),
+            }
         }
     }
 
@@ -229,5 +242,92 @@ fn collect_exes(dir: &Path, out: &mut Vec<(PathBuf, u64)>, depth: u32) {
                 out.push((path, size));
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::fmt::Write as _;
+    use std::path::{Path, PathBuf};
+
+    use super::scan_steam_dir;
+
+    const MANIFEST_10: &str = "\"AppState\"\n{\n\t\"appid\"\t\t\"10\"\n\t\"installdir\"\t\t\"Ten\"\n\t\"name\"\t\t\"Ten\"\n}\n";
+
+    /// A fake Steam install at `<tmp>/<label>/steam` whose libraries are the
+    /// install itself and each of `others`, every one holding `manifest`.
+    fn fake_libraries(label: &str, others: &[&str], manifest: &str) -> (PathBuf, PathBuf) {
+        let root =
+            std::env::temp_dir().join(format!("aigc_steam_scan_{}_{label}", std::process::id()));
+        drop(std::fs::remove_dir_all(&root));
+        let steam = root.join("steam");
+        let libraries: Vec<PathBuf> = std::iter::once(steam.clone())
+            .chain(others.iter().map(|name| root.join(name)))
+            .collect();
+        let escape = |p: &Path| p.display().to_string().replace('\\', "\\\\");
+        let mut vdf = String::from("\"libraryfolders\"\n{\n");
+        for (n, library) in libraries.iter().enumerate() {
+            std::fs::create_dir_all(library.join("steamapps")).unwrap();
+            std::fs::write(
+                library.join("steamapps").join("appmanifest_10.acf"),
+                manifest,
+            )
+            .unwrap();
+            write!(
+                vdf,
+                "\t\"{n}\"\n\t{{\n\t\t\"path\"\t\t\"{}\"\n\t}}\n",
+                escape(library)
+            )
+            .unwrap();
+        }
+        vdf.push_str("}\n");
+        std::fs::write(steam.join("steamapps").join("libraryfolders.vdf"), vdf).unwrap();
+        (root, steam)
+    }
+
+    /// The same manifest in two libraries (a stale copy after moving the
+    /// install) is one game, at the library where it is installed: two games
+    /// under one id stop the page's keyed game list from rendering.
+    #[test]
+    fn one_game_per_app_id_where_it_is_installed() {
+        let (root, steam) = fake_libraries("two_libraries", &["moved"], MANIFEST_10);
+        let installed = root
+            .join("moved")
+            .join("steamapps")
+            .join("common")
+            .join("Ten");
+        std::fs::create_dir_all(&installed).unwrap();
+
+        let outcome = scan_steam_dir(&steamlocate::SteamDir::from_dir(&steam).unwrap());
+        drop(std::fs::remove_dir_all(&root));
+
+        let found: Vec<(&str, Option<&str>)> = outcome
+            .games
+            .iter()
+            .map(|g| (g.id.as_str(), g.install_dir.as_deref()))
+            .collect();
+        println!("scanned: {found:?}");
+        let installed = installed.to_string_lossy();
+        assert_eq!(found, [("steam_10", Some(&*installed))]);
+        assert!(outcome.complete);
+    }
+
+    /// A manifest whose `installdir` is empty names no folder: never the
+    /// library's `steamapps/common` itself, where every game's exe would match.
+    #[test]
+    fn an_empty_installdir_gives_no_install_dir() {
+        let manifest = "\"AppState\"\n{\n\t\"appid\"\t\t\"10\"\n\t\"installdir\"\t\t\"\"\n\t\"name\"\t\t\"Ten\"\n}\n";
+        let (root, steam) = fake_libraries("empty_installdir", &[], manifest);
+        std::fs::create_dir_all(steam.join("steamapps").join("common")).unwrap();
+
+        let outcome = scan_steam_dir(&steamlocate::SteamDir::from_dir(&steam).unwrap());
+        drop(std::fs::remove_dir_all(&root));
+
+        let found: Vec<(&str, Option<&str>)> = outcome
+            .games
+            .iter()
+            .map(|g| (g.id.as_str(), g.install_dir.as_deref()))
+            .collect();
+        assert_eq!(found, [("steam_10", None)]);
     }
 }

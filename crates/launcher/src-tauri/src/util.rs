@@ -923,16 +923,20 @@ pub(crate) fn helper() { NEEDLE(); }
         }
         let exclude = strings(app.get("exclude"));
         println!("tsconfig.json exclude: {exclude:?}");
-        if exclude != Some(vec!["src/**/*.test.ts"]) {
+        // The component-test harness runs in Node, like the tests themselves.
+        if exclude != Some(vec!["src/**/*.test.ts", TEST_SUPPORT]) {
             problems.push(format!(
-                "tsconfig.json: exclude is {exclude:?}, not [\"src/**/*.test.ts\"]"
+                "tsconfig.json: exclude is {exclude:?}, not [\"src/**/*.test.ts\", {TEST_SUPPORT:?}]"
             ));
         }
         problems
     }
 
+    /// The component-test harness: Node code that only test files import.
+    const TEST_SUPPORT: &str = "src/lib/test-support/*.ts";
+
     /// knip's entries are exactly the gate helpers under `scripts/`, each
-    /// with the production mark.
+    /// with the production mark; it ignores the component-test harness.
     fn knip_entries(root: &Path) -> Vec<String> {
         let knip = match read_json(root, "knip.json") {
             Ok(knip) => knip,
@@ -942,8 +946,17 @@ pub(crate) fn helper() { NEEDLE(); }
         let keys: Vec<&str> = knip
             .as_object()
             .map_or_default(|object| object.keys().map(String::as_str).collect());
-        if keys != ["entry"] {
-            problems.push(format!("knip.json: its keys are {keys:?}, not [\"entry\"]"));
+        if keys != ["entry", "ignoreFiles"] {
+            problems.push(format!(
+                "knip.json: its keys are {keys:?}, not [\"entry\", \"ignoreFiles\"]"
+            ));
+        }
+        // Only test files use the harness, and production knip skips tests.
+        let ignored = strings(knip.get("ignoreFiles"));
+        if ignored != Some(vec![TEST_SUPPORT]) {
+            problems.push(format!(
+                "knip.json: ignoreFiles is {ignored:?}, not [{TEST_SUPPORT:?}]"
+            ));
         }
         let entries = strings(knip.get("entry")).unwrap_or_default();
         let mut named = std::collections::BTreeSet::new();

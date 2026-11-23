@@ -1,16 +1,15 @@
 //! In-process Claude / Codex CLI streaming. Spawns the provider CLI directly
-//! (no localhost HTTP proxy), feeds it the chat history over stdin, and forwards
-//! each decoded text chunk to a caller-supplied callback. The child is spawned
+//! (no localhost HTTP proxy), feeds it the chat history on stdin (in WSL,
+//! through a temp file the script redirects), and forwards each decoded text
+//! chunk to a caller-supplied callback. The child is spawned
 //! with `kill_on_drop` so aborting the owning task terminates the CLI process.
 
 use std::fmt::Write as _;
 #[cfg(windows)]
 use std::os::windows::process::CommandExt as _;
 
-use futures_util::StreamExt;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::Command;
-use tokio_stream::wrappers::LinesStream;
 
 use super::ChatMessage;
 
@@ -18,24 +17,31 @@ use super::ChatMessage;
 /// model (that CLI rejects an explicit `-m`), so no default is needed there.
 pub(crate) const DEFAULT_CLAUDE_MODEL: &str = "claude-haiku-4-5";
 
-/// Name of the Codex working directory (used as both the WSL `/tmp/<name>` path
-/// and the Windows `temp_dir().join(<name>)` path).
+/// Name of the Codex working directory: `~/.cache/<name>` in WSL, and a
+/// folder of that name in the app's local data folder on Windows.
 const CODEX_WORKDIR: &str = "aigc-codex-workdir";
 /// Cap on total stdout bytes from a CLI child, matching the Gemini stream cap.
 const MAX_STREAM_BYTES: usize = 2 * 1024 * 1024;
 /// How many stderr lines to keep for the failure message.
 const STDERR_TAIL_LINES: usize = 5;
+/// How many bytes of each stderr line are kept; the rest is read and dropped.
+const STDERR_LINE_BYTES: usize = 4096;
 /// Folder, under the app's local data directory, that holds a Codex
 /// screenshot while its request runs.
 pub(crate) const SHOTS_DIR: &str = "shots";
-/// Marker printed by the WSL shell immediately before the CLI runs.
+/// Marker printed by the WSL shell immediately before the CLI runs, on stdout
+/// and on stderr.
 ///
-/// `bash -lic` sources the user's interactive `.bashrc`, which is where many
-/// installs put the CLI on PATH -- but it is also where nvm/fastfetch/"you have
-/// mail" banners print, and Codex output is plain text, so those lines were
-/// parsed as the start of the model's answer. Everything up to and including
-/// this marker is discarded, which keeps the PATH without the noise.
+/// `wsl_bash` sources the user's profile and interactive `.bashrc`, which is
+/// where many installs put the CLI on PATH -- but it is also where
+/// nvm/fastfetch/"you have mail" banners print, and Codex output is plain
+/// text, so those lines were parsed as the start of the model's answer.
+/// Everything up to and including this marker is discarded, which keeps the
+/// PATH without the noise. A run that never prints it never reached the CLI.
 const WSL_SENTINEL: &str = "__AIGC_STREAM_BEGIN__";
+/// Printed on stderr instead of `WSL_SENTINEL` when `wslpath` cannot map the
+/// Windows path of a request's file: the drive is not reachable from WSL.
+const WSL_PATH_UNMAPPED: &str = "__AIGC_PATH_UNMAPPED__";
 
 /// Windows `CREATE_NO_WINDOW` flag -- prevents console popups from `wsl.exe` and
 /// other console-subsystem processes.
@@ -84,18 +90,7 @@ enum Parsed {
     Error(String),
 }
 
-/// Configure a `std::process::Command` to run silently (no console popup on
-/// Windows, stdout/stderr discarded everywhere). Used for fire-and-forget
-/// probes where we only care about the exit status.
-fn silent(cmd: &mut std::process::Command) -> &mut std::process::Command {
-    cmd.stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null());
-    #[cfg(windows)]
-    cmd.creation_flags(CREATE_NO_WINDOW);
-    cmd
-}
-
-/// The WSL user's home directory, resolved once.
+/// The WSL user's home directory, resolved once per run.
 ///
 /// Scripts interpolate this path instead of writing `$HOME`. Under the old
 /// `wsl.exe --` form the command line went through the user's default shell
@@ -103,35 +98,128 @@ fn silent(cmd: &mut std::process::Command) -> &mut std::process::Command {
 /// ran -- a `$HOME` in the script was that shell's value, not bash's, and the
 /// Codex workdir resolved to `""`. `wsl_exec` removes that shell; the passwd
 /// database still needs no environment to answer.
-fn wsl_home() -> Option<&'static str> {
-    static HOME: std::sync::OnceLock<Option<String>> = std::sync::OnceLock::new();
-    HOME.get_or_init(|| {
-        let out = windowless(&mut wsl_exec(&[
+///
+/// Only a resolved home is kept. A failed lookup -- WSL still starting at
+/// logon, or installed after the launcher started -- is asked again by the
+/// next detection, so Re-check can find Codex without a restart.
+fn wsl_home(limit: std::time::Duration) -> Option<&'static str> {
+    let cache = home_cache();
+    if let Some(home) = cache.get() {
+        return Some(home);
+    }
+    let out = output_within(
+        windowless(&mut wsl_exec(&[
             "sh",
             "-c",
             r#"getent passwd "$(id -u)" | cut -d: -f6"#,
-        ]))
-        .output()
+        ])),
+        "",
+        limit,
+    )?;
+    let home = String::from_utf8_lossy(&out.stdout).trim().to_owned();
+    if !out.status.success() || !home.starts_with('/') {
+        tracing::warn!(
+            "Could not resolve the WSL home (exit {}): stdout [{home}], stderr [{}]",
+            out.status,
+            String::from_utf8_lossy(&out.stderr).trim()
+        );
+        return None;
+    }
+    tracing::info!("WSL home resolved: {home}");
+    Some(cache.get_or_init(|| home))
+}
+
+/// Where `wsl_home` keeps what it resolved: one per process, or one per fake
+/// `wsl.exe` in a test.
+fn home_cache() -> &'static std::sync::OnceLock<String> {
+    static HOME: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    #[cfg(test)]
+    if let Some(fake) = tests::fake_wsl() {
+        return fake.home;
+    }
+    &HOME
+}
+
+/// Run a detection child to its end with stdout and stderr captured, or kill
+/// it once `limit` has passed (`None`, logged). A `wsl.exe` that never answers
+/// -- a distro stuck starting, a profile waiting for input -- otherwise held
+/// detection, and with it every Re-check, forever. The pipes are read on
+/// their own threads, which are not waited for once the child is gone: a
+/// process the child started may still hold them open. `input` is written to
+/// the child's stdin, also on a thread of its own; empty means no stdin.
+fn output_within(
+    cmd: &mut std::process::Command,
+    input: &str,
+    limit: std::time::Duration,
+) -> Option<std::process::Output> {
+    let started = std::time::Instant::now();
+    let stdin = if input.is_empty() {
+        std::process::Stdio::null()
+    } else {
+        std::process::Stdio::piped()
+    };
+    let mut child = cmd
+        .stdin(stdin)
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .map_err(|e| tracing::debug!("{:?} did not start: {e}", cmd.get_program()))
         .ok()?;
-        let home = String::from_utf8_lossy(&out.stdout).trim().to_owned();
-        if !out.status.success() || !home.starts_with('/') {
-            tracing::warn!(
-                "Could not resolve the WSL home (exit {}): stdout [{home}], stderr [{}]",
-                out.status,
-                String::from_utf8_lossy(&out.stderr).trim()
-            );
-            return None;
+    if let Some(mut pipe) = child.stdin.take() {
+        let input = input.to_owned();
+        // A child that exits without reading closes the pipe: not an error.
+        std::thread::spawn(move || drop(std::io::Write::write_all(&mut pipe, input.as_bytes())));
+    }
+    let stdout = child.stdout.take().map(drain);
+    let stderr = child.stderr.take().map(drain);
+    let status = loop {
+        match child.try_wait() {
+            Ok(Some(status)) => break status,
+            Ok(None) if started.elapsed() < limit => {
+                std::thread::sleep(std::time::Duration::from_millis(20));
+            }
+            outcome => {
+                tracing::warn!(
+                    "{:?} gave no answer within {}s ({outcome:?}); ending it",
+                    cmd.get_program(),
+                    limit.as_secs()
+                );
+                crate::util::log_if_err("end a detection child", child.kill());
+                crate::util::log_if_err("reap a detection child", child.wait());
+                return None;
+            }
         }
-        tracing::info!("WSL home resolved: {home}");
-        Some(home)
+    };
+    let collect = |pipe: Option<std::sync::mpsc::Receiver<Vec<u8>>>| {
+        let left = limit.saturating_sub(started.elapsed());
+        pipe.and_then(|rx| rx.recv_timeout(left).ok())
+            .unwrap_or_default()
+    };
+    Some(std::process::Output {
+        status,
+        stdout: collect(stdout),
+        stderr: collect(stderr),
     })
-    .as_deref()
+}
+
+/// Read `pipe` to its end on a thread of its own, at most 64 KiB of it.
+fn drain(pipe: impl std::io::Read + Send + 'static) -> std::sync::mpsc::Receiver<Vec<u8>> {
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let mut out = Vec::new();
+        crate::util::log_if_err(
+            "read a detection pipe",
+            std::io::Read::read_to_end(&mut std::io::Read::take(pipe, 64 * 1024), &mut out),
+        );
+        // The receiver is gone when the child outlived its deadline.
+        drop(tx.send(out));
+    });
+    rx
 }
 
 /// Hide the console window without touching the pipes, for probes whose output
-/// we actually read. `silent` discards stdout, so a command whose result is read
-/// back through `output()` must use this instead -- that mix-up is what made the
-/// Codex workdir probe return an empty path on every run.
+/// we actually read. Discarding stdout here once made the Codex workdir probe
+/// return an empty path on every run.
 #[cfg_attr(
     not(windows),
     expect(
@@ -278,19 +366,70 @@ fn shell_escape(s: &str) -> String {
 /// layer and text such as a window title could run commands. Measured with ten
 /// hostile inputs: `--` altered six, `--exec` none.
 fn wsl_exec(args: &[&str]) -> std::process::Command {
-    let mut cmd = std::process::Command::new("wsl.exe");
+    let cmd = std::process::Command::new("wsl.exe");
+    #[cfg(test)]
+    let cmd = tests::fake_wsl().map_or(cmd, |fake| {
+        let mut cmd = std::process::Command::new(fake.program);
+        cmd.args(fake.script);
+        cmd
+    });
+    let mut cmd = cmd;
     cmd.arg("--exec").args(args);
     cmd
 }
 
-/// `wsl.exe --exec bash -lic <script>`: the script is parsed by that bash only.
-fn wsl_bash(script: &str) -> std::process::Command {
-    wsl_exec(&["bash", "-lic", script])
+/// `wsl.exe --exec bash --noediting -lis`, which reads its script from stdin
+/// (`wsl_stdin`) once the profile and `.bashrc` have run.
+///
+/// The script travels on stdin, not as `-c`: a profile that `exec`s another
+/// shell (`exec zsh`, `exec sh`) drops a `-c` script, and the new shell then
+/// read stdin -- the chat -- as commands. Now that shell reads the script, so
+/// it still runs, and the chat stays in a file (`wsl_run_script`).
+/// `--noediting` keeps readline from echoing the script to stderr.
+fn wsl_bash() -> std::process::Command {
+    wsl_exec(&["bash", "--noediting", "-lis"])
+}
+
+/// What `wsl_bash` reads on stdin to run `body`, a one-line POSIX `sh`
+/// script: the shell that reads it may be one the profile started. The
+/// leading blank line is what a profile that reads one line takes; without
+/// `HISTFILE` the interactive shell keeps the script out of its history.
+fn wsl_stdin(body: &str) -> String {
+    format!("\nunset HISTFILE; {body}\n")
+}
+
+/// The start of every script that runs a CLI: `WSL_SENTINEL`, on stdout and
+/// on stderr. On stderr it ends the interactive shell's own lines (job
+/// control warnings, prompts), so only the CLI's are kept. The leading
+/// newline ends whatever the profile printed without one (a terminal title
+/// escape, an `echo -n` banner), which otherwise shared the marker's line.
+fn start_marker() -> String {
+    format!("printf '\\n%s\\n' {WSL_SENTINEL}; printf '\\n%s\\n' {WSL_SENTINEL} >&2; ")
+}
+
+/// Whether `line` is the marker the script prints before the CLI. It is
+/// matched at the line's end, in case output without a newline still
+/// precedes it on the same line.
+fn is_start_line(line: &str) -> bool {
+    line.trim_end().ends_with(WSL_SENTINEL)
 }
 
 /// The version probe run inside WSL, with the CLI name quoted like any argument.
 fn version_script(name: &str) -> String {
-    format!("{} --version", shell_escape(name))
+    format!(
+        "{}{} --version </dev/null",
+        start_marker(),
+        shell_escape(name)
+    )
+}
+
+/// Whether a version probe's stdout holds a line from the CLI after the
+/// marker. Exit status 0 alone is not enough: a shell that ran nothing, or a
+/// CLI that printed nothing, also exits 0.
+fn has_version_line(stdout: &[u8]) -> bool {
+    let stdout = String::from_utf8_lossy(stdout);
+    let mut lines = stdout.lines();
+    lines.any(is_start_line) && lines.any(|line| !line.trim().is_empty())
 }
 
 /// The command that runs the CLI `name` from the Windows PATH.
@@ -372,26 +511,25 @@ fn npm_shim_command(shim: &str, dir: &std::path::Path) -> Option<std::process::C
 
 /// Check if a CLI tool is available, first natively on the Windows PATH (an
 /// `.exe`, or an npm install: see `native_command_in`), then inside WSL, using
-/// `bash -lic`.
+/// `bash -lis`.
 ///
-/// Both flags are required, and each was measured from the running launcher:
-/// `-i` sources `.bashrc`, where nvm puts Codex (plain `-lc` made Codex
-/// undetectable), and `-l` sources the profile, where `~/.local/bin` is added --
-/// without it Claude reported "Not found" on a machine that has it installed.
-/// The script reaches that bash through `wsl_bash`, so no other shell parses it
-/// first. See `WSL_SENTINEL` for how the interactive shell's banner output is
-/// kept out of the model stream.
-pub(crate) fn detect_cli(name: &str) -> CliMode {
-    let native = silent(native_command(name).arg("--version"))
-        .status()
-        .is_ok_and(|status| status.success());
+/// Both `-l` and `-i` are required, and each was measured from the running
+/// launcher: `-i` sources `.bashrc`, where nvm puts Codex (plain `-lc` made
+/// Codex undetectable), and `-l` sources the profile, where `~/.local/bin` is
+/// added -- without it Claude reported "Not found" on a machine that has it
+/// installed. The script reaches that bash through `wsl_bash`, so no other
+/// shell parses it first. See `WSL_SENTINEL` for how the interactive shell's
+/// banner output is kept out of the model stream.
+fn detect_cli(name: &str, limit: std::time::Duration) -> CliMode {
+    let native = output_within(windowless(native_command(name).arg("--version")), "", limit)
+        .is_some_and(|out| out.status.success());
     if native {
         return CliMode::Native;
     }
 
-    let wsl = silent(&mut wsl_bash(&version_script(name)))
-        .status()
-        .is_ok_and(|status| status.success());
+    let script = wsl_stdin(&version_script(name));
+    let wsl = output_within(windowless(&mut wsl_bash()), &script, limit)
+        .is_some_and(|out| out.status.success() && has_version_line(&out.stdout));
     if wsl {
         return CliMode::Wsl;
     }
@@ -404,10 +542,24 @@ pub(crate) fn detect_cli(name: &str) -> CliMode {
 /// Codex without a usable workdir is reported `Unavailable`: the binary is
 /// there but cannot answer, and offering it anyway surfaces as a bare "No such
 /// file or directory" from the CLI long after the user picked the provider.
-pub(crate) fn detect_all() -> CliConfig {
-    let claude = detect_cli("claude");
-    let detected_codex = detect_cli("codex");
-    let (codex, codex_workdir) = ensure_codex_workdir(detected_codex).map_or_else(
+/// `local_data` is the app's local data folder, which holds the workdir of a
+/// Codex on the Windows PATH; `None` leaves that Codex unavailable.
+pub(crate) fn detect_all(local_data: Option<&std::path::Path>) -> CliConfig {
+    detect_named("claude", "codex", super::DETECT_TIMEOUT, local_data)
+}
+
+/// `detect_all` for the CLIs named `claude` and `codex`, giving each child it
+/// starts at most `limit`.
+fn detect_named(
+    claude: &str,
+    codex: &str,
+    limit: std::time::Duration,
+    local_data: Option<&std::path::Path>,
+) -> CliConfig {
+    let claude = detect_cli(claude, limit);
+    let detected_codex = detect_cli(codex, limit);
+    let workdir = ensure_codex_workdir(detected_codex, limit, local_data);
+    let (codex, codex_workdir) = workdir.map_or_else(
         || (CliMode::Unavailable, String::new()),
         |dir| (detected_codex, dir),
     );
@@ -423,7 +575,14 @@ pub(crate) fn detect_all() -> CliConfig {
 /// `None` means no usable directory: the caller must then treat Codex as
 /// unavailable rather than spawn it with a path that does not exist, which the
 /// CLI reports only as a bare "No such file or directory".
-pub(crate) fn ensure_codex_workdir(mode: CliMode) -> Option<String> {
+fn ensure_codex_workdir(
+    mode: CliMode,
+    limit: std::time::Duration,
+    local_data: Option<&std::path::Path>,
+) -> Option<String> {
+    if mode == CliMode::Unavailable {
+        return None;
+    }
     if mode == CliMode::Wsl {
         // Under the user's home, not shared /tmp. Codex reads instruction files
         // (AGENTS.md) from its working directory, and a fixed
@@ -436,7 +595,7 @@ pub(crate) fn ensure_codex_workdir(mode: CliMode) -> Option<String> {
         // `$HOME` before bash ran -- which is why an `export HOME=...` in the
         // same script did not help -- so this resolved to "" and Codex died on
         // a missing directory. `wsl_bash` uses `--exec`, which removes that shell.
-        let home = wsl_home()?;
+        let home = wsl_home(limit)?;
         let dir = format!("{home}/.cache/{CODEX_WORKDIR}");
         let quoted = shell_escape(&dir);
         let script = format!(
@@ -446,36 +605,40 @@ pub(crate) fn ensure_codex_workdir(mode: CliMode) -> Option<String> {
         // `windowless`, not `silent`: `silent` discards stderr, and a failure
         // here must say why -- otherwise the only symptom is Codex exiting with
         // "No such file or directory" long afterwards.
-        let output = windowless(&mut wsl_bash(&script)).output();
-        return match output {
-            Ok(out) if out.status.success() => Some(dir),
-            Ok(out) => {
-                tracing::warn!(
-                    "Preparing the Codex workdir {dir} failed ({}): {}",
-                    out.status,
-                    String::from_utf8_lossy(&out.stderr).trim()
-                );
-                None
-            }
-            Err(err) => {
-                tracing::warn!("Could not run the Codex workdir setup: {err}");
-                None
-            }
-        };
+        let out = output_within(windowless(&mut wsl_bash()), &wsl_stdin(&script), limit)?;
+        if !out.status.success() {
+            tracing::warn!(
+                "Preparing the Codex workdir {dir} failed ({}): {}",
+                out.status,
+                String::from_utf8_lossy(&out.stderr).trim()
+            );
+            return None;
+        }
+        return Some(dir);
     }
 
-    let dir = std::env::temp_dir().join(CODEX_WORKDIR);
+    // In the user's own app folder for the same reason: `TEMP` can be a
+    // folder shared by every account (`C:\Temp`), where another user could
+    // pre-create the workdir and its AGENTS.md.
+    let Some(local_data) = local_data else {
+        tracing::warn!("Codex has no workdir: the app's local data folder is unknown");
+        return None;
+    };
+    let dir = local_data.join(CODEX_WORKDIR);
     if !dir.exists() {
         crate::util::log_if_err("create the Codex workdir", std::fs::create_dir_all(&dir));
-        crate::util::log_if_err(
-            "git init the Codex workdir",
-            silent(
+        let init = output_within(
+            windowless(
                 std::process::Command::new("git")
                     .args(["init"])
                     .current_dir(&dir),
-            )
-            .status(),
+            ),
+            "",
+            limit,
         );
+        if !init.is_some_and(|out| out.status.success()) {
+            tracing::warn!("git init of the Codex workdir failed");
+        }
     }
     if dir.is_dir() {
         Some(dir.to_string_lossy().into_owned())
@@ -646,45 +809,55 @@ fn parse_codex_line(line: &str) -> Option<Parsed> {
     Some(Parsed::Text(format!("{line}\n")))
 }
 
-/// A new screenshot file name in `dir`. It has to be unique, not secret: the
-/// directory belongs to this user and this app.
+/// A new screenshot file name in `dir`.
 fn shot_path(dir: &std::path::Path) -> std::path::PathBuf {
+    temp_path(dir, "aigc-shot", "png")
+}
+
+/// A new file name in `dir`, `<stem>-<pid>-<nanos>.<ext>`. It has to be
+/// unique, not secret: the directory belongs to this user and this app.
+fn temp_path(dir: &std::path::Path, stem: &str, ext: &str) -> std::path::PathBuf {
     let nanos = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0, |elapsed| elapsed.as_nanos());
-    dir.join(format!("aigc-shot-{}-{nanos}.png", std::process::id()))
+    dir.join(format!("{stem}-{}-{nanos}.{ext}", std::process::id()))
 }
 
-/// A screenshot written to disk for one Codex request. Dropping it deletes the
-/// file, so it lives exactly as long as the request's future.
+/// A file written to disk for one CLI request: a screenshot for Codex, or the
+/// prompt a CLI in WSL reads. Dropping it deletes the file, so it lives
+/// exactly as long as the request's future.
 #[derive(Debug)]
-struct TempShot {
+struct TempFile {
     path: std::path::PathBuf,
 }
 
-impl TempShot {
-    /// Write `png` to a new file at exactly `path`. Fails if anything already
+impl TempFile {
+    /// Write `bytes` to a new file at exactly `path`. Fails if anything already
     /// exists there, so an existing file is never written through. The file is
     /// closed before this returns.
-    fn create(path: std::path::PathBuf, png: &[u8]) -> Result<Self, String> {
+    fn create(path: std::path::PathBuf, bytes: &[u8]) -> Result<Self, String> {
         let mut file = std::fs::OpenOptions::new()
             .write(true)
             .create_new(true)
             .open(&path)
-            .map_err(|e| format!("could not create the screenshot file: {e}"))?;
-        let written = std::io::Write::write_all(&mut file, png);
+            .map_err(|e| format!("could not create the file: {e}"))?;
+        let written = std::io::Write::write_all(&mut file, bytes);
         drop(file);
         // From here the guard owns the file, so a failed write removes it.
-        let shot = Self { path };
-        written.map_err(|e| format!("could not write the screenshot file: {e}"))?;
-        Ok(shot)
+        let temp = Self { path };
+        written.map_err(|e| format!("could not write the file: {e}"))?;
+        Ok(temp)
     }
 }
 
-impl Drop for TempShot {
+impl Drop for TempFile {
     fn drop(&mut self) {
-        if let Err(e) = std::fs::remove_file(&self.path) {
-            tracing::warn!("Could not delete a Codex screenshot file: {e}");
+        match std::fs::remove_file(&self.path) {
+            // The WSL script deletes its prompt file itself.
+            Err(e) if e.kind() != std::io::ErrorKind::NotFound => {
+                tracing::warn!("Could not delete a CLI request file: {e}");
+            }
+            _ => {}
         }
     }
 }
@@ -697,12 +870,12 @@ const CODEX_SHOT_FAILED: &str = "The screenshot could not be handed to Codex; no
 fn codex_shot(
     dir: Option<&std::path::Path>,
     png: Option<&[u8]>,
-) -> Result<Option<TempShot>, String> {
+) -> Result<Option<TempFile>, String> {
     let Some(png) = png else {
         return Ok(None);
     };
     let dir = dir.ok_or_else(|| CODEX_SHOT_FAILED.to_owned())?;
-    TempShot::create(shot_path(dir), png)
+    TempFile::create(shot_path(dir), png)
         .map(Some)
         .map_err(|e| {
             tracing::warn!("Codex screenshot could not be written: {e}");
@@ -761,24 +934,37 @@ fn codex_args(work_dir: &str, image: Option<&str>) -> Vec<String> {
     args
 }
 
-/// The script `wsl_bash` runs for Codex. With an image, `wslpath` turns its
-/// Windows path into a Linux one inside the same bash; if that fails, Codex
-/// does not start and `wslpath`'s own message is the error.
-fn codex_wsl_script(work_dir: &str, image: Option<&str>) -> String {
-    let codex = format!(
+/// The Codex command `wsl_run_script` runs.
+fn codex_wsl_script(work_dir: &str) -> String {
+    format!(
         "codex -a never -s read-only --disable shell_tool -C {} exec \
          --skip-git-repo-check --ephemeral --ignore-user-config",
         shell_escape(work_dir),
-    );
-    let start = format!("printf '%s\\n' {WSL_SENTINEL}; ");
-    image.map_or_else(
-        || format!("{start}{codex}"),
+    )
+}
+
+/// The script `wsl_bash` runs for one request: `cli`, a command line with
+/// each word quoted, reading its prompt from the file at the Windows path
+/// `prompt` -- never from stdin, which is the script itself -- and with an
+/// image, `--image=` the file at the Windows path `image`. `wslpath` turns
+/// each path into a Linux one; if that fails, the CLI does not start and the
+/// script prints `WSL_PATH_UNMAPPED` on stderr after `wslpath`'s own message.
+/// The prompt file is deleted as soon as the CLI ends.
+fn wsl_run_script(cli: &str, prompt: &str, image: Option<&str>) -> String {
+    let unmapped = format!("|| {{ printf '\\n%s\\n' {WSL_PATH_UNMAPPED} >&2; exit 1; }}; ");
+    let (img, flag) = image.map_or_else(
+        || (String::new(), ""),
         |image| {
-            format!(
-                "{start}img=$(wslpath -u {}) && {codex} --image=\"$img\"",
-                shell_escape(image),
+            (
+                format!("img=$(wslpath -u {}) {unmapped}", shell_escape(image)),
+                " --image=\"$img\"",
             )
         },
+    );
+    format!(
+        "f=$(wslpath -u {}) {unmapped}{img}{}{cli}{flag} < \"$f\"; s=$?; rm -f -- \"$f\"; exit \"$s\"",
+        shell_escape(prompt),
+        start_marker(),
     )
 }
 
@@ -826,12 +1012,14 @@ fn claude_wsl_script(model: &str, system_prompt: &str) -> String {
 }
 
 /// Stream a Claude response by spawning the Claude CLI in stream-json mode.
+/// In WSL the prompt goes through a file in `files_dir` (see `run_in_wsl`).
 pub(super) async fn stream_claude<F>(
     cfg: &CliConfig,
     model: &str,
     system_prompt: &str,
     messages: &[ChatMessage],
     screenshot: Option<&str>,
+    files_dir: Option<&std::path::Path>,
     on_chunk: F,
 ) -> Result<(), String>
 where
@@ -842,18 +1030,50 @@ where
     }
     validate_model_name(model)?;
 
-    let mut cmd = if cfg.claude == CliMode::Wsl {
-        Command::from(wsl_bash(&claude_wsl_script(model, system_prompt)))
-    } else {
-        let mut c = Command::from(native_command("claude"));
-        c.args(claude_args(model, system_prompt));
-        c
-    };
+    let run = CliRun::plain("Claude", build_claude_input(messages, screenshot));
+    if cfg.claude == CliMode::Wsl {
+        let claude = claude_wsl_script(model, system_prompt);
+        return run_in_wsl(&claude, None, files_dir, run, on_chunk, parse_claude_line).await;
+    }
+    let mut cmd = Command::from(native_command("claude"));
+    cmd.args(claude_args(model, system_prompt));
+    run_cli(&mut cmd, run, on_chunk, parse_claude_line).await
+}
 
-    let input = build_claude_input(messages, screenshot);
-    // Claude emits stream-json and its parser drops non-JSON, so shell
-    // banners cannot reach the user -- no sentinel needed.
-    run_cli(&mut cmd, input, on_chunk, parse_claude_line, "Claude", None).await
+/// Run `cli`, a command line with each word quoted, inside WSL through
+/// `wsl_run_script`. The prompt (`run.input`) is written to a file in
+/// `files_dir` that the CLI reads, so the shell's stdin carries only the
+/// script; the file is gone when this future ends, however it ends. Without
+/// a folder, or when the file cannot be written, nothing is sent.
+async fn run_in_wsl<F, P>(
+    cli: &str,
+    image: Option<&str>,
+    files_dir: Option<&std::path::Path>,
+    mut run: CliRun<'_>,
+    on_chunk: F,
+    parse_line: P,
+) -> Result<(), String>
+where
+    F: FnMut(String) -> Result<(), String> + Send,
+    P: Fn(&str) -> Option<Parsed> + Send + Sync,
+{
+    let label = run.label;
+    let prompt = files_dir
+        .ok_or_else(|| "there is no folder for it".to_owned())
+        .and_then(|dir| {
+            TempFile::create(temp_path(dir, "aigc-prompt", "txt"), run.input.as_bytes())
+        })
+        .map_err(|e| {
+            tracing::warn!("{label} prompt file could not be written: {e}");
+            format!("The question could not be handed to {label} in WSL; nothing was sent.")
+        })?;
+    let script = wsl_run_script(cli, &prompt.path.to_string_lossy(), image);
+    run.script = Some(wsl_stdin(&script));
+    run.skip_until = Some(WSL_SENTINEL);
+    let result = run_cli(&mut Command::from(wsl_bash()), run, on_chunk, parse_line).await;
+    // Only now may the file go: the CLI reads it while `run_cli` runs.
+    drop(prompt);
+    result
 }
 
 /// Stream a Codex response by spawning the Codex CLI in `exec` mode.
@@ -861,7 +1081,8 @@ where
 /// `png` is a screenshot to show Codex, written as a file into `shots_dir`
 /// here and deleted when this future ends, however it ends: answer, error,
 /// timeout, Stop or a newer request. When the file cannot be written (or there
-/// is no folder) the request ends with an error before Codex is spawned.
+/// is no folder) the request ends with an error before Codex is spawned. In
+/// WSL the prompt goes through a file in `shots_dir` too (see `run_in_wsl`).
 pub(super) async fn stream_codex<F>(
     cfg: &CliConfig,
     system_prompt: &str,
@@ -886,28 +1107,55 @@ where
         .map(|temp| temp.path.to_string_lossy().into_owned());
 
     let work_dir = cfg.codex_workdir.as_str();
-    let mut cmd = if cfg.codex == CliMode::Wsl {
-        Command::from(wsl_bash(&codex_wsl_script(work_dir, image.as_deref())))
+    let run = CliRun::plain("Codex", build_codex_input(system_prompt, messages));
+    let result = if cfg.codex == CliMode::Wsl {
+        let codex = codex_wsl_script(work_dir);
+        run_in_wsl(
+            &codex,
+            image.as_deref(),
+            shots_dir,
+            run,
+            on_chunk,
+            parse_codex_line,
+        )
+        .await
     } else {
-        let mut c = Command::from(native_command("codex"));
-        c.args(codex_args(work_dir, image.as_deref()));
-        c
+        let mut cmd = Command::from(native_command("codex"));
+        cmd.args(codex_args(work_dir, image.as_deref()));
+        run_cli(&mut cmd, run, on_chunk, parse_codex_line).await
     };
-
-    let input = build_codex_input(system_prompt, messages);
-    let sentinel = matches!(cfg.codex, CliMode::Wsl).then_some(WSL_SENTINEL);
-    let result = run_cli(
-        &mut cmd,
-        input,
-        on_chunk,
-        parse_codex_line,
-        "Codex",
-        sentinel,
-    )
-    .await;
     // Only now may the file go: Codex reads it while `run_cli` runs.
     drop(temp_shot);
     result
+}
+
+/// One CLI request as `run_cli` drives it.
+struct CliRun<'a> {
+    /// The CLI's name in messages and the log.
+    label: &'a str,
+    /// The prompt: written to the child's stdin, which is then closed, unless
+    /// `script` is set. Lines of it the child echoes to stderr are not kept.
+    input: String,
+    /// Written to stdin in place of `input`: the script a WSL shell runs.
+    script: Option<String>,
+    /// When set, stdout up to and including this marker line is skipped.
+    skip_until: Option<&'a str>,
+    /// How long the child may go without writing a line before it is ended.
+    idle: std::time::Duration,
+}
+
+impl<'a> CliRun<'a> {
+    /// A run that writes `input` to stdin, waits for no marker and uses the
+    /// production idle limit.
+    const fn plain(label: &'a str, input: String) -> Self {
+        Self {
+            label,
+            input,
+            script: None,
+            skip_until: None,
+            idle: super::REQUEST_TIMEOUT,
+        }
+    }
 }
 
 /// Spawn a CLI child, write `input` to stdin, and stream parsed stdout lines to
@@ -918,16 +1166,21 @@ where
 /// in-distro CLI process (a known limitation, same as before).
 async fn run_cli<F, P>(
     cmd: &mut Command,
-    input: String,
+    run: CliRun<'_>,
     mut on_chunk: F,
     parse_line: P,
-    label: &str,
-    skip_until: Option<&str>,
 ) -> Result<(), String>
 where
     F: FnMut(String) -> Result<(), String> + Send,
     P: Fn(&str) -> Option<Parsed> + Send + Sync,
 {
+    let CliRun {
+        label,
+        input,
+        script,
+        skip_until,
+        idle,
+    } = run;
     cmd.stdin(std::process::Stdio::piped());
     cmd.stdout(std::process::Stdio::piped());
     cmd.stderr(std::process::Stdio::piped());
@@ -953,79 +1206,72 @@ where
     let stderr = child.stderr.take();
 
     let prompt = input.as_str();
+    let stdin_text = script.as_deref().unwrap_or(prompt);
     let write_fut = async move {
         crate::util::log_if_err(
             "write the CLI prompt",
-            stdin.write_all(prompt.as_bytes()).await,
+            stdin.write_all(stdin_text.as_bytes()).await,
         );
         crate::util::log_if_err("flush the CLI prompt", stdin.flush().await);
         // Dropping stdin closes the pipe so the CLI knows the input is complete.
+        Ok::<(), String>(())
     };
 
-    let stderr_fut = read_stderr_tail(stderr, prompt);
+    // Every line the child writes, on either pipe, is a sign of life: Codex
+    // reports its progress on stderr and prints the answer only at the end.
+    let activity = tokio::sync::Notify::new();
+    let idle_watch = async {
+        while tokio::time::timeout(idle, activity.notified())
+            .await
+            .is_ok()
+        {}
+    };
 
-    let read_fut = async {
-        let reader = BufReader::new(stdout);
-        let mut lines = LinesStream::new(reader.lines());
-        let mut total_bytes: usize = 0;
-        let mut emitted = false;
-        // Set only when the command prints WSL_SENTINEL; everything the
-        // interactive shell emitted before it is profile noise, not output.
-        let mut waiting_for_sentinel = skip_until.is_some();
-        while let Some(item) = lines.next().await {
-            let line = item.map_err(|e| format!("Failed to read from {label} CLI: {e}"))?;
-            if waiting_for_sentinel {
-                if skip_until.is_some_and(|marker| line.trim() == marker) {
-                    waiting_for_sentinel = false;
-                } else if !line.trim().is_empty() {
-                    tracing::debug!("{label}: dropping pre-start shell output: {line}");
-                }
-                continue;
-            }
-            // Mirror the Gemini stream cap: `lines()` grows one buffer with no
-            // ceiling, so a child emitting a huge blob would otherwise grow the
-            // launcher's memory byte for byte. The `+ 1` is the newline `lines()`
-            // strips, so a flood of blank lines counts too.
-            total_bytes = total_bytes.saturating_add(line.len() + 1);
-            if total_bytes > MAX_STREAM_BYTES {
-                return Err(format!("{label} response exceeded the size limit."));
-            }
-            // Blank lines reach the parser: they are paragraph breaks in a
-            // plain-text answer, and Claude's JSON parser drops them anyway.
-            match parse_line(&line) {
-                Some(Parsed::Text(text)) => {
-                    emitted = true;
-                    on_chunk(text)?;
-                }
-                Some(Parsed::Error(message)) => return Err(message),
-                None => {}
-            }
+    let stderr_fut = read_stderr_tail(stderr, prompt, &activity);
+
+    // Boxed: the read state would make every caller's future large.
+    let read_fut = Box::pin(read_answer(
+        stdout,
+        label,
+        skip_until,
+        &activity,
+        &mut on_chunk,
+        parse_line,
+    ));
+
+    // Returning drops the child, which `kill_on_drop` (and its job) ends. A
+    // stdout error (the size cap, an error frame) returns at once: a child
+    // that outlives its closed stdout may hold stderr open for minutes.
+    let joined = tokio::select! {
+        joined = async {
+            tokio::try_join!(
+                write_fut,
+                async { Ok(stderr_fut.await) },
+                read_fut,
+            )
+        } => joined,
+        () = idle_watch => {
+            tracing::warn!("{label} CLI wrote nothing for {}s; ending it", idle.as_secs());
+            return Err(super::TIMED_OUT.to_owned());
         }
-        Ok(emitted)
     };
-
-    let ((), (stderr_tail, stderr_lines), read_result) =
-        tokio::join!(write_fut, stderr_fut, read_fut);
+    let ((), (stderr_tail, stderr_lines), streamed) = joined?;
     tracing::debug!("{label} wrote {stderr_lines} stderr line(s)");
-    let emitted = read_result?;
+    let emitted = match streamed {
+        Streamed::NotStarted => {
+            tracing::warn!("{label} did not start in WSL: no start marker on stdout");
+            return Err(not_started_message(label, &stderr_tail));
+        }
+        Streamed::Nothing => false,
+        Streamed::Text => true,
+    };
 
     // Stdout reaching EOF is NOT success. Without this, a CLI that fails before
     // printing anything -- not logged in, binary missing, WSL distro down --
     // reached the user as a completed, empty answer with no error at all.
     let status = child.wait().await;
     drop(child);
-    // The log gets how the CLI ended and its error lines, never the rest of
-    // stderr: a CLI may repeat the chat there.
-    let failed = |outcome: &str| {
-        let errors = error_lines(&stderr_tail);
-        let mut line = format!("{label} CLI failed: {outcome}, {stderr_lines} stderr line(s)");
-        if !errors.is_empty() {
-            line.push_str(": ");
-            line.push_str(&errors.join(" / "));
-        }
-        tracing::warn!("{line}");
-        Err(cli_failure_message(label, &stderr_tail))
-    };
+    let failed = |outcome: &str| cli_failed(label, outcome, &stderr_tail, stderr_lines);
     match status {
         Ok(status) if status.success() => {
             if emitted {
@@ -1039,26 +1285,161 @@ where
     }
 }
 
+/// Log how the CLI ended and its error lines, never the rest of stderr (a CLI
+/// may repeat the chat there), and return the error the user sees.
+fn cli_failed(
+    label: &str,
+    outcome: &str,
+    stderr_tail: &[String],
+    stderr_lines: usize,
+) -> Result<(), String> {
+    let errors = error_lines(stderr_tail);
+    let mut line = format!("{label} CLI failed: {outcome}, {stderr_lines} stderr line(s)");
+    if !errors.is_empty() {
+        line.push_str(": ");
+        line.push_str(&errors.join(" / "));
+    }
+    tracing::warn!("{line}");
+    Err(cli_failure_message(label, stderr_tail))
+}
+
+/// What a child's stdout held, once read to its end.
+#[derive(Debug, PartialEq, Eq)]
+enum Streamed {
+    /// The marker `skip_until` names never came: the CLI never ran.
+    NotStarted,
+    /// No text arrived.
+    Nothing,
+    /// Text arrived.
+    Text,
+}
+
+/// Read the child's stdout to its end, passing each parsed line to
+/// `on_chunk`. Each line is reported to `activity`.
+async fn read_answer<F, P>(
+    stdout: tokio::process::ChildStdout,
+    label: &str,
+    skip_until: Option<&str>,
+    activity: &tokio::sync::Notify,
+    on_chunk: &mut F,
+    parse_line: P,
+) -> Result<Streamed, String>
+where
+    F: FnMut(String) -> Result<(), String> + Send,
+    P: Fn(&str) -> Option<Parsed> + Send + Sync,
+{
+    let mut reader = BufReader::new(stdout);
+    let mut bytes = Vec::new();
+    let mut total_bytes: usize = 0;
+    let mut emitted = false;
+    // Set only when the command prints WSL_SENTINEL; everything the
+    // interactive shell emitted before it is profile noise, not output.
+    let mut waiting_for_sentinel = skip_until.is_some();
+    loop {
+        // Mirror the Gemini stream cap. A line is read only as far as the
+        // bytes left under it, so one huge line cannot grow the launcher's
+        // memory past the cap before its newline comes.
+        let left = MAX_STREAM_BYTES.saturating_sub(total_bytes);
+        let read = read_line_capped(&mut reader, &mut bytes, left)
+            .await
+            .map_err(|e| format!("Failed to read from {label} CLI: {e}"))?;
+        match read {
+            Line::End => break,
+            Line::Cut => return Err(format!("{label} response exceeded the size limit.")),
+            Line::Whole => {}
+        }
+        // A byte that is not UTF-8 (a banner in another locale) is shown as
+        // U+FFFD: one stray byte must not fail the whole answer.
+        let line = String::from_utf8_lossy(&bytes).into_owned();
+        activity.notify_one();
+        if waiting_for_sentinel {
+            // At the line's end: see `is_start_line`.
+            if skip_until.is_some_and(|marker| line.trim_end().ends_with(marker)) {
+                waiting_for_sentinel = false;
+            } else if !line.trim().is_empty() {
+                tracing::debug!("{label}: dropping pre-start shell output: {line}");
+            }
+            continue;
+        }
+        // The `+ 1` is the newline the reader strips, so a flood of blank
+        // lines counts too.
+        total_bytes = total_bytes.saturating_add(line.len() + 1);
+        // Blank lines reach the parser: they are paragraph breaks in a
+        // plain-text answer, and Claude's JSON parser drops them anyway.
+        match parse_line(&line) {
+            Some(Parsed::Text(text)) => {
+                emitted = true;
+                on_chunk(text)?;
+            }
+            Some(Parsed::Error(message)) => return Err(message),
+            None => {}
+        }
+    }
+    Ok(if waiting_for_sentinel {
+        Streamed::NotStarted
+    } else if emitted {
+        Streamed::Text
+    } else {
+        Streamed::Nothing
+    })
+}
+
 /// Count the child's stderr lines and keep the last few: when the child fails
 /// without writing any stdout, they are the only thing that can explain why.
 /// Codex echoes the whole prompt, and with it the chat, to stderr, so a line of
-/// the prompt is only counted, never kept.
+/// the prompt is only counted, never kept. In WSL the lines up to the start
+/// marker are the shell's own (job control warnings, prompts, which run into
+/// the marker's line), and the login shell's `logout` follows the CLI's: all
+/// of them are dropped once the marker comes.
 async fn read_stderr_tail(
     stderr: Option<tokio::process::ChildStderr>,
     prompt: &str,
+    activity: &tokio::sync::Notify,
 ) -> (Vec<String>, usize) {
     let prompt_lines: std::collections::HashSet<&str> = prompt.lines().map(str::trim).collect();
     let mut tail: Vec<String> = Vec::new();
     let mut count = 0usize;
+    let mut started = false;
     if let Some(stderr) = stderr {
-        let reader = BufReader::new(stderr);
-        let mut lines = LinesStream::new(reader.lines());
-        while let Some(Ok(line)) = lines.next().await {
+        let mut reader = BufReader::new(stderr);
+        let mut bytes = Vec::new();
+        // Only the start of a long line is kept; the rest is read and dropped.
+        while let Ok(read) = read_line_capped(&mut reader, &mut bytes, STDERR_LINE_BYTES).await {
+            let cut = match read {
+                Line::End => break,
+                Line::Whole => false,
+                Line::Cut => {
+                    if skip_line(&mut reader).await.is_err() {
+                        break;
+                    }
+                    cut_to_char(&mut bytes);
+                    true
+                }
+            };
+            // Lossy: a CLI whose stderr is no longer read dies of a broken
+            // pipe on its next write, so no line may end the reading.
+            let line = String::from_utf8_lossy(&bytes).into_owned();
+            activity.notify_one();
             if line.trim().is_empty() {
                 continue;
             }
+            if is_start_line(&line) {
+                (started, count) = (true, 0);
+                tail.clear();
+                continue;
+            }
+            if started && line.trim() == "logout" {
+                continue;
+            }
             count += 1;
-            if prompt_lines.contains(line.trim()) {
+            // A cut line of the prompt is the start of one.
+            let of_prompt = if cut {
+                let head = line.trim_start();
+                prompt_lines.iter().any(|p| p.starts_with(head))
+            } else {
+                prompt_lines.contains(line.trim())
+            };
+            if of_prompt {
                 continue;
             }
             if tail.len() == STDERR_TAIL_LINES {
@@ -1068,6 +1449,98 @@ async fn read_stderr_tail(
         }
     }
     (tail, count)
+}
+
+/// How a `read_line_capped` call ended.
+#[derive(Debug, PartialEq, Eq)]
+enum Line {
+    /// The pipe is at its end; no line was read.
+    End,
+    /// A whole line, or the last bytes before the end of the pipe.
+    Whole,
+    /// The line reached the limit before its newline; the rest is unread.
+    Cut,
+}
+
+/// Read one line into `line` (cleared first), its `\n` or `\r\n` removed,
+/// holding at most `limit` bytes of it: a line that reaches `limit` before its
+/// newline is returned `Cut` with the rest left in `reader`.
+async fn read_line_capped<R>(
+    reader: &mut R,
+    line: &mut Vec<u8>,
+    limit: usize,
+) -> std::io::Result<Line>
+where
+    R: tokio::io::AsyncBufRead + Unpin,
+{
+    line.clear();
+    loop {
+        let available = reader.fill_buf().await?;
+        if available.is_empty() {
+            return Ok(if line.is_empty() {
+                Line::End
+            } else {
+                Line::Whole
+            });
+        }
+        let room = limit - line.len();
+        let (used, outcome) = match available.iter().position(|&b| b == b'\n') {
+            Some(end) if end < room => {
+                line.extend(available.iter().take(end));
+                if line.last() == Some(&b'\r') {
+                    line.pop();
+                }
+                (end + 1, Some(Line::Whole))
+            }
+            _ if available.len() >= room => {
+                line.extend(available.iter().take(room));
+                (room, Some(Line::Cut))
+            }
+            _ => {
+                line.extend_from_slice(available);
+                (available.len(), None)
+            }
+        };
+        reader.consume(used);
+        if let Some(outcome) = outcome {
+            return Ok(outcome);
+        }
+    }
+}
+
+/// Read and drop the rest of a line, up to and including its newline.
+async fn skip_line<R>(reader: &mut R) -> std::io::Result<()>
+where
+    R: tokio::io::AsyncBufRead + Unpin,
+{
+    loop {
+        let available = reader.fill_buf().await?;
+        if available.is_empty() {
+            return Ok(());
+        }
+        let (used, done) = available
+            .iter()
+            .position(|&b| b == b'\n')
+            .map_or((available.len(), false), |end| (end + 1, true));
+        reader.consume(used);
+        if done {
+            return Ok(());
+        }
+    }
+}
+
+/// Drop a character that a cut split at the end of `bytes`.
+fn cut_to_char(bytes: &mut Vec<u8>) {
+    if let Err(e) = std::str::from_utf8(bytes)
+        && e.error_len().is_none()
+    {
+        bytes.truncate(e.valid_up_to());
+    }
+}
+
+/// `text` cut to `max` characters.
+fn cut_chars(text: &str, max: usize) -> String {
+    text.chars().take(max).collect()
 }
 
 /// The stderr lines that report an error, such as Codex's
@@ -1087,7 +1560,8 @@ fn error_lines(stderr_tail: &[String]) -> Vec<&str> {
 
 /// Surface the child's own stderr when it has any -- "Invalid API key, please
 /// run /login" is actionable in a way that a generic failure string is not.
-/// Its error lines say why when there are any; the rest is context.
+/// Its error lines say why when there are any; the rest is context. Cut like
+/// every other provider error, since the overlay shows it whole.
 fn cli_failure_message(label: &str, stderr_tail: &[String]) -> String {
     let errors = error_lines(stderr_tail);
     let reason = if errors.is_empty() {
@@ -1098,13 +1572,196 @@ fn cli_failure_message(label: &str, stderr_tail: &[String]) -> String {
     if reason.is_empty() {
         format!("{label} CLI produced no output. Check the launcher log.")
     } else {
-        format!("{label} CLI failed: {reason}")
+        cut_chars(
+            &format!("{label} CLI failed: {reason}"),
+            super::gemini::MAX_ERROR_MESSAGE_CHARS,
+        )
     }
+}
+
+/// The error for a WSL run whose script never printed its start marker: the
+/// shell, or whatever the profile started in its place, never reached the
+/// CLI. A profile that starts a shell which cannot run a POSIX script (fish)
+/// ends here, as does one that reads stdin. The shell's output is cut, the
+/// hint after it is not. A script that could not map a file's Windows path
+/// (`WSL_PATH_UNMAPPED`) says so instead: the profile is not the cause.
+fn not_started_message(label: &str, stderr_tail: &[String]) -> String {
+    if stderr_tail
+        .iter()
+        .any(|line| line.trim_end().ends_with(WSL_PATH_UNMAPPED))
+    {
+        return format!(
+            "{label} did not start in WSL: the Windows drive is not reachable from WSL, so \
+             the question could not be handed to the CLI. Sage needs WSL to mount the Windows \
+             drives (automount in /etc/wsl.conf)."
+        );
+    }
+    let reason = if stderr_tail.is_empty() {
+        "the WSL shell ended before it ran the CLI".to_owned()
+    } else {
+        cut_chars(
+            &stderr_tail.join(" / "),
+            super::gemini::MAX_ERROR_MESSAGE_CHARS,
+        )
+    };
+    format!(
+        "{label} did not start in WSL: {reason}. If ~/.profile or ~/.bashrc starts \
+         another shell (such as exec fish) or reads input, do that only in a terminal, \
+         for example behind [ -t 0 ] &&."
+    )
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A stand-in for `wsl.exe`, used by every `wsl_exec` on this thread.
+    #[derive(Clone)]
+    pub(super) struct FakeWsl {
+        pub(super) program: std::path::PathBuf,
+        /// The script `program` runs, when it is a shell.
+        pub(super) script: Option<std::path::PathBuf>,
+        /// This fake's own `wsl_home` cache, so tests never share one.
+        pub(super) home: &'static std::sync::OnceLock<String>,
+    }
+
+    thread_local! {
+        static FAKE_WSL: std::cell::RefCell<Option<FakeWsl>> = const { std::cell::RefCell::new(None) };
+    }
+
+    pub(super) fn fake_wsl() -> Option<FakeWsl> {
+        FAKE_WSL.with_borrow(Clone::clone)
+    }
+
+    /// Puts a fake `wsl.exe` in place on this thread until it is dropped.
+    struct FakeWslGuard(std::path::PathBuf);
+
+    impl Drop for FakeWslGuard {
+        fn drop(&mut self) {
+            FAKE_WSL.set(None);
+            crate::util::log_if_err("remove the fake wsl", std::fs::remove_dir_all(&self.0));
+        }
+    }
+
+    /// Install a fake `wsl.exe` running `unix` (a `sh` script body) or, on
+    /// Windows, `windows` (a batch file body). It gets the real arguments,
+    /// starting with `--exec`.
+    fn install_fake_wsl(name: &str, unix: &str, windows: &str) -> FakeWslGuard {
+        let dir = fresh_dir(&format!("fake-wsl-{name}"));
+        // On Unix the script is run by `sh`, not executed itself: a child
+        // another test forks while this file is open for writing keeps it
+        // open until it execs, and executing the file then fails with
+        // "Text file busy".
+        let (program, script) = if cfg!(windows) {
+            let path = dir.join("wsl.cmd");
+            std::fs::write(&path, format!("@echo off\r\n{windows}\r\n")).unwrap();
+            (path, None)
+        } else {
+            let path = dir.join("wsl.exe");
+            std::fs::write(&path, format!("#!/bin/sh\n{unix}\n")).unwrap();
+            ("/bin/sh".into(), Some(path))
+        };
+        let home = Box::leak(Box::new(std::sync::OnceLock::new()));
+        FAKE_WSL.set(Some(FakeWsl {
+            program,
+            script,
+            home,
+        }));
+        FakeWslGuard(dir)
+    }
+
+    /// Names no install has, so the native probes find nothing.
+    const NO_CLAUDE: &str = "aigc-test-absent-claude";
+    const NO_CODEX: &str = "aigc-test-absent-codex";
+    const SCALED_DETECT: std::time::Duration = std::time::Duration::from_secs(1);
+
+    /// What a WSL that has the CLI prints for its version probe.
+    const UNIX_VERSION_ANSWER: &str = "printf '\\n%s\\ncli 1.0\\n' __AIGC_STREAM_BEGIN__";
+    const WINDOWS_VERSION_ANSWER: &str = "echo.\r\necho __AIGC_STREAM_BEGIN__\r\necho cli 1.0";
+
+    #[test]
+    fn detection_gives_up_on_a_wsl_that_never_answers() {
+        let _fake = install_fake_wsl("hang", "exec sleep 10", "ping -n 11 127.0.0.1 >nul");
+        let started = std::time::Instant::now();
+        let cfg = detect_named(NO_CLAUDE, NO_CODEX, SCALED_DETECT, None);
+        let took = started.elapsed();
+        println!("{cfg:?} after {took:?}");
+        assert!(
+            took < std::time::Duration::from_secs(5),
+            "detection waited {took:?}"
+        );
+        assert_eq!(
+            (cfg.claude, cfg.codex),
+            (CliMode::Unavailable, CliMode::Unavailable)
+        );
+    }
+
+    /// A Codex on the Windows PATH works in the app's own local data folder,
+    /// never in a shared temp folder; without that folder it has no workdir.
+    #[test]
+    fn the_native_codex_workdir_is_in_the_app_data_folder() {
+        let profile = fresh_dir("local-data");
+        let workdir = ensure_codex_workdir(CliMode::Native, SCALED_DETECT, Some(&profile));
+        let made = workdir
+            .as_deref()
+            .is_some_and(|dir| std::path::Path::new(dir).is_dir());
+        let unknown = ensure_codex_workdir(CliMode::Native, SCALED_DETECT, None);
+        std::fs::remove_dir_all(&profile).unwrap();
+        println!("workdir {workdir:?}, without the folder {unknown:?}");
+        assert_eq!(
+            workdir.map(std::path::PathBuf::from),
+            Some(profile.join(CODEX_WORKDIR))
+        );
+        assert!(made, "the workdir was not created");
+        assert_eq!(unknown, None);
+    }
+
+    /// WSL fails the first home lookup (the VM still starting), then answers.
+    #[test]
+    fn a_failed_wsl_home_lookup_is_tried_again() {
+        let dir = fresh_dir("home-retry-count");
+        let count = dir.join("asked");
+        let unix = format!(
+            "[ -f '{c}' ] && {{ echo /srv/probe-home; exit 0; }}\n: > '{c}'; echo 'wsl: VM starting' >&2; exit 1",
+            c = count.display()
+        );
+        let windows = format!(
+            "if exist \"{c}\" (echo /srv/probe-home\r\nexit /b 0)\r\ntype nul > \"{c}\"\r\necho wsl: VM starting 1>&2\r\nexit /b 1",
+            c = count.display()
+        );
+        let _fake = install_fake_wsl("home-retry", &unix, &windows);
+        let first = wsl_home(SCALED_DETECT);
+        let second = wsl_home(SCALED_DETECT);
+        let workdir = ensure_codex_workdir(CliMode::Wsl, SCALED_DETECT, None);
+        std::fs::remove_dir_all(&dir).unwrap();
+        println!("first {first:?}, second {second:?}, workdir {workdir:?}");
+        assert_eq!(first, None);
+        assert_eq!(second, Some("/srv/probe-home"));
+        assert_eq!(
+            workdir.as_deref(),
+            Some("/srv/probe-home/.cache/aigc-codex-workdir")
+        );
+    }
+
+    /// The version probe answers; only the home lookup (`--exec sh ...`) hangs.
+    #[test]
+    fn detection_gives_up_on_a_wsl_home_lookup_that_hangs() {
+        let unix = format!("[ \"$2\" = sh ] && exec sleep 10\n{UNIX_VERSION_ANSWER}");
+        let windows = format!(
+            "if \"%2\"==\"sh\" (ping -n 11 127.0.0.1 >nul\r\nexit /b 1)\r\n{WINDOWS_VERSION_ANSWER}"
+        );
+        let _fake = install_fake_wsl("home-hang", &unix, &windows);
+        let started = std::time::Instant::now();
+        let cfg = detect_named(NO_CLAUDE, NO_CODEX, SCALED_DETECT, None);
+        let took = started.elapsed();
+        println!("{cfg:?} after {took:?}");
+        assert!(
+            took < std::time::Duration::from_secs(5),
+            "detection waited {took:?}"
+        );
+        assert_eq!(cfg.claude, CliMode::Wsl);
+        assert_eq!(cfg.codex, CliMode::Unavailable, "Codex without a workdir");
+    }
 
     fn msg(role: &str, content: &str) -> ChatMessage {
         ChatMessage {
@@ -1126,21 +1783,202 @@ mod tests {
 
     #[test]
     fn wsl_bash_passes_script_without_a_second_shell() {
-        let cmd = wsl_bash("S");
+        let cmd = wsl_bash();
         assert_eq!(cmd.get_program(), "wsl.exe");
         assert_eq!(
             cmd.get_args().collect::<Vec<_>>(),
-            ["--exec", "bash", "-lic", "S"]
+            ["--exec", "bash", "--noediting", "-lis"]
         );
+        assert_eq!(wsl_stdin("S"), "\nunset HISTFILE; S\n");
     }
 
     #[test]
     fn version_probe_escapes_the_name() {
-        assert_eq!(version_script("x; y"), "'x; y' --version");
+        assert_eq!(
+            version_script("x; y"),
+            format!("{}'x; y' --version </dev/null", start_marker())
+        );
+    }
+
+    /// A WSL stand-in that runs the real `bash` of this host: `wsl.exe --exec
+    /// <program...>` runs the program with `HOME` at a fresh directory whose
+    /// `.profile` is `profile`, and a `bin` first on PATH holding `wslpath`
+    /// (prints the path it is given) and the CLIs in `clis` (name, `sh` body).
+    /// Returns the guard and the fake's directory, which holds an empty
+    /// `files` folder for the request's temp files.
+    #[cfg(unix)]
+    fn install_profiled_wsl(
+        name: &str,
+        profile: &str,
+        clis: &[(&str, &str)],
+    ) -> (FakeWslGuard, std::path::PathBuf) {
+        use std::os::unix::fs::PermissionsExt as _;
+        let root =
+            std::env::temp_dir().join(format!("aigc-test-fake-wsl-{name}-{}", std::process::id()));
+        let wsl = format!(
+            "shift\nHOME='{r}/home' PATH='{r}/bin':/usr/bin:/bin exec \"$@\"",
+            r = root.display()
+        );
+        let guard = install_fake_wsl(name, &wsl, "");
+        let mut files = vec![
+            ("home/.profile".to_owned(), profile.to_owned()),
+            (
+                "bin/wslpath".to_owned(),
+                "#!/bin/sh\nprintf '%s\\n' \"$2\"".to_owned(),
+            ),
+        ];
+        for (cli, body) in clis {
+            files.push((format!("bin/{cli}"), format!("#!/bin/sh\n{body}\n")));
+        }
+        for (file, body) in files {
+            let path = root.join(file);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(&path, body).unwrap();
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        std::fs::create_dir(root.join("files")).unwrap();
+        (guard, root)
+    }
+
+    /// A fake `codex` that keeps what it reads on stdin in `~/capture`, then answers.
+    #[cfg(unix)]
+    const CAPTURING_CODEX: (&str, &str) = ("codex", "cat > \"$HOME/capture\"\necho 'The answer.'");
+
+    /// Ask the fake WSL's Codex one question; returns the result and the answer.
+    #[cfg(unix)]
+    async fn ask_codex_in_wsl(root: &std::path::Path) -> (Result<(), String>, String) {
+        let cfg = CliConfig {
+            claude: CliMode::Unavailable,
+            codex: CliMode::Wsl,
+            codex_workdir: "/work".to_owned(),
+        };
+        let messages = [msg("user", "QUESTION-TEXT")];
+        let mut chunks = Vec::new();
+        let result = stream_codex(
+            &cfg,
+            "SYSTEM-TEXT",
+            &messages,
+            Some(&root.join("files")),
+            None,
+            |text| {
+                chunks.push(text);
+                Ok(())
+            },
+        )
+        .await;
+        (result, chunks.concat())
+    }
+
+    /// The temp files a request left in the fake's `files` folder.
+    #[cfg(unix)]
+    fn left_files(root: &std::path::Path) -> Vec<std::path::PathBuf> {
+        std::fs::read_dir(root.join("files"))
+            .unwrap()
+            .map(|entry| entry.unwrap().path())
+            .collect()
+    }
+
+    /// A profile that replaces bash with `sh` hands it the rest of stdin: the
+    /// script must still run there, and the CLI must read the question from
+    /// its file -- never the shell, which would run each line as a command.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_profile_that_starts_another_shell_still_runs_the_cli() {
+        let (_fake, root) = install_profiled_wsl("exec-sh", "exec sh\n", &[CAPTURING_CODEX]);
+        let (result, answer) = ask_codex_in_wsl(&root).await;
+        let captured = std::fs::read_to_string(root.join("home/capture")).unwrap_or_default();
+        println!("{result:?} {answer:?}\ncaptured {captured:?}");
+        assert_eq!(result, Ok(()));
+        assert_eq!(answer.trim(), "The answer.");
+        assert!(captured.contains("QUESTION-TEXT"), "{captured:?}");
+        assert!(captured.contains("SYSTEM-TEXT"), "{captured:?}");
+        assert_eq!(left_files(&root), Vec::<std::path::PathBuf>::new());
+    }
+
+    /// A profile that reads stdin gets the script, never the chat.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_profile_that_reads_stdin_never_sees_the_chat() {
+        let (_fake, root) =
+            install_profiled_wsl("reads-stdin", "cat > \"$HOME/seen\"\n", &[CAPTURING_CODEX]);
+        let (result, answer) = ask_codex_in_wsl(&root).await;
+        let seen = std::fs::read_to_string(root.join("home/seen")).unwrap_or_default();
+        println!("{result:?} {answer:?}\nseen {seen:?}");
+        assert!(!seen.contains("QUESTION-TEXT"), "{seen:?}");
+        assert!(!seen.contains("SYSTEM-TEXT"), "{seen:?}");
+        let error = result.unwrap_err();
+        assert!(error.contains("did not start in WSL"), "{error}");
+        assert_eq!(left_files(&root), Vec::<std::path::PathBuf>::new());
+    }
+
+    /// A WSL that cannot map the prompt file's Windows path (its drive is not
+    /// mounted): the error names that, not the profile, and the CLI never runs.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn an_unmapped_windows_drive_is_named_as_the_cause() {
+        let unmapped = (
+            "wslpath",
+            "echo \"wslpath: $2: Result not representable\" >&2\nexit 1",
+        );
+        let (_fake, root) = install_profiled_wsl("unmapped", "", &[CAPTURING_CODEX, unmapped]);
+        let (result, answer) = ask_codex_in_wsl(&root).await;
+        println!("{result:?} {answer:?}");
+        let error = result.unwrap_err();
+        assert!(
+            error.contains("Windows drive is not reachable from WSL"),
+            "{error}"
+        );
+        assert!(
+            !error.contains("~/.profile"),
+            "the profile is blamed: {error}"
+        );
+        assert!(!root.join("home/capture").exists(), "the CLI ran");
+        assert_eq!(left_files(&root), Vec::<std::path::PathBuf>::new());
+    }
+
+    /// A profile that sets the terminal title prints it without a newline, so
+    /// it shares a line with the start marker; the answer must still arrive,
+    /// and the CLI must still be found.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_profile_printing_without_a_newline_keeps_the_answer() {
+        const VERSIONED: (&str, &str) = ("aigc-test-versioned-cli", "echo 'cli 1.0'");
+        let (_fake, root) = install_profiled_wsl(
+            "title",
+            "printf '\\033]0;x\\007'\n",
+            &[CAPTURING_CODEX, VERSIONED],
+        );
+        let (result, answer) = ask_codex_in_wsl(&root).await;
+        let found = detect_cli(VERSIONED.0, std::time::Duration::from_secs(10));
+        println!("{result:?} {answer:?}, detected {found:?}");
+        assert_eq!(result, Ok(()));
+        assert_eq!(answer.trim(), "The answer.");
+        assert_eq!(found, CliMode::Wsl);
+    }
+
+    /// Only a CLI that prints its own version line counts as installed: a
+    /// shell that ran nothing, or a CLI that printed nothing, also ends with 0.
+    #[cfg(unix)]
+    #[test]
+    fn detection_needs_the_version_line() {
+        const VERSIONED: &str = "aigc-test-versioned-cli";
+        const SILENT: &str = "aigc-test-silent-cli";
+        let limit = std::time::Duration::from_secs(10);
+        let clis = [(VERSIONED, "echo 'cli 1.0'"), (SILENT, "exit 0")];
+        for profile in ["exec sh\n", ""] {
+            let (_fake, _) = install_profiled_wsl("detect", profile, &clis);
+            let found = [NO_CODEX, SILENT, VERSIONED].map(|name| detect_cli(name, limit));
+            println!("profile {profile:?}: {found:?}");
+            assert_eq!(
+                found,
+                [CliMode::Unavailable, CliMode::Unavailable, CliMode::Wsl],
+                "profile {profile:?}"
+            );
+        }
     }
 
     /// Every input must come back byte for byte: anything else means a shell
-    /// other than the `bash` we start parsed the command line.
+    /// other than the `bash` we start parsed the script.
     #[cfg(windows)]
     #[test]
     #[ignore = "needs WSL"]
@@ -1159,11 +1997,15 @@ mod tests {
         ];
         let marker = format!("{WSL_SENTINEL}\n");
         for input in inputs {
-            let out = wsl_bash(&format!(
+            let script = format!(
                 "printf '%s\\n' {WSL_SENTINEL}; printf '%s' {}",
                 shell_escape(input)
-            ))
-            .output()
+            );
+            let out = output_within(
+                &mut wsl_bash(),
+                &wsl_stdin(&script),
+                std::time::Duration::from_secs(60),
+            )
             .unwrap();
             let stdout = String::from_utf8(out.stdout).unwrap();
             let result = stdout
@@ -1177,6 +2019,35 @@ mod tests {
             println!("input  {input:?}\nresult {result:?}");
             assert_eq!(result, input);
         }
+    }
+
+    /// The real WSL runs a CLI (`cat`) on a prompt file under a Windows path:
+    /// the prompt comes back unchanged and the file is gone afterwards.
+    #[cfg(windows)]
+    #[tokio::test]
+    #[ignore = "needs WSL"]
+    async fn wsl_hands_the_prompt_file_to_the_cli() {
+        let dir = fresh_dir("wsl-prompt-file");
+        let prompt = "line one\n$(echo INJECTED) it's `x`\n";
+        let mut chunks = Vec::new();
+        let result = run_in_wsl(
+            "cat",
+            None,
+            Some(&dir),
+            CliRun::plain("Test", prompt.to_owned()),
+            |text| {
+                chunks.push(text);
+                Ok(())
+            },
+            parse_codex_line,
+        )
+        .await;
+        let left = std::fs::read_dir(&dir).unwrap().count();
+        std::fs::remove_dir_all(&dir).unwrap();
+        println!("{result:?} {chunks:?}, {left} file(s) left");
+        assert_eq!(result, Ok(()));
+        assert_eq!(chunks.concat(), prompt);
+        assert_eq!(left, 0);
     }
 
     // ---------------- npm installs on Windows ----------------
@@ -1581,7 +2452,7 @@ mod tests {
     fn temp_shot_is_deleted_on_drop() {
         let dir = fresh_dir("drop");
         let path = shot_path(&dir);
-        let shot = TempShot::create(path.clone(), b"PNGDATA").unwrap();
+        let shot = TempFile::create(path.clone(), b"PNGDATA").unwrap();
         assert_eq!(std::fs::read(&path).unwrap(), b"PNGDATA");
         drop(shot);
         assert!(!path.exists(), "the screenshot outlived its guard");
@@ -1593,7 +2464,7 @@ mod tests {
         let dir = fresh_dir("existing");
         let path = dir.join("taken.png");
         std::fs::write(&path, b"ORIGINAL").unwrap();
-        TempShot::create(path.clone(), b"NEW").unwrap_err();
+        TempFile::create(path.clone(), b"NEW").unwrap_err();
         assert_eq!(std::fs::read(&path).unwrap(), b"ORIGINAL");
         std::fs::remove_dir_all(&dir).unwrap();
     }
@@ -1696,17 +2567,29 @@ mod tests {
     #[test]
     fn codex_wsl_script_hands_the_image_over() {
         assert_eq!(
-            codex_wsl_script("/srv/work dir", None),
-            "printf '%s\\n' __AIGC_STREAM_BEGIN__; codex -a never -s read-only --disable shell_tool -C '/srv/work dir' exec --skip-git-repo-check --ephemeral --ignore-user-config"
+            codex_wsl_script("/srv/work dir"),
+            "codex -a never -s read-only --disable shell_tool -C '/srv/work dir' exec --skip-git-repo-check --ephemeral --ignore-user-config"
+        );
+
+        let prompt = r"C:\files\aigc-prompt-1.txt";
+        let start = start_marker();
+        let unmapped = r"|| { printf '\n%s\n' __AIGC_PATH_UNMAPPED__ >&2; exit 1; };";
+        assert_eq!(
+            wsl_run_script("cli 'a'", prompt, None),
+            format!(
+                r#"f=$(wslpath -u 'C:\files\aigc-prompt-1.txt') {unmapped} {start}cli 'a' < "$f"; s=$?; rm -f -- "$f"; exit "$s""#
+            )
         );
 
         let image = r"C:\shots\it's $(x) a.png";
-        let script = codex_wsl_script("/srv/work dir", Some(image));
+        let script = wsl_run_script("cli 'a'", prompt, Some(image));
         println!("{script}");
         assert!(script.contains(&format!("wslpath -u {}", shell_escape(image))));
         assert_eq!(
             script,
-            r#"printf '%s\n' __AIGC_STREAM_BEGIN__; img=$(wslpath -u 'C:\shots\it'\''s $(x) a.png') && codex -a never -s read-only --disable shell_tool -C '/srv/work dir' exec --skip-git-repo-check --ephemeral --ignore-user-config --image="$img""#
+            format!(
+                r#"f=$(wslpath -u 'C:\files\aigc-prompt-1.txt') {unmapped} img=$(wslpath -u 'C:\shots\it'\''s $(x) a.png') {unmapped} {start}cli 'a' --image="$img" < "$f"; s=$?; rm -f -- "$f"; exit "$s""#
+            )
         );
         assert_eq!(script.matches("--image=").count(), 1);
     }
@@ -1731,7 +2614,7 @@ mod tests {
                 "{args:?}"
             );
 
-            let script = codex_wsl_script("/srv/work dir", image);
+            let script = wsl_run_script(&codex_wsl_script("/srv/work dir"), "P", image);
             println!("{script}");
             assert_eq!(script.matches("--ephemeral").count(), 1, "{script}");
             assert!(
@@ -1805,7 +2688,7 @@ mod tests {
             assert_eq!(ignore.len(), 1, "{args:?}");
             assert!(ignore[0] > exec[0], "--ignore-user-config must follow exec");
 
-            let script = codex_wsl_script("/srv/work dir", image);
+            let script = wsl_run_script(&codex_wsl_script("/srv/work dir"), "P", image);
             println!("{script}");
             assert_eq!(script.matches(" exec ").count(), 1, "{script}");
             let (before, after) = script.split_once(" exec ").unwrap();
@@ -1830,14 +2713,12 @@ mod tests {
         let mut chunks = Vec::new();
         let result = run_cli(
             &mut cmd,
-            String::new(),
+            CliRun::plain("Codex", String::new()),
             |text| {
                 chunks.push(text);
                 Ok(())
             },
             parse_codex_line,
-            "Codex",
-            None,
         )
         .await;
         let joined = chunks.concat();
@@ -1910,7 +2791,13 @@ mod tests {
             "-c",
             "echo user >&2; cat >&2; echo 'ERROR: unexpected status 401 Unauthorized' >&2; exit 1",
         ]);
-        let result = run_cli(&mut cmd, input, |_| Ok(()), parse_codex_line, "Echo", None).await;
+        let result = run_cli(
+            &mut cmd,
+            CliRun::plain("Echo", input),
+            |_| Ok(()),
+            parse_codex_line,
+        )
+        .await;
         let log = buf.text();
         println!("result: {result:?}");
         println!("log:\n{log}");
@@ -1934,6 +2821,30 @@ mod tests {
         );
     }
 
+    /// A chat line longer than the part of a stderr line that is kept is still
+    /// known as the prompt's when the CLI echoes it.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_long_echoed_chat_line_stays_out_of_the_error() {
+        let long = format!("ERROR SECRET-QUESTION {}", "word ".repeat(2000));
+        let input = build_codex_input("Answer briefly.", &[msg("user", &long)]);
+        let mut cmd = Command::new("sh");
+        cmd.args(["-c", "cat >&2; exit 1"]);
+        let result = run_cli(
+            &mut cmd,
+            CliRun::plain("Longline", input),
+            |_| Ok(()),
+            parse_codex_line,
+        )
+        .await;
+        println!("result: {result:?}");
+        let shown = result.expect_err("a failed CLI is an error");
+        assert!(
+            !shown.contains("SECRET-QUESTION"),
+            "the chat reached the error"
+        );
+    }
+
     #[cfg(unix)]
     #[tokio::test]
     async fn cli_stderr_is_not_copied_into_the_log() {
@@ -1943,11 +2854,9 @@ mod tests {
         cmd.args(["-c", "echo 'user: SECRET-PROMPT' >&2; echo answer"]);
         let result = run_cli(
             &mut cmd,
-            String::new(),
+            CliRun::plain("Probe", String::new()),
             |_| Ok(()),
             parse_codex_line,
-            "Probe",
-            None,
         )
         .await;
         let log = buf.text();
@@ -1973,17 +2882,222 @@ mod tests {
         cmd.args(["-c", &script]);
         let result = run_cli(
             &mut cmd,
-            String::new(),
+            CliRun::plain("Codex", String::new()),
             |_| Ok(()),
             parse_codex_line,
-            "Codex",
-            None,
         )
         .await;
         println!("{result:?}");
         assert_eq!(
             result,
             Err("Codex response exceeded the size limit.".to_owned())
+        );
+    }
+
+    /// `script` run by `sh` as a Codex child; the result and how long it took.
+    /// A run still going after 20 s counts as hung.
+    #[cfg(unix)]
+    async fn run_sh(script: &str) -> (Result<(), String>, std::time::Duration) {
+        let mut cmd = Command::new("sh");
+        cmd.args(["-c", script]);
+        let started = std::time::Instant::now();
+        let result = tokio::time::timeout(
+            std::time::Duration::from_secs(20),
+            run_cli(
+                &mut cmd,
+                CliRun::plain("Codex", String::new()),
+                |_| Ok(()),
+                parse_codex_line,
+            ),
+        )
+        .await
+        .unwrap_or_else(|_| Err("still waiting after 20 s".to_owned()));
+        (result, started.elapsed())
+    }
+
+    /// One 3 MB line, then the child stays alive with both pipes open: the
+    /// cap is hit inside the line, and the error does not wait for the child
+    /// to close stderr.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn the_size_cap_holds_within_a_line_and_does_not_wait_for_stderr() {
+        let (result, took) =
+            run_sh("trap '' PIPE; head -c 3000000 /dev/zero | tr '\\0' a; sleep 8; echo done >&2")
+                .await;
+        println!("{result:?} after {took:?}");
+        assert_eq!(
+            result,
+            Err("Codex response exceeded the size limit.".to_owned())
+        );
+        assert!(
+            took < std::time::Duration::from_secs(4),
+            "it waited {took:?}"
+        );
+    }
+
+    /// The same line with stderr already closed: only the line's own length
+    /// can end the read before its newline comes.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn the_size_cap_does_not_wait_for_the_end_of_a_long_line() {
+        let (result, took) =
+            run_sh("exec 2>&-; trap '' PIPE; head -c 3000000 /dev/zero | tr '\\0' a; sleep 8")
+                .await;
+        println!("{result:?} after {took:?}");
+        assert_eq!(
+            result,
+            Err("Codex response exceeded the size limit.".to_owned())
+        );
+        assert!(
+            took < std::time::Duration::from_secs(4),
+            "it waited {took:?}"
+        );
+    }
+
+    /// A child that fails with one 3 MB error line on stderr: the error
+    /// reaching the overlay is cut like every other provider error.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_huge_stderr_line_gives_a_short_failure_message() {
+        let (result, _) = run_sh(
+            "printf 'ERROR: '>&2; head -c 3000000 /dev/zero | tr '\\0' e >&2; echo >&2; exit 1",
+        )
+        .await;
+        let message = result.unwrap_err();
+        println!(
+            "{} chars: {}",
+            message.chars().count(),
+            message.get(..80).unwrap_or(&message)
+        );
+        assert!(
+            message.starts_with("Codex CLI failed: ERROR: eee"),
+            "{message:.80}"
+        );
+        assert!(
+            message.chars().count() <= super::super::gemini::MAX_ERROR_MESSAGE_CHARS,
+            "{} chars",
+            message.chars().count()
+        );
+    }
+
+    /// A Latin-1 byte on stderr (a localized warning) and on stdout (a banner
+    /// before the start marker, a word of the answer): the answer still
+    /// arrives, and stderr is read to its end.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn invalid_utf8_on_either_pipe_keeps_the_answer() {
+        let buf = captured_log();
+        let script = format!(
+            "printf 'warn \\351t\\351\\n' >&2; printf 'Bienvenue \\351\\n'; echo {WSL_SENTINEL}; \
+             for i in 1 2; do echo \"working $i\" >&2; done; printf 'caf\\351 ok\\n'"
+        );
+        let mut cmd = Command::new("sh");
+        cmd.args(["-c", &script]);
+        let mut run = CliRun::plain("Latin", String::new());
+        run.skip_until = Some(WSL_SENTINEL);
+        let mut text = String::new();
+        let result = run_cli(
+            &mut cmd,
+            run,
+            |chunk| {
+                text.push_str(&chunk);
+                Ok(())
+            },
+            parse_codex_line,
+        )
+        .await;
+        println!("{result:?}: {text:?}");
+        assert_eq!(result, Ok(()));
+        assert_eq!(text, "caf\u{fffd} ok\n");
+        assert!(
+            buf.text().contains("Latin wrote 3 stderr line(s)"),
+            "stderr was not read to its end"
+        );
+    }
+
+    #[test]
+    fn a_long_stderr_tail_is_cut_in_the_failure_messages() {
+        let tail = vec!["x".repeat(1000); STDERR_TAIL_LINES];
+        let failed = cli_failure_message("Codex", &tail);
+        let not_started = not_started_message("Codex", &tail);
+        println!(
+            "{} / {} chars",
+            failed.chars().count(),
+            not_started.chars().count()
+        );
+        assert_eq!(
+            failed.chars().count(),
+            super::super::gemini::MAX_ERROR_MESSAGE_CHARS
+        );
+        assert!(not_started.starts_with("Codex did not start in WSL: xxx"));
+        assert!(
+            not_started.ends_with("behind [ -t 0 ] &&."),
+            "the hint is kept"
+        );
+        assert!(not_started.chars().count() < 2 * super::super::gemini::MAX_ERROR_MESSAGE_CHARS);
+    }
+
+    /// `script` run by `sh` with a 1 s idle limit; the result, the text and
+    /// how long it took. A run still going after 8 s counts as hung.
+    #[cfg(unix)]
+    async fn run_with_idle_limit(
+        script: &str,
+    ) -> (Result<(), String>, String, std::time::Duration) {
+        let mut cmd = Command::new("sh");
+        cmd.args(["-c", script]);
+        let mut run = CliRun::plain("Idle", String::new());
+        run.idle = std::time::Duration::from_millis(1000);
+        let started = std::time::Instant::now();
+        let mut text = String::new();
+        let result = tokio::time::timeout(
+            std::time::Duration::from_secs(8),
+            run_cli(
+                &mut cmd,
+                run,
+                |chunk| {
+                    text.push_str(&chunk);
+                    Ok(())
+                },
+                parse_codex_line,
+            ),
+        )
+        .await
+        .unwrap_or_else(|_| Err("still waiting after 8 s".to_owned()));
+        (result, text, started.elapsed())
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_cli_answer_that_keeps_streaming_outlives_the_idle_limit() {
+        let (result, text, took) =
+            run_with_idle_limit("for i in 1 2 3 4 5 6; do echo \"line $i\"; sleep 0.4; done").await;
+        println!("{result:?} after {took:?}: {text:?}");
+        assert_eq!(result, Ok(()));
+        assert_eq!(text.lines().count(), 6);
+    }
+
+    /// Codex prints its progress on stderr and the answer only at the end.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_cli_reporting_progress_on_stderr_is_not_cut() {
+        let (result, text, took) = run_with_idle_limit(
+            "for i in 1 2 3 4 5 6; do echo \"working $i\" >&2; sleep 0.4; done; echo answer",
+        )
+        .await;
+        println!("{result:?} after {took:?}: {text:?}");
+        assert_eq!(result, Ok(()));
+        assert_eq!(text, "answer\n");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_cli_that_goes_silent_times_out() {
+        let (result, text, took) = run_with_idle_limit("echo first; exec sleep 6").await;
+        println!("{result:?} after {took:?}: {text:?}");
+        assert_eq!(result, Err("Request timed out. Try again.".to_owned()));
+        assert!(
+            took < std::time::Duration::from_secs(3),
+            "it waited {took:?}"
         );
     }
 
@@ -2031,14 +3145,12 @@ mod tests {
         let mut chunks = Vec::new();
         let result = run_cli(
             &mut cmd,
-            JSON_ANSWER.to_owned(),
+            CliRun::plain("Codex", JSON_ANSWER.to_owned()),
             |text| {
                 chunks.push(text);
                 Ok(())
             },
             parse_codex_line,
-            "Codex",
-            None,
         )
         .await;
         let joined = chunks.concat();
@@ -2065,7 +3177,7 @@ mod tests {
         let dir = fresh_dir("quit");
         // One file a crash left behind, and the one the running request holds.
         std::fs::write(dir.join("aigc-shot-left-behind.png"), b"OLD").unwrap();
-        let shot = TempShot::create(shot_path(&dir), b"PNGDATA").unwrap();
+        let shot = TempFile::create(shot_path(&dir), b"PNGDATA").unwrap();
         let (pid_tx, pid_rx) = std::sync::mpsc::channel();
         let handle = tauri::async_runtime::spawn(async move {
             let _shot = shot;
@@ -2073,11 +3185,9 @@ mod tests {
             cmd.args(["-c", "echo $$; exec sleep 60"]);
             let ended = run_cli(
                 &mut cmd,
-                String::new(),
+                CliRun::plain("Quit", String::new()),
                 |pid| pid_tx.send(pid).map_err(|e| e.to_string()),
                 parse_codex_line,
-                "Quit",
-                None,
             )
             .await;
             println!("the request ended: {ended:?}");
@@ -2143,11 +3253,9 @@ mod tests {
                 cmd.args(["-NoProfile", "-NonInteractive", "-Command", START_A_CHILD]);
                 let ended = run_cli(
                     &mut cmd,
-                    String::new(),
+                    CliRun::plain("Tree", String::new()),
                     |line| tx.send(line).map_err(|e| e.to_string()),
                     parse_codex_line,
-                    "Tree",
-                    None,
                 )
                 .await;
                 println!("the request ended: {ended:?}");

@@ -121,16 +121,20 @@ where
         tracing::warn!("Dropping unreadable game list: not a list");
         return Ok(Vec::new());
     };
-    Ok(raw
-        .into_iter()
-        .filter_map(|value| match serde_json::from_value::<Game>(value) {
-            Ok(game) => Some(game),
-            Err(e) => {
-                tracing::warn!("Dropping unreadable game entry: {e}");
-                None
+    let mut games: Vec<Game> = Vec::with_capacity(raw.len());
+    for value in raw {
+        match serde_json::from_value::<Game>(value) {
+            // A second game under one id (an older scan of two libraries) is
+            // dropped: launches used the first, and two stop the page's keyed
+            // game list from rendering.
+            Ok(game) if games.iter().any(|g| g.id == game.id) => {
+                tracing::warn!("Dropping a second game with the id {}", game.id);
             }
-        })
-        .collect())
+            Ok(game) => games.push(game),
+            Err(e) => tracing::warn!("Dropping unreadable game entry: {e}"),
+        }
+    }
+    Ok(games)
 }
 
 /// Load `settings` one value at a time: a value of the wrong type falls back to
@@ -302,9 +306,14 @@ mod tests {
             [Path::new("src/lib/settings.ts")],
             "LauncherSettings is declared once, in src/lib/settings.ts"
         );
-        assert!(!scan.hits[2].is_empty(), "no get_settings call found");
+        // A component test names the command to answer it, not to call it.
+        let calls: Vec<_> = scan.hits[2]
+            .iter()
+            .filter(|(file, _)| !file.to_string_lossy().ends_with(".test.ts"))
+            .collect();
+        assert!(!calls.is_empty(), "no get_settings call found");
         assert_eq!(
-            scan.hits[2].len(),
+            calls.len(),
             scan.hits[3].len(),
             "every get_settings call is typed with LauncherSettings"
         );

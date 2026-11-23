@@ -140,14 +140,16 @@ pub(crate) fn hide(app: &AppHandle) {
                 panel: now,
                 reference: shown.reference,
                 scale,
+                ..OverlayPlacement::default()
             },
         );
     }
 }
 
 /// Record a moved panel and save it off the calling thread: `save()` syncs
-/// the file to disk, and a hide runs on the main thread.
-fn remember_placement(app: &AppHandle, record: OverlayPlacement) {
+/// the file to disk, and a hide runs on the main thread. A failed save is
+/// reported to the main window like every other save after startup.
+fn remember_placement<R: tauri::Runtime>(app: &AppHandle<R>, record: OverlayPlacement) {
     let recorded = app
         .try_state::<AppState>()
         .is_some_and(|state| record_placement(&state, record));
@@ -156,19 +158,25 @@ fn remember_placement(app: &AppHandle, record: OverlayPlacement) {
     }
     let handle = app.clone();
     std::thread::spawn(move || {
-        if let Some(Err(err)) = handle.try_state::<AppState>().map(|state| state.save()) {
-            tracing::debug!("Saving the overlay position failed: {err}");
+        if let Some(state) = handle.try_state::<AppState>() {
+            state.save_or_notify(&handle, "The overlay position");
         }
     });
 }
 
 /// The one writer of the remembered overlay position. Refuses, changing
 /// nothing, when the state is read-only this run; the caller saves on `true`.
-fn record_placement(state: &AppState, record: OverlayPlacement) -> bool {
+/// Keys a newer build stored in the old position are carried into the new one.
+fn record_placement(state: &AppState, mut record: OverlayPlacement) -> bool {
     if state.load_error().is_some() {
         return false;
     }
-    state.launcher.lock().overlay_placement = Some(record);
+    let mut launcher = state.launcher.lock();
+    if let Some(old) = launcher.overlay_placement.take() {
+        record.unknown = old.unknown;
+    }
+    launcher.overlay_placement = Some(record);
+    drop(launcher);
     true
 }
 
@@ -414,7 +422,7 @@ fn placement_target(app: &AppHandle, game: Option<&GameInfo>) -> Option<(Rect, f
     // One lock hold, copied out.
     let saved = app
         .try_state::<AppState>()
-        .and_then(|state| state.launcher.lock().overlay_placement);
+        .and_then(|state| state.launcher.lock().overlay_placement.clone());
     Some((
         r,
         r_scale,
@@ -1657,6 +1665,7 @@ mod tests {
                 h: 1040,
             },
             scale: 1.25,
+            ..OverlayPlacement::default()
         };
         let path = |label: &str| {
             std::env::temp_dir().join(format!(
@@ -1669,8 +1678,8 @@ mod tests {
         let read_only = path("read_only");
         std::fs::create_dir_all(&read_only).unwrap();
         let state = AppState::load(read_only.clone());
-        let recorded = record_placement(&state, record);
-        let held = state.launcher.lock().overlay_placement;
+        let recorded = record_placement(&state, record.clone());
+        let held = state.launcher.lock().overlay_placement.clone();
         println!("read-only: recorded {recorded}, holds {held:?}");
         std::fs::remove_dir(&read_only).unwrap();
         assert!(!recorded, "a read-only state refuses the position");
@@ -1681,12 +1690,81 @@ mod tests {
             std::fs::remove_file(&absent).unwrap();
         }
         let state = AppState::load(absent.clone());
-        let recorded = record_placement(&state, record);
-        let held = state.launcher.lock().overlay_placement;
+        let recorded = record_placement(&state, record.clone());
+        let held = state.launcher.lock().overlay_placement.clone();
         println!("writable: recorded {recorded}, holds {held:?}");
         assert!(recorded, "a writable state takes the position");
         assert_eq!(held, Some(record));
         assert!(!absent.exists(), "recording does not save");
+    }
+
+    /// A moved panel's new position keeps the keys a newer build stored
+    /// beside the old one.
+    #[test]
+    fn a_recorded_placement_keeps_the_stored_unknown_keys() {
+        let path = std::env::temp_dir().join(format!(
+            "aigc_overlay_position_{}_unknown_keys.json",
+            std::process::id()
+        ));
+        std::fs::write(
+            &path,
+            r#"{"games":[],"settings":{},"overlay_placement":{"panel":{"x":10,"y":20,"w":400,"h":800},"reference":{"x":0,"y":0,"w":1920,"h":1040},"scale":1.0,"pinned_edge":"left"}}"#,
+        )
+        .unwrap();
+        let state = AppState::load(path.clone());
+        std::fs::remove_file(&path).unwrap();
+        assert_eq!(state.load_error(), None);
+        let moved = OverlayPlacement {
+            panel: Rect {
+                x: 600,
+                y: 40,
+                w: 420,
+                h: 900,
+            },
+            reference: Rect {
+                x: 0,
+                y: 0,
+                w: 1920,
+                h: 1040,
+            },
+            scale: 1.25,
+            ..OverlayPlacement::default()
+        };
+        assert!(record_placement(&state, moved));
+        let held = serde_json::to_value(&state.launcher.lock().overlay_placement).unwrap();
+        println!("held after the move: {held}");
+        assert_eq!(held["panel"]["x"], 600, "the new position is held");
+        assert_eq!(
+            held["pinned_edge"], "left",
+            "the stored unknown key is kept"
+        );
+    }
+
+    /// A position save that fails past its retries reaches the main window's
+    /// failed-save banner, like every other save after startup.
+    #[test]
+    fn a_failed_position_save_is_reported() {
+        let saves =
+            crate::state::tests::failing_saves("overlay_position", r#"{"games":[],"settings":{}}"#);
+        let moved = OverlayPlacement {
+            panel: Rect {
+                x: 600,
+                y: 40,
+                w: 420,
+                h: 900,
+            },
+            scale: 1.0,
+            ..OverlayPlacement::default()
+        };
+        remember_placement(saves.app.handle(), moved);
+        let reported = saves
+            .reported
+            .recv_timeout(std::time::Duration::from_secs(30));
+        println!("reported: {reported:?}");
+        assert!(
+            reported.is_ok_and(|message| message.contains("overlay position")),
+            "a failed position save was not reported"
+        );
     }
 
     /// The remembered position has one writer, in overlay.rs.

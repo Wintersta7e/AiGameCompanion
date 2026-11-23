@@ -6,6 +6,7 @@
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import type { LauncherSettings } from '../settings';
+import { ownKeyOf } from '../utils/overlay-input';
 import { unsavedPick } from '../utils/pick';
 
 export type Provider = 'gemini' | 'claude' | 'openai';
@@ -120,7 +121,7 @@ export async function loadProvider(): Promise<void> {
   try {
     const settings = await invoke<LauncherSettings>('get_settings');
     const saved = settings.active_provider;
-    const shown = pick.after(saved && saved in PROVIDERS ? (saved as Provider) : null);
+    const shown = pick.after(ownKeyOf(PROVIDERS, saved));
     if (shown) {
       provider = shown;
       providerChosen = true;

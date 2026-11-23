@@ -12,7 +12,7 @@ const CLEAR_FAILED: &str = "The chat could not be cleared.";
 
 /// The store mode now. Without the launcher state nothing may be written, and
 /// with the setting unknown no chat file is read.
-pub(crate) fn mode_of(app: &AppHandle) -> StoreMode {
+pub(crate) fn mode_of<R: tauri::Runtime>(app: &AppHandle<R>) -> StoreMode {
     app.try_state::<AppState>().map_or(
         StoreMode {
             read_only: true,
@@ -31,9 +31,9 @@ fn shown_key(target: Option<&GameInfo>, hwnd: i64, pid: u32) -> Option<String> {
 }
 
 /// The saved chat of the linked window the overlay shows, which then counts as
-/// the chat on screen. `None` -- and no chat on screen -- for any other window
-/// than the overlay, a window that is not linked, or one replaced while the
-/// chat was read.
+/// the chat on screen. `None` for any other window than the overlay, a window
+/// that is not linked, or one replaced while the chat was read; such a call
+/// takes its own chat off screen, never the linked target's.
 #[tauri::command]
 pub(crate) async fn load_chat(
     app: AppHandle,
@@ -45,8 +45,13 @@ pub(crate) async fn load_chat(
         return None;
     }
     let store = app.try_state::<ChatStore>()?;
-    let Some(key) = shown_key(overlay::linked_game(&app).as_ref(), hwnd, pid) else {
-        store.hide();
+    let linked = overlay::linked_game(&app);
+    let Some(key) = shown_key(linked.as_ref(), hwnd, pid) else {
+        // A call for a window that is no longer the target leaves the linked
+        // target's chat to its own load.
+        if linked.as_ref().and_then(overlay::game_key).is_none() {
+            store.hide();
+        }
         return None;
     };
     let mode = mode_of(&app);
@@ -60,7 +65,7 @@ pub(crate) async fn load_chat(
     .await;
     let still_shown = shown_key(overlay::linked_game(&app).as_ref(), hwnd, pid);
     if loaded.is_err() || still_shown.as_deref() != Some(key.as_str()) {
-        store.hide();
+        store.hide_if(&key);
         return None;
     }
     Some(store.show(&key, mode))

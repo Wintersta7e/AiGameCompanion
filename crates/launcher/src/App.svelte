@@ -2,6 +2,7 @@
   import { onMount } from 'svelte';
   import { getCurrentWindow } from '@tauri-apps/api/window';
   import { invoke } from '@tauri-apps/api/core';
+  import { listen } from '@tauri-apps/api/event';
   import TopBar from './lib/components/TopBar.svelte';
   import StatusBar from './lib/components/StatusBar.svelte';
   import GameList from './lib/components/GameList.svelte';
@@ -20,11 +21,16 @@
   // read-only for the whole session.
   let stateError = $state<string | null>(null);
   // Set when part or all of the library file could not be read but a copy of
-  // it was kept; says where. The backend hands it out once per run.
+  // it was kept; says where. The backend hands it out once per run. Also set
+  // when a later save failed after its retries (play time, a scan, a launch),
+  // as nothing else would tell the user.
   let stateNotice = $state<string | null>(null);
 
   onMount(async () => {
     if (isOverlay) return;
+    void listen<string>('state-save-failed', (event) => {
+      stateNotice = event.payload;
+    });
     followProviderChanges();
     void loadProvider();
     // Ask before scanning: a scan in read-only mode would replace the stored

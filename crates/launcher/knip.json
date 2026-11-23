@@ -22,5 +22,6 @@
     "scripts/test-ids.ts!",
     "scripts/wiring-check.selftest.ts!",
     "scripts/wiring-check.ts!"
-  ]
+  ],
+  "ignoreFiles": ["src/lib/test-support/*.ts"]
 }

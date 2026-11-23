@@ -16,7 +16,7 @@ pub(crate) struct Rect {
 }
 
 /// Where the user last left the panel, and what it was placed against then.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub(crate) struct OverlayPlacement {
     /// The panel's `outer_position` and `inner_size`: what the setters set.
@@ -26,6 +26,9 @@ pub(crate) struct OverlayPlacement {
     pub(crate) reference: Rect,
     /// The panel window's scale factor when recorded.
     pub(crate) scale: f64,
+    /// Keys a newer build stored here, written back unchanged.
+    #[serde(flatten)]
+    pub(crate) unknown: crate::models::UnknownFields,
 }
 
 /// The panel's width when no position is remembered, in logical px.
@@ -311,26 +314,37 @@ mod tests {
 
     /// A panel the user left at (1500,20) 420x900 against a 1920x1040 work
     /// area at 100 %.
-    const MOVED: OverlayPlacement = OverlayPlacement {
-        panel: rect(1500, 20, 420, 900),
-        reference: rect(0, 0, 1920, 1040),
-        scale: 1.0,
-    };
+    fn moved() -> OverlayPlacement {
+        OverlayPlacement {
+            panel: rect(1500, 20, 420, 900),
+            reference: rect(0, 0, 1920, 1040),
+            scale: 1.0,
+            ..OverlayPlacement::default()
+        }
+    }
     /// A panel the user left on a second monitor to the right.
-    const ON_SECOND: OverlayPlacement = OverlayPlacement {
-        panel: rect(2000, 0, 400, 1040),
-        reference: rect(0, 0, 1920, 1040),
-        scale: 1.0,
-    };
-    const TALLER: OverlayPlacement = OverlayPlacement {
-        panel: rect(0, 0, 1000, 1400),
-        reference: rect(0, 0, 2560, 1400),
-        scale: 1.0,
-    };
-    const NO_SCALE: OverlayPlacement = OverlayPlacement {
-        scale: 0.0,
-        ..MOVED
-    };
+    fn on_second() -> OverlayPlacement {
+        OverlayPlacement {
+            panel: rect(2000, 0, 400, 1040),
+            reference: rect(0, 0, 1920, 1040),
+            scale: 1.0,
+            ..OverlayPlacement::default()
+        }
+    }
+    fn taller() -> OverlayPlacement {
+        OverlayPlacement {
+            panel: rect(0, 0, 1000, 1400),
+            reference: rect(0, 0, 2560, 1400),
+            scale: 1.0,
+            ..OverlayPlacement::default()
+        }
+    }
+    fn no_scale() -> OverlayPlacement {
+        OverlayPlacement {
+            scale: 0.0,
+            ..moved()
+        }
+    }
     const FULL_HD: Rect = rect(0, 0, 1920, 1040);
     const PRIMARY: MonitorArea = area(0, 0, 1920, 1040, 1.0);
     const SECOND: MonitorArea = area(1920, 0, 1920, 1040, 1.0);
@@ -346,8 +360,9 @@ mod tests {
         Placed,
     );
 
-    const PLACE_CASES: [PlaceCase; 15] = {
-        use PlacedFrom::{Default, Moved, Restored};
+    /// Rows with no remembered record: the default placement.
+    fn default_cases() -> [PlaceCase; 6] {
+        use PlacedFrom::Default;
         [
             (
                 "1 default 100 %",
@@ -362,7 +377,7 @@ mod tests {
                 None,
                 rect(0, 0, 3840, 2100),
                 1.5,
-                &[area(0, 0, 3840, 2100, 1.5)],
+                const { &[area(0, 0, 3840, 2100, 1.5)] },
                 placed(3240, 0, 600, 2100, Default),
             ),
             (
@@ -370,7 +385,7 @@ mod tests {
                 None,
                 rect(0, 0, 3840, 2080),
                 2.0,
-                &[area(0, 0, 3840, 2080, 2.0)],
+                const { &[area(0, 0, 3840, 2080, 2.0)] },
                 placed(3040, 0, 800, 2080, Default),
             ),
             (
@@ -390,38 +405,6 @@ mod tests {
                 placed(600, 200, 400, 400, Default),
             ),
             (
-                "6 exact restore",
-                Some(MOVED),
-                FULL_HD,
-                1.0,
-                &[PRIMARY],
-                placed(1500, 20, 420, 900, Restored),
-            ),
-            (
-                "7 on a second monitor",
-                Some(ON_SECOND),
-                FULL_HD,
-                1.0,
-                &[PRIMARY, SECOND],
-                placed(2000, 0, 400, 1040, Restored),
-            ),
-            (
-                "8 new resolution and scale",
-                Some(MOVED),
-                rect(0, 0, 2560, 1400),
-                1.25,
-                &[area(0, 0, 2560, 1400, 1.25)],
-                placed(2035, 25, 525, 1125, Moved),
-            ),
-            (
-                "9 scale changed, same reference",
-                Some(MOVED),
-                FULL_HD,
-                1.25,
-                &[area(0, 0, 1920, 1040, 1.25)],
-                placed(1395, 0, 525, 1040, Moved),
-            ),
-            (
                 "10 monitor left of the primary",
                 None,
                 LEFT.work,
@@ -429,9 +412,48 @@ mod tests {
                 &[LEFT, PRIMARY],
                 placed(-400, 0, 400, 1400, Default),
             ),
+        ]
+    }
+
+    /// Rows with a remembered record: restored, moved, or ignored.
+    fn remembered_cases() -> [PlaceCase; 9] {
+        use PlacedFrom::{Default, Moved, Restored};
+        [
+            (
+                "6 exact restore",
+                Some(moved()),
+                FULL_HD,
+                1.0,
+                &[PRIMARY],
+                placed(1500, 20, 420, 900, Restored),
+            ),
+            (
+                "7 on a second monitor",
+                Some(on_second()),
+                FULL_HD,
+                1.0,
+                &[PRIMARY, SECOND],
+                placed(2000, 0, 400, 1040, Restored),
+            ),
+            (
+                "8 new resolution and scale",
+                Some(moved()),
+                rect(0, 0, 2560, 1400),
+                1.25,
+                const { &[area(0, 0, 2560, 1400, 1.25)] },
+                placed(2035, 25, 525, 1125, Moved),
+            ),
+            (
+                "9 scale changed, same reference",
+                Some(moved()),
+                FULL_HD,
+                1.25,
+                const { &[area(0, 0, 1920, 1040, 1.25)] },
+                placed(1395, 0, 525, 1040, Moved),
+            ),
             (
                 "11 re-anchor onto a negative origin",
-                Some(MOVED),
+                Some(moved()),
                 LEFT.work,
                 1.0,
                 &[LEFT, PRIMARY],
@@ -439,7 +461,7 @@ mod tests {
             ),
             (
                 "12 the saved monitor is gone",
-                Some(ON_SECOND),
+                Some(on_second()),
                 FULL_HD,
                 1.0,
                 &[PRIMARY],
@@ -447,7 +469,7 @@ mod tests {
             ),
             (
                 "13 taller than the work area",
-                Some(TALLER),
+                Some(taller()),
                 FULL_HD,
                 1.0,
                 &[PRIMARY],
@@ -459,6 +481,7 @@ mod tests {
                     panel: rect(0, 0, 0, 0),
                     reference: rect(0, 0, 0, 0),
                     scale: 0.0,
+                    ..OverlayPlacement::default()
                 }),
                 FULL_HD,
                 1.0,
@@ -467,31 +490,37 @@ mod tests {
             ),
             (
                 "14 a record with scale 0",
-                Some(NO_SCALE),
+                Some(no_scale()),
                 FULL_HD,
                 1.0,
                 &[PRIMARY],
                 placed(1520, 0, 400, 1040, Default),
             ),
         ]
-    };
+    }
 
     #[test]
     fn placement_table() {
-        assert_eq!(
-            PLACE_CASES[13].1,
-            Some(OverlayPlacement::default()),
+        let cases: Vec<PlaceCase> = default_cases()
+            .into_iter()
+            .chain(remembered_cases())
+            .collect();
+        assert!(
+            cases
+                .iter()
+                .any(|(case, saved, ..)| *case == "14 an empty record"
+                    && *saved == Some(OverlayPlacement::default())),
             "row 14 is the empty record"
         );
         let mut wrong = Vec::new();
-        for (case, saved, r, r_scale, monitors, expected) in PLACE_CASES {
+        for (case, saved, r, r_scale, monitors, expected) in cases.clone() {
             let placed = place(saved.as_ref(), r, r_scale, monitors);
             println!("{case}: {placed:?}");
             if placed != expected {
                 wrong.push(format!("{case}: {placed:?}, expected {expected:?}"));
             }
         }
-        let n = PLACE_CASES.len();
+        let n = cases.len();
         println!("checked {n} placement cases");
         assert!(n >= 14, "the table lost cases: {n}");
         assert!(wrong.is_empty(), "{wrong:#?}");
@@ -577,5 +606,16 @@ mod tests {
         println!("checked {n} reference cases");
         assert_eq!(n, 6, "the table lost cases");
         assert!(wrong.is_empty(), "{wrong:#?}");
+    }
+
+    /// A newer build's extra keys in the stored placement are written back.
+    #[test]
+    fn a_stored_placement_keeps_unknown_keys() {
+        let stored = r#"{"panel":{"x":10,"y":20,"w":400,"h":800},"reference":{"x":0,"y":0,"w":1920,"h":1040},"scale":1.25,"pinned_edge":"left"}"#;
+        let placement: OverlayPlacement = serde_json::from_str(stored).unwrap();
+        let written = serde_json::to_value(placement).unwrap();
+        println!("written back: {written}");
+        let expected: serde_json::Value = serde_json::from_str(stored).unwrap();
+        assert_eq!(written, expected);
     }
 }

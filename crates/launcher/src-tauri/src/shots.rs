@@ -21,7 +21,6 @@ const NOT_HELD: &str = "The screenshot is no longer available.";
 pub(crate) const WINDOW_CLOSED: &str = "The linked window is no longer open.";
 const OTHER_WINDOW: &str = "This command is only available in the Sage overlay.";
 const CHAT_HAS_NO_REGION: &str = "A chat screenshot has no region.";
-const REGION_UNUSABLE: &str = "The saved region cannot be applied -- edit or clear it.";
 
 /// Which held screenshot a take fills and a request claims.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -75,7 +74,8 @@ pub(crate) struct ShotInfo {
     slot: ShotSlot,
     width: u32,
     height: u32,
-    /// The bytes are a crop of the game's stored region.
+    /// It was taken under the game's stored region: a crop of it, or the
+    /// whole window when the region could not be applied to the frame.
     region: bool,
 }
 
@@ -90,7 +90,7 @@ pub(crate) struct HeldShot {
     png: Vec<u8>,
     width: u32,
     height: u32,
-    /// The stored region the bytes were cropped to, when they are a crop.
+    /// The stored region it was taken under, if any.
     region: Option<TranslateRegion>,
 }
 
@@ -160,9 +160,11 @@ impl ShotStore {
         }
     }
 
-    /// Whether `take` is still the newest take begun into its slot.
-    pub(crate) fn is_newest(&self, take: Take) -> bool {
-        *self.held.lock().newest_take(take.slot) == take.number
+    /// Whether `take` is still the newest take begun into its slot and no
+    /// clear (a hide of the overlay) happened since it began.
+    pub(crate) fn is_current(&self, take: Take) -> bool {
+        let mut held = self.held.lock();
+        held.epoch == take.epoch && *held.newest_take(take.slot) == take.number
     }
 
     /// Hold `prepared` in the take's slot under a new id, replacing what the
@@ -439,10 +441,11 @@ async fn take(
     let take = store.begin(slot);
     let started = Instant::now();
     let (hwnd, pid) = target;
+    let crop_to = region.clone();
     let job = tokio::task::spawn_blocking(move || {
         let frame = grab_frame(hwnd, pid)?;
         let frame_ms = started.elapsed().as_millis();
-        finish_frame(frame, region.as_ref()).map(|(prepared, from)| (prepared, from, frame_ms))
+        finish_frame(frame, crop_to.as_ref()).map(|(prepared, from)| (prepared, from, frame_ms))
     });
     let (prepared, from, frame_ms) = settle(tokio::time::timeout(SHOT_TIMEOUT, job).await)?;
     let bytes = prepared.png.len();
@@ -472,15 +475,17 @@ fn settle<T>(
 /// take's number. Only when it returns `true` is the frame sized, held and
 /// reported as `shot-held`. A take that a newer one into the slot replaced
 /// during its grab sends no action event: the overlay then sees the takes in
-/// the order the store holds them.
-pub(crate) fn take_for_hotkey<F>(
-    app: AppHandle,
+/// the order the store holds them. Neither does one that a hide of the
+/// overlay ended: showing it again would undo the user's hide.
+pub(crate) fn take_for_hotkey<R, F>(
+    app: AppHandle<R>,
     slot: ShotSlot,
     target: (i64, u32),
     region: Option<TranslateRegion>,
     shown: F,
 ) where
-    F: FnOnce(&AppHandle, u64) -> bool + Send + 'static,
+    R: tauri::Runtime,
+    F: FnOnce(&AppHandle<R>, u64) -> bool + Send + 'static,
 {
     use tauri::Emitter;
 
@@ -494,11 +499,14 @@ pub(crate) fn take_for_hotkey<F>(
         let (tx, rx) = tokio::sync::oneshot::channel();
         let handle = app.clone();
         let dispatched = app.run_on_main_thread(move || {
-            let newest = handle.state::<ShotStore>().is_newest(take);
-            if !newest {
-                log_replaced(slot, Via::Hotkey);
+            let current = handle.state::<ShotStore>().is_current(take);
+            if !current {
+                tracing::debug!(
+                    "Shot dropped: {} via hotkey, a newer take began or the overlay was hidden",
+                    slot.as_str()
+                );
             }
-            if tx.send(newest && shown(&handle, take.number)).is_err() {
+            if tx.send(current && shown(&handle, take.number)).is_err() {
                 tracing::debug!("Hotkey take ended before the overlay was shown");
             }
         });
@@ -513,7 +521,9 @@ pub(crate) fn take_for_hotkey<F>(
         let finished = match frame {
             Ok(frame) => {
                 let rest = SHOT_TIMEOUT.saturating_sub(started.elapsed());
-                let job = tokio::task::spawn_blocking(move || finish_frame(frame, region.as_ref()));
+                let crop_to = region.clone();
+                let job =
+                    tokio::task::spawn_blocking(move || finish_frame(frame, crop_to.as_ref()));
                 settle(tokio::time::timeout(rest, job).await)
             }
             Err(error) => Err(error),
@@ -623,23 +633,22 @@ pub(crate) fn grab_frame(hwnd: i64, pid: u32) -> Result<Frame, String> {
 
 /// Size and encode a captured frame for sending, cut to `region` first when
 /// one is stored. Returns the image and the size of the source it was made
-/// from. A region that cannot be applied is an error: the whole frame would
-/// show more than the user kept.
+/// from. A region that cannot be applied to this frame is ignored and the
+/// whole frame used: this build has no way to edit or clear a stored region,
+/// so refusing would fail every translate screenshot of the game.
 pub(crate) fn finish_frame(
     frame: Frame,
     region: Option<&TranslateRegion>,
 ) -> Result<(Prepared, (u32, u32)), String> {
     let source = source(frame);
     let from = (source.width, source.height);
-    let prepared = match region {
-        None => prepare(&source.rgba, source.width, source.height)?,
-        Some(region) => {
-            let crop = crate::region::framed(&source, Some(region)).map_err(|error| {
-                tracing::debug!("Stored region not applied: {error:?}");
-                REGION_UNUSABLE.to_owned()
-            })?;
-            prepare(&crop.rgba, crop.width, crop.height)?
+    let prepared = match region.map(|region| crate::region::framed(&source, Some(region))) {
+        Some(Ok(crop)) => prepare(&crop.rgba, crop.width, crop.height)?,
+        Some(Err(error)) => {
+            tracing::info!("Stored region ignored, the whole window is used: {error:?}");
+            prepare(&source.rgba, source.width, source.height)?
         }
+        None => prepare(&source.rgba, source.width, source.height)?,
     };
     Ok((prepared, from))
 }
@@ -1249,7 +1258,97 @@ mod tests {
         }
     }
 
+    /// A stored region this build cannot apply to the frame -- one that maps
+    /// under the usable size, or a frame without a client box -- is ignored:
+    /// the screenshot is the whole window, and no step the UI lacks is named.
+    #[test]
+    fn an_unusable_stored_region_gives_the_whole_window() {
+        let region =
+            |json: &str| -> crate::region::TranslateRegion { serde_json::from_str(json).unwrap() };
+        let frame = |client_box| Frame {
+            rgba: flat_frame(800, 600, [9, 9, 9, 255]),
+            width: 800,
+            height: 600,
+            client_box,
+        };
+        let whole = PixelRect {
+            x: 0,
+            y: 0,
+            width: 800,
+            height: 600,
+        };
+        let tiny = region(r#"{"x":0.5,"y":0.5,"w":0.005,"h":0.005}"#);
+        let normal = region(r#"{"x":0,"y":0.5,"w":1,"h":0.5}"#);
+        for (case, frame, region) in [
+            ("tiny region", frame(Some(whole)), tiny),
+            ("frame without a client box", frame(None), normal),
+        ] {
+            let shot = super::finish_frame(frame, Some(&region))
+                .map(|(prepared, from)| (prepared.width, prepared.height, from));
+            println!("{case}: {shot:?}");
+            assert_eq!(shot, Ok((800, 600, (800, 600))), "{case}");
+        }
+    }
+
     const TARGET: (i64, u32) = (42, 7);
+
+    /// Sends on its channel when dropped: the hotkey's main-thread step has
+    /// run once the `shown` closure holding it is gone, called or not.
+    struct DropSignal(std::sync::mpsc::Sender<()>);
+
+    impl Drop for DropSignal {
+        fn drop(&mut self) {
+            let _ = self.0.send(());
+        }
+    }
+
+    #[test]
+    fn hotkey_take_ended_by_a_hide_is_not_shown() {
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use tauri::{Listener, Manager};
+
+        let app = tauri::test::mock_app();
+        app.manage(ShotStore::default());
+        let reports = Arc::new(AtomicUsize::new(0));
+        let counted = Arc::clone(&reports);
+        app.listen_any("shot-held", move |_| {
+            counted.fetch_add(1, Ordering::SeqCst);
+        });
+        let (done_tx, done_rx) = std::sync::mpsc::channel();
+        let (shown_tx, shown_rx) = std::sync::mpsc::channel();
+        let signal = DropSignal(done_tx);
+        super::take_for_hotkey(app.handle().clone(), ShotSlot::Chat, TARGET, None, {
+            move |app, number| {
+                let _alive = &signal;
+                let epoch = app.state::<ShotStore>().held.lock().epoch;
+                let _ = shown_tx.send((number, epoch));
+                true
+            }
+        });
+        // What hiding the overlay does first, while the grab still runs.
+        app.state::<ShotStore>().clear();
+        done_rx
+            .recv_timeout(std::time::Duration::from_secs(10))
+            .expect("the hotkey's main-thread step ran");
+        std::thread::sleep(std::time::Duration::from_millis(200));
+        let shown: Vec<(u64, u64)> = shown_rx.try_iter().collect();
+        println!(
+            "shown calls {shown:?}; shot-held reports {}",
+            reports.load(Ordering::SeqCst)
+        );
+        assert!(
+            !shown.iter().any(|(_, epoch)| *epoch > 0),
+            "a take the hide ended showed the overlay"
+        );
+        if shown.is_empty() {
+            assert_eq!(
+                reports.load(Ordering::SeqCst),
+                0,
+                "a dropped take reports nothing"
+            );
+        }
+    }
 
     /// A prepared image whose bytes are all `fill`.
     fn prepared(fill: u8) -> Prepared {
@@ -1298,6 +1397,10 @@ mod tests {
         );
 
         assert_eq!(store.clear(), 2, "both slots were full");
+        assert!(
+            !store.is_current(before_clear),
+            "a clear ends the take in progress"
+        );
         assert_eq!((store.png(second.id), store.png(third.id)), (None, None));
         let stale = store.complete(before_clear, TARGET, None, prepared(4));
         println!("completion with the epoch before the clear: {stale:?}");
@@ -1319,7 +1422,7 @@ mod tests {
         let newer = store.begin(ShotSlot::Chat);
         // A take into the other slot replaces nothing here.
         let other = store.begin(ShotSlot::Translate);
-        assert!(!store.is_newest(older) && store.is_newest(newer));
+        assert!(!store.is_current(older) && store.is_current(newer));
         let held = store
             .complete(newer, TARGET, None, prepared(2))
             .unwrap()
@@ -1453,7 +1556,7 @@ mod tests {
         use ShotRefusal::{OtherTarget, RegionChanged};
         let band = band();
         let cropped = HeldShot {
-            region: Some(band),
+            region: Some(band.clone()),
             ..held(5)
         };
         // Each row: case, held, target, region, expected.
@@ -1547,7 +1650,7 @@ mod tests {
             .complete(
                 store.begin(ShotSlot::Translate),
                 TARGET,
-                Some(band),
+                Some(band.clone()),
                 prepared(8),
             )
             .unwrap()

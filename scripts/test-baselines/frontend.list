@@ -1,5 +1,16 @@
+DetailPanel: a game still launching can be launched again from its button run
 NO_SHOT: a reset leaves nothing to send or wait for run
+Overlay: Quick ask stages its question only into an empty field run
+Overlay: a chip sends its own text and keeps the typed draft run
+Overlay: a show over another game keeps no earlier translation run
+Overlay: a translation that lands after a newer screenshot is not shown under it run
+Overlay: an earlier translation is not shown under a newer screenshot run
+Overlay: turning saving on while an answer streams keeps the answer on screen run
+SettingsModal: a key save that fails keeps the modal open with its error run
+SettingsModal: closing while the key saves waits for the save, then closes run
+a game still launching can be launched again run
 afterSend: a shown shot becomes sent, anything else stays run
+chatNoticeText: a chat kept as a copy says what was left out and that a copy was kept run
 chatViewAction: a view replaces the chat only when its generation changed run
 drawn: a stale id changes nothing run
 formatHotkeyStatus: names every hotkey that failed run
@@ -11,6 +22,7 @@ formatInitial: an ASCII name is uppercased run
 formatInitial: an astral first letter stays one code point run
 formatInitial: punctuation and digits run
 formatLastPlayed: a UTC time and its local-offset form read the same run
+formatLastPlayed: a time in the future shows its date run
 formatLastPlayed: counts back in the largest whole unit run
 formatLastPlayed: never played and unreadable dates run
 formatPlayTime: hours, with minutes only when verbose run
@@ -20,6 +32,8 @@ heldShot: a hotkey take reported by shot-held lands like a button take run
 heldShot: a report after a newer take is stale and changes nothing run
 heldShot: a report of an older hotkey take never lands on a newer one run
 isActionableLink: only a complete https link opens run
+ownKeyOf: a known provider id is a provider; empty or unknown is none run
+ownKeyOf: a name every object inherits is not a provider run
 recapOffer: the line after a four-hour break, the chip only when a question can be sent run
 received: a stale seq or a slot not taking returns the same object run
 renderAnswer: plain past the size cap, markdown below it run

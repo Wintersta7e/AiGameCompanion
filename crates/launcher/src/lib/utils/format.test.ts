@@ -32,6 +32,13 @@ void test('formatLastPlayed: counts back in the largest whole unit', () => {
   assert.equal(formatLastPlayed(ago(65 * 24 * 60 * MINUTE)), '2 months ago');
 });
 
+void test('formatLastPlayed: a time in the future shows its date', () => {
+  for (const days of [2, 30, 400]) {
+    const when = new Date(Date.now() + days * 24 * 60 * MINUTE);
+    assert.equal(formatLastPlayed(when.toISOString()), when.toLocaleDateString(), `${days} days`);
+  }
+});
+
 /** The instant of the UTC string `iso`, written at `minutes` east of UTC. */
 const atOffset = (iso: string, minutes: number): string => {
   const wall = new Date(Date.parse(iso) + minutes * MINUTE).toISOString().slice(0, -1);

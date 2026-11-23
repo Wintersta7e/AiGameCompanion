@@ -82,7 +82,7 @@ fn main() {
         None
     };
 
-    let run_result = tauri::Builder::default()
+    let built = tauri::Builder::default()
         // Must be registered first. Two instances would otherwise share one
         // state file with only a per-process lock: their temp-file writes and
         // renames interleave, one publishes the other's snapshot or a truncated
@@ -131,7 +131,7 @@ fn main() {
                 eprintln!("Failed to create {}: {e}", app_dir.display());
             }
 
-            match std::fs::File::create(app_dir.join("launcher.log")) {
+            match open_log(&app_dir) {
                 Ok(log_file) => tracing_subscriber::fmt()
                     .with_writer(std::sync::Mutex::new(log_file))
                     .with_ansi(false)
@@ -196,16 +196,11 @@ fn main() {
             // claude/codex binaries can take a moment, especially via WSL).
             let detect_handle = app.handle().clone();
             std::thread::spawn(move || {
-                let cfg = ai::detect_all();
-                tracing::info!(
-                    "CLI availability -- claude: {:?}, codex: {:?}",
-                    cfg.claude,
-                    cfg.codex
+                detect_handle.state::<AiState>().refresh_providers(
+                    ai::gemini_presence(),
+                    || ai::detect_all(ai::local_data_dir(&detect_handle).as_deref()),
+                    || ai::notify_providers_changed(&detect_handle),
                 );
-                let ai_state = detect_handle.state::<AiState>();
-                ai_state.set_cli(cfg);
-                ai_state.set_gemini(ai::gemini_presence());
-                ai::notify_providers_changed(&detect_handle);
             });
 
             // Build system tray (always present, shown/hidden based on setting)
@@ -297,29 +292,55 @@ fn main() {
             shots::shot_png,
             shots::drop_shot,
         ])
-        .run(context);
+        .build(context);
 
-    let code = match run_result {
-        Ok(()) => 0,
+    let app = match built {
+        Ok(app) => app,
         Err(err) => {
             tracing::error!("the Tauri runtime exited with an error: {err}");
-            1
+            std::process::exit(1);
         }
     };
+    app.run(|handle, event| {
+        // The exit below runs no destructors and ends the playtime watchers,
+        // so the running play sessions are booked first.
+        if matches!(event, tauri::RunEvent::Exit) {
+            process_watch::book_running_sessions(handle);
+        }
+    });
 
     // Tauri's event loop has exited (all windows closed). Force-terminate so no
     // background thread keeps the process alive.
-    std::process::exit(code);
+    std::process::exit(0);
+}
+
+/// Open a fresh `launcher.log` in `dir`, first keeping the previous run's log
+/// as `launcher.old.log` in place of an older one: after a crash or a hang the
+/// user restarts, and the failed run's log is the one "Open logs" is for.
+#[expect(
+    clippy::print_stderr,
+    reason = "this runs before the tracing logger is initialised"
+)]
+fn open_log(dir: &std::path::Path) -> std::io::Result<std::fs::File> {
+    let log = dir.join("launcher.log");
+    match std::fs::rename(&log, dir.join("launcher.old.log")) {
+        Err(e) if e.kind() != std::io::ErrorKind::NotFound => {
+            eprintln!("Failed to keep the previous launcher.log: {e}");
+        }
+        _ => {}
+    }
+    std::fs::File::create(log)
 }
 
 /// Quit from the tray or the main window. `std::process::exit` runs no
-/// destructors, so the running AI request is ended and its screenshot deleted
-/// first.
+/// destructors, so the running play sessions are booked, and the running AI
+/// request is ended and its screenshot deleted, first.
 #[expect(
     clippy::exit,
     reason = "background threads (CLI detection, global-shortcut) keep the process alive unless it force-exits"
 )]
 fn quit_launcher(app: &tauri::AppHandle) -> ! {
+    process_watch::book_running_sessions(app);
     app.state::<AiState>()
         .stop_for_exit(ai::shots_dir(app).as_deref());
     std::process::exit(0)
@@ -327,8 +348,35 @@ fn quit_launcher(app: &tauri::AppHandle) -> ! {
 
 #[cfg(test)]
 mod tests {
-    use super::HOTKEYS;
+    use super::{HOTKEYS, open_log};
     use tauri_plugin_global_shortcut::Code;
+
+    /// After a crash or a hang the user restarts the launcher, and the failed
+    /// run's log is the one they need: it is kept as `launcher.old.log`.
+    #[test]
+    fn the_previous_log_is_kept_at_start() {
+        let dir = std::env::temp_dir().join(format!("aigc_launcher_log_{}", std::process::id()));
+        drop(std::fs::remove_dir_all(&dir));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("launcher.old.log"), "two runs ago").unwrap();
+        std::fs::write(dir.join("launcher.log"), "the run that failed").unwrap();
+
+        let opened = open_log(&dir).map(drop);
+        let old = std::fs::read_to_string(dir.join("launcher.old.log"));
+        let new = std::fs::read_to_string(dir.join("launcher.log"));
+        // With no log yet, the first start opens one and keeps nothing.
+        let first = dir.join("first");
+        std::fs::create_dir_all(&first).unwrap();
+        let first_opened = open_log(&first).map(drop);
+        let first_files = std::fs::read_dir(&first).unwrap().count();
+        drop(std::fs::remove_dir_all(&dir));
+
+        assert!(opened.is_ok(), "{opened:?}");
+        assert_eq!(old.unwrap(), "the run that failed");
+        assert_eq!(new.unwrap(), "", "the new log starts empty");
+        assert!(first_opened.is_ok(), "{first_opened:?}");
+        assert_eq!(first_files, 1, "only launcher.log");
+    }
 
     #[test]
     fn hotkey_labels_are_the_documented_chords() {
