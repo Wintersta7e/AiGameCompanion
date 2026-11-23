@@ -63,6 +63,7 @@ ai::prompt::tests::slots_in_order run
 ai::search::tests::grounded_answers_resend_only_to_gemini run
 ai::search::tests::search_gate_table run
 ai::search::tests::search_report_mirrors_rust run
+ai::tests::a_recap_of_one_long_exchange_is_admitted run
 ai::tests::answer_errors_stay_out_of_answer_text run
 ai::tests::ask_sage_signature_matches_the_page run
 ai::tests::availability_reads_only_the_cache run
@@ -88,7 +89,10 @@ ai::tests::sage_event_mirrors_rust run
 ai::tests::send_names_a_closed_linked_window run
 ai::tests::translate_gate_order run
 ai::tests::unlinked_target_contributes_nothing run
+chat_store::tests::a_chat_kept_as_a_copy_says_so_once run
 chat_store::tests::a_chat_that_is_not_utf8_is_kept_and_saved_again run
+chat_store::tests::a_save_keeps_the_fields_this_build_does_not_know run
+chat_store::tests::a_stale_load_leaves_the_newer_chat_on_screen run
 chat_store::tests::caps_and_expiry run
 chat_store::tests::chat_types_mirror_rust run
 chat_store::tests::clear_removes_backups run
@@ -102,6 +106,7 @@ chat_store::tests::saved_at_reads_chrono_written_values run
 chat_store::tests::saving_off_writes_no_chat run
 chat_store::tests::startup_pass_expires run
 chat_store::tests::stored_types_hold_no_image_bytes run
+chat_store::tests::turning_saving_on_shows_and_sends_the_saved_chat run
 chat_store::tests::unreadable_chats_are_never_replaced run
 chat_store::tests::write_sites_are_confined run
 commands::ai::tests::a_refused_provider_pick_announces_no_change run

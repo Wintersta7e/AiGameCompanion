@@ -313,6 +313,8 @@ struct ExchangeDraft {
     provider: Provider,
     model: String,
     screenshot: bool,
+    /// Whether chat saving was on when the question was admitted.
+    saving: bool,
 }
 
 /// A lane's in-flight request. Aborting `handle` cancels the request and --
@@ -519,7 +521,7 @@ pub(crate) fn admit_chat(
         return Err(refuse(RefusalCode::GameChanged, GAME_CHANGED));
     }
     let accepts_image = args.provider.takes_screenshot() && !args.recap;
-    if args.recap && snapshot.tail.is_empty() {
+    if args.recap && snapshot.exchanges == 0 {
         return Err(refuse(RefusalCode::NothingToRecap, NOTHING_TO_RECAP));
     }
     let search =
@@ -625,6 +627,8 @@ pub(crate) fn ask(app: &AppHandle, args: ChatArgs, channel: &Channel<SageEvent>)
     let managed = app.try_state::<ChatStore>();
     let store = managed.as_ref().map_or(&unmanaged, |store| store.inner());
     let provider = args.provider;
+    // An answer is saved only if saving was on when its question was asked.
+    let saving = crate::commands::chat::mode_of(app).saving;
     let (worker, events) = (app.clone(), channel.clone());
     let admission = admit_and_install(
         args,
@@ -633,7 +637,7 @@ pub(crate) fn ask(app: &AppHandle, args: ChatArgs, channel: &Channel<SageEvent>)
         app.state::<AiState>().inner(),
         store,
         app.state::<ShotStore>().inner(),
-        |head, kind| tauri::async_runtime::spawn(run(worker, provider, head, kind, events)),
+        |head, kind| tauri::async_runtime::spawn(run(worker, provider, head, kind, events, saving)),
     );
     match admission {
         Admission::Started { log } => {
@@ -667,6 +671,7 @@ async fn run(
     head: EventHead,
     kind: RequestKind,
     channel: Channel<SageEvent>,
+    saving: bool,
 ) {
     let RequestKind::Chat {
         target,
@@ -699,6 +704,7 @@ async fn run(
         provider,
         model: model.clone(),
         screenshot: png.is_some(),
+        saving,
     };
     // Codex reads a screenshot from a file, so it needs somewhere to put one.
     let shots = (provider == Provider::Openai && png.is_some())
@@ -857,6 +863,8 @@ fn finish_request(
                 model: draft.model,
                 screenshot: draft.screenshot,
                 search: search.clone(),
+                memory_only: !draft.saving,
+                unknown: crate::models::UnknownFields::new(),
             });
             let save = store(entry);
             SageEvent::done(head, Some(save), search)
@@ -1990,6 +1998,8 @@ mod tests {
             model: "test-model".to_owned(),
             screenshot: false,
             search: None,
+            memory_only: false,
+            unknown: crate::models::UnknownFields::new(),
         }
     }
 
@@ -2522,6 +2532,39 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_recap_of_one_long_exchange_is_admitted() {
+        let long = Fixture::new("recap_long", 0);
+        let snapshot = long.store.snapshot(&long.key, Provider::Gemini);
+        let save = long.store.append_exchange(
+            &long.key,
+            snapshot.clear_generation,
+            Some(SavedExchange {
+                answer: "a".repeat(33 * 1024),
+                ..saved("A long walkthrough?")
+            }),
+            WRITABLE,
+        );
+        let tail = long.store.snapshot(&long.key, Provider::Gemini).tail;
+        let bytes: usize = tail.iter().map(|turn| turn.content.len()).sum();
+        println!("save {save:?}, tail of {} turns, {bytes} bytes", tail.len());
+        assert_eq!(save, SaveState::On);
+        assert_eq!(tail.len(), 2, "the long exchange was not sent again");
+        assert!(bytes <= 32 * 1024, "the tail is over its budget: {bytes}");
+
+        let game = target(true);
+        let ai = AiState::default();
+        let shots = ShotStore::default();
+        let (admission, spawned) = drive(recap_args(2), Some(&game), &ai, &long, &shots);
+        let Admission::Started { log } = admission else {
+            panic!("a recap of a chat holding one long exchange was refused");
+        };
+        println!("recap: {log}");
+        assert_eq!(spawned, 1);
+        assert!(log.contains("turns: 3"), "{log}");
+        ai.cancel(2);
+    }
+
+    #[tokio::test]
     async fn recap_admission() {
         let empty = Fixture::new("recap_empty", 0);
         let filled = Fixture::new("recap_filled", 1);
@@ -2583,6 +2626,7 @@ mod tests {
             provider: Provider::Claude,
             model: "test-model".to_owned(),
             screenshot: true,
+            saving: true,
         };
         let mut calls = Vec::new();
         let event = finish_request(head, Ok(None), "text", draft(), now, |entry| {
@@ -2599,10 +2643,26 @@ mod tests {
             model: "test-model".to_owned(),
             screenshot: true,
             search: None,
+            memory_only: false,
+            unknown: crate::models::UnknownFields::new(),
         };
         assert_eq!(calls, [Some(expected)], "the saved entry");
         assert_eq!(event["kind"], "done");
         assert_eq!(event["save"], serde_json::json!({ "state": "failed" }));
+
+        // Asked while saving was off: the answer is kept in memory only.
+        let asked_off = ExchangeDraft {
+            saving: false,
+            ..draft()
+        };
+        let mut calls = Vec::new();
+        finish_request(head, Ok(None), "text", asked_off, now, |entry| {
+            calls.push(entry);
+            SaveState::On
+        });
+        let memory_only: Vec<_> = calls.iter().flatten().map(|x| x.memory_only).collect();
+        println!("asked with saving off: memory only {memory_only:?}");
+        assert_eq!(memory_only, [true], "an answer asked with saving off");
 
         let mut calls = Vec::new();
         let event = finish_request(head, Ok(None), " \n", draft(), now, |entry| {

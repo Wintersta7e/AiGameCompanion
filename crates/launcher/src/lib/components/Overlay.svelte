@@ -5,6 +5,7 @@
   import { listen } from '@tauri-apps/api/event';
   import { hashHue } from '../utils/accent';
   import {
+    chatNoticeText,
     chatViewAction,
     recapOffer,
     SAVE_STATUS_TOOLTIP,
@@ -545,6 +546,8 @@
       // Another chat opens at its latest message.
       chatScrollTop = null;
     }
+    // A chat kept as a copy says so once, whichever way its view applied.
+    if (view?.notice) chatNotice = chatNoticeText(view.notice);
     displayGeneration = view?.displayGeneration ?? 0;
     chatReady = view !== null;
     saveState = view?.save ?? null;

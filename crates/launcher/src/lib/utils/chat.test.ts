@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import {
+  chatNoticeText,
   chatViewAction,
   recapOffer,
   RECAP_OFFER_AFTER_MS,
@@ -15,6 +16,7 @@ const view = (displayGeneration: number): ChatView => ({
   displayGeneration,
   exchanges: [],
   save: { state: 'on' },
+  notice: null,
 });
 
 void test('chatViewAction: a view replaces the chat only when its generation changed', (t) => {
@@ -28,6 +30,17 @@ void test('chatViewAction: a view replaces the chat only when its generation cha
     t.diagnostic(`${name}: ${action}`);
     assert.equal(action, expected, name);
   }
+});
+
+void test('chatNoticeText: a chat kept as a copy says what was left out and that a copy was kept', (t) => {
+  const damaged = chatNoticeText('damaged');
+  const partial = chatNoticeText('partial');
+  t.diagnostic(`damaged: ${damaged}`);
+  t.diagnostic(`partial: ${partial}`);
+  assert.match(damaged, /could not be read, so it starts empty/u);
+  assert.match(partial, /Part of this game's saved chat could not be read/u);
+  for (const text of [damaged, partial]) assert.match(text, /A copy of the file was kept/u);
+  assert.equal(chatNoticeText(null), '');
 });
 
 void test('saveStatusText: one line per save state, and none of them deletes', (t) => {
