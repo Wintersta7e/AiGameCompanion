@@ -4,6 +4,7 @@
   import {
     getSelectedGame,
     launchGame,
+    launchBlocked,
     getGameStatus,
     getLaunchError,
     type Game,
@@ -69,8 +70,9 @@
     launching: 'var(--color-warn)',
     linked: 'var(--color-ok)',
   };
+  // While launching, Launch stays usable: the game may never start.
   const LAUNCH_LABELS: Record<string, string> = {
-    launching: 'Launching…',
+    launching: 'Launch again',
     linked: 'Running',
   };
   const BEAM_LABELS: Record<string, string> = {
@@ -81,6 +83,7 @@
   let statusLabel = $derived(STATUS_LABELS[status] ?? 'Ready');
   let statusColor = $derived(STATUS_COLORS[status] ?? 'var(--accent)');
   let launchBusy = $derived(status === 'launching');
+  let blocked = $derived(game ? launchBlocked(game.id) : true);
   let launchLabel = $derived(LAUNCH_LABELS[status] ?? 'Launch');
   let beamLabel = $derived(BEAM_LABELS[status] ?? 'CTRL+SHIFT+G ⇄ OVERLAY');
 
@@ -273,10 +276,10 @@
           <button
             style="color: #0b0b0d; background: var(--accent); box-shadow: 0 8px 28px -8px color-mix(in oklab, var(--accent) 75%, transparent);"
             class="flex items-center gap-[9px] px-[26px] py-[13px] rounded-[11px] border-none font-display text-[14px] font-semibold tracking-[0.03em] transition-all duration-200 enabled:hover:brightness-110 enabled:hover:-translate-y-px"
-            class:cursor-not-allowed={launchBusy}
-            class:cursor-pointer={!launchBusy}
-            class:opacity-60={launchBusy}
-            disabled={launchBusy || status === 'linked'}
+            class:cursor-not-allowed={blocked}
+            class:cursor-pointer={!blocked}
+            class:opacity-60={blocked}
+            disabled={blocked}
             onclick={() => {
               void launchGame(game.id);
             }}

@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use std::collections::BTreeMap;
 use std::io::{ErrorKind, Write as _};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -11,15 +11,18 @@ use crate::models::{GamePrefs, LauncherSettings, LauncherState};
 /// second, for a scanner that holds the file open without read sharing.
 pub(crate) const READ_ATTEMPTS: u32 = 5;
 pub(crate) const READ_RETRY_DELAY: Duration = Duration::from_millis(200);
+/// The event that carries a failed save's message to the main window, which
+/// shows it as a notice.
+pub(crate) const SAVE_FAILED: &str = "state-save-failed";
 /// Backups go to `.json.bak`, then `.json.bak.1` ... `.json.bak.<this>`.
 const MAX_BACKUP_SUFFIX: u32 = 99;
 
 pub(crate) struct AppState {
     pub launcher: Mutex<LauncherState>,
     pub state_path: PathBuf,
-    /// Game ids with an active play session (a running process being watched).
-    /// Guards against launching the same game twice.
-    pub active_sessions: Mutex<HashSet<String>>,
+    /// Game ids with an active play session (a launch or a running process
+    /// being watched). Guards against launching the same game twice.
+    pub active_sessions: Mutex<BTreeMap<String, crate::process_watch::Session>>,
     /// Serializes `save()` so the watcher thread and command threads cannot
     /// interleave writes to the shared temp file.
     save_lock: Mutex<()>,
@@ -64,21 +67,34 @@ impl AppState {
         // merely unreadable would destroy it.
         let tmp_path = state_path.with_extension("json.tmp");
         let probe = std::fs::metadata(&state_path);
-        if should_promote_tmp(probe.err().map(|e| e.kind()), tmp_path.exists()) {
-            crate::util::log_if_err(
-                "recover the interrupted state write",
-                std::fs::rename(&tmp_path, &state_path),
-            );
-        }
+        let promoted = if should_promote_tmp(probe.err().map(|e| e.kind()), tmp_path.exists()) {
+            std::fs::rename(&tmp_path, &state_path)
+        } else {
+            Ok(())
+        };
 
-        let loaded = read_state(&state_path);
+        let loaded = match promoted {
+            Ok(()) => read_state(&state_path),
+            // The `.tmp` is then the only copy of the library: reading on would
+            // find no state file and start an empty, writable library whose
+            // first save truncates that `.tmp`.
+            Err(e) => Loaded {
+                state: LauncherState::default(),
+                load_error: Some(format!(
+                    "could not recover the interrupted state write {}: {e}",
+                    tmp_path.display()
+                )),
+                settings_read: false,
+                notice: None,
+            },
+        };
         if let Some(reason) = &loaded.load_error {
             tracing::error!("Launcher state is read-only this run: {reason}");
         }
         Self {
             launcher: Mutex::new(loaded.state),
             state_path,
-            active_sessions: Mutex::new(HashSet::new()),
+            active_sessions: Mutex::new(BTreeMap::new()),
             save_lock: Mutex::new(()),
             load_error: loaded.load_error,
             settings_read: loaded.settings_read,
@@ -132,7 +148,37 @@ impl AppState {
             file.write_all(json.as_bytes()).map_err(|e| e.to_string())?;
             file.sync_all().map_err(|e| e.to_string())?;
         }
-        std::fs::rename(&tmp_path, &self.state_path).map_err(|e| e.to_string())
+        rename_with_retry(
+            &tmp_path,
+            &self.state_path,
+            READ_ATTEMPTS,
+            READ_RETRY_DELAY,
+            |from, to| std::fs::rename(from, to),
+            |attempt, e| {
+                tracing::warn!(
+                    "Replacing {} failed (attempt {attempt} of {READ_ATTEMPTS}): {e}",
+                    self.state_path.display()
+                );
+            },
+        )
+        .map_err(|e| e.to_string())
+    }
+
+    /// Save, and when that fails after its retries tell the main window what
+    /// was not saved -- `lost`, for the user, as "The play time of X". A
+    /// read-only run is not reported again: its banner already says nothing is
+    /// saved.
+    pub(crate) fn save_or_notify<R: tauri::Runtime>(&self, app: &tauri::AppHandle<R>, lost: &str) {
+        use tauri::Emitter as _;
+
+        let Err(e) = self.save() else {
+            return;
+        };
+        let message = format!("{lost} could not be saved: {e}");
+        tracing::error!("{message}");
+        if self.load_error.is_none() {
+            crate::util::log_if_err("emit state-save-failed", app.emit(SAVE_FAILED, message));
+        }
     }
 
     /// A copy of the values stored for the game `key`; the defaults when
@@ -188,12 +234,9 @@ fn read_state(state_path: &Path) -> Loaded {
             };
         }
     };
-    // A UTF-8 byte order mark, as some Windows editors write, is not JSON. The
-    // backup below still keeps the file's own bytes.
-    let text = contents.strip_prefix('\u{feff}').unwrap_or(&contents);
-
-    match serde_json::from_str::<LauncherState>(text) {
-        Ok(state) => {
+    // The backups below keep the file's own bytes.
+    match parse_state(&contents) {
+        Ok((text, state)) => {
             // One malformed game, per-game entry or setting is dropped rather
             // than failing the whole file, so a parse can succeed and still
             // lose data.
@@ -209,7 +252,7 @@ fn read_state(state_path: &Path) -> Loaded {
                 };
             }
             tracing::warn!("{dropped} unreadable entries in {}", state_path.display());
-            let (load_error, notice) = match back_up(state_path, contents.as_bytes()) {
+            let (load_error, notice) = match back_up(state_path, &contents) {
                 Ok(kept) => {
                     log_kept_state(&kept);
                     (
@@ -241,7 +284,7 @@ fn read_state(state_path: &Path) -> Loaded {
                 "Corrupt launcher state at {}: {parse_error}",
                 state_path.display()
             );
-            let (load_error, notice) = match back_up(state_path, contents.as_bytes()) {
+            let (load_error, notice) = match back_up(state_path, &contents) {
                 Ok(kept) => {
                     log_kept_state(&kept);
                     (
@@ -271,13 +314,23 @@ fn read_state(state_path: &Path) -> Loaded {
     }
 }
 
-/// The state file's text, read with retries, each retry logged.
-fn read_state_file(state_path: &Path) -> std::io::Result<String> {
+/// The state file's JSON text and the state it holds. A UTF-8 byte order
+/// mark, as some Windows editors write, is not JSON and is skipped; bytes that
+/// are not UTF-8 (an editor's UTF-16 save) fail like JSON that does not parse.
+fn parse_state(contents: &[u8]) -> Result<(&str, LauncherState), String> {
+    let unmarked = contents.strip_prefix(b"\xEF\xBB\xBF").unwrap_or(contents);
+    let text = std::str::from_utf8(unmarked).map_err(|e| e.to_string())?;
+    let state = serde_json::from_str(text).map_err(|e| e.to_string())?;
+    Ok((text, state))
+}
+
+/// The state file's bytes, read with retries, each retry logged.
+fn read_state_file(state_path: &Path) -> std::io::Result<Vec<u8>> {
     read_with_retry(
         state_path,
         READ_ATTEMPTS,
         READ_RETRY_DELAY,
-        |path| std::fs::read_to_string(path),
+        |path| std::fs::read(path),
         |attempt, e| {
             tracing::warn!(
                 "Reading {} failed (attempt {attempt} of {READ_ATTEMPTS}): {e}",
@@ -288,21 +341,50 @@ fn read_state_file(state_path: &Path) -> std::io::Result<String> {
 }
 
 /// Call `read` up to `attempts` times, `delay` apart, until it succeeds or
-/// fails with `NotFound` -- an absent file will not appear by waiting, but a
-/// lock held by another process usually goes away. `on_retry` hears each
-/// failed attempt that will be tried again, with its number; logging is the
-/// caller's, so each store words its own lines.
-pub(crate) fn read_with_retry(
+/// fails with `NotFound` or `InvalidData` -- an absent file will not appear by
+/// waiting, nor will bytes that are not text become text, but a lock held by
+/// another process usually goes away. `on_retry` hears each failed attempt
+/// that will be tried again, with its number; logging is the caller's, so each
+/// store words its own lines.
+pub(crate) fn read_with_retry<T>(
     path: &Path,
     attempts: u32,
     delay: Duration,
-    mut read: impl FnMut(&Path) -> std::io::Result<String>,
+    mut read: impl FnMut(&Path) -> std::io::Result<T>,
+    on_retry: impl FnMut(u32, &std::io::Error),
+) -> std::io::Result<T> {
+    retry(attempts, delay, || read(path), on_retry)
+}
+
+/// Rename `from` over `to` with `read_with_retry`'s policy: the rename that
+/// ends an atomic write fails while another program has the target open
+/// without delete sharing, which usually lets go within the retry window.
+/// The last error is returned.
+pub(crate) fn rename_with_retry(
+    from: &Path,
+    to: &Path,
+    attempts: u32,
+    delay: Duration,
+    mut rename: impl FnMut(&Path, &Path) -> std::io::Result<()>,
+    on_retry: impl FnMut(u32, &std::io::Error),
+) -> std::io::Result<()> {
+    retry(attempts, delay, || rename(from, to), on_retry)
+}
+
+/// The loop both retrying helpers share; see `read_with_retry`.
+fn retry<T>(
+    attempts: u32,
+    delay: Duration,
+    mut op: impl FnMut() -> std::io::Result<T>,
     mut on_retry: impl FnMut(u32, &std::io::Error),
-) -> std::io::Result<String> {
+) -> std::io::Result<T> {
     let mut attempt = 1;
     loop {
-        match read(path) {
-            Err(e) if e.kind() != ErrorKind::NotFound && attempt < attempts => {
+        match op() {
+            Err(e)
+                if !matches!(e.kind(), ErrorKind::NotFound | ErrorKind::InvalidData)
+                    && attempt < attempts =>
+            {
                 on_retry(attempt, &e);
                 std::thread::sleep(delay);
                 attempt += 1;
@@ -433,14 +515,75 @@ fn log_kept_state(kept: &Backup) {
     }
 }
 
+/// Open `path` the way a scanner or backup tool does -- sharing read and write
+/// but not delete, so a rename over it fails -- and let go after `hold`. The
+/// tests of every store that writes through `rename_with_retry` share it.
+#[cfg(all(test, windows))]
+pub(crate) fn hold_without_delete_sharing(
+    path: &Path,
+    hold: Duration,
+) -> std::io::Result<std::thread::JoinHandle<()>> {
+    use std::os::windows::fs::OpenOptionsExt as _;
+    const FILE_SHARE_READ_WRITE: u32 = 0x1 | 0x2;
+
+    let reader = std::fs::OpenOptions::new()
+        .read(true)
+        .share_mode(FILE_SHARE_READ_WRITE)
+        .open(path)?;
+    Ok(std::thread::spawn(move || {
+        std::thread::sleep(hold);
+        drop(reader);
+    }))
+}
+
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     #![allow(let_underscore_drop, reason = "test cleanup is best-effort")]
 
     use super::*;
     use crate::models::{Game, GameSource};
     use crate::placement::{MonitorArea, OverlayPlacement, Placed, PlacedFrom, Rect, place};
     use std::path::Path;
+
+    /// A mock app whose state loaded writable, and whose every later save
+    /// fails past its retries: a folder now stands where the state file was.
+    pub(crate) struct FailingSaves {
+        pub app: tauri::App<tauri::test::MockRuntime>,
+        /// Every failed-save message the app emitted to the page.
+        pub reported: std::sync::mpsc::Receiver<String>,
+        dir: PathBuf,
+    }
+
+    impl Drop for FailingSaves {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.dir);
+        }
+    }
+
+    pub(crate) fn failing_saves(label: &str, json: &str) -> FailingSaves {
+        use tauri::{Listener as _, Manager as _};
+
+        let dir = std::env::temp_dir().join(format!(
+            "aigc_launcher_failing_saves_{}_{label}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("launcher-state.json");
+        std::fs::write(&path, json).unwrap();
+        let state = AppState::load(path.clone());
+        assert_eq!(state.load_error(), None);
+        std::fs::remove_file(&path).unwrap();
+        std::fs::create_dir_all(path.join("in-the-way")).unwrap();
+
+        let app = tauri::test::mock_app();
+        app.manage(state);
+        let (tx, reported) = std::sync::mpsc::channel();
+        app.listen_any(SAVE_FAILED, move |event| {
+            let _ = tx.send(serde_json::from_str::<String>(event.payload()).unwrap_or_default());
+        });
+        FailingSaves { app, reported, dir }
+    }
 
     /// Unique temp path per test (process id + label) so parallel tests
     /// never collide on the same file. Cleans any leftover first.
@@ -678,6 +821,99 @@ mod tests {
         cleanup(&path);
     }
 
+    /// The run a failed promotion leaves: read-only, naming the `.tmp`, and
+    /// the `.tmp` -- the only copy of the library -- unchanged by a save.
+    fn assert_promotion_failure_is_read_only(app: &AppState, tmp: &Path, library: &str) {
+        let reason = app
+            .load_error()
+            .expect("a failed promotion must be read-only");
+        assert!(
+            reason.contains(&tmp.display().to_string()),
+            "the reason must name the .tmp: {reason}"
+        );
+        assert!(app.save().is_err(), "save must refuse");
+        assert_eq!(std::fs::read_to_string(tmp).unwrap(), library);
+    }
+
+    /// A folder that refuses the rename stands in for a promotion that fails.
+    #[cfg(unix)]
+    #[test]
+    fn failed_tmp_promotion_makes_the_run_read_only() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = std::env::temp_dir().join(format!(
+            "aigc_launcher_state_{}_promotion_dir",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir(&dir).unwrap();
+        let path = dir.join("launcher-state.json");
+        let tmp = path.with_extension("json.tmp");
+        std::fs::write(&tmp, ONE_GAME).unwrap();
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o555)).unwrap();
+        if std::fs::File::create(dir.join("probe")).is_ok() {
+            println!("skipped: running as root");
+            std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o755)).unwrap();
+            let _ = std::fs::remove_dir_all(&dir);
+            return;
+        }
+
+        let app = AppState::load(path);
+        // The folder's mode is restored even when an assertion fails.
+        let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            assert_promotion_failure_is_read_only(&app, &tmp, ONE_GAME);
+        }));
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let _ = std::fs::remove_dir_all(&dir);
+        if let Err(panic) = outcome {
+            std::panic::resume_unwind(panic);
+        }
+    }
+
+    /// Another program holds the `.tmp` open without delete sharing while the
+    /// launcher starts, then lets go before the first save.
+    #[cfg(windows)]
+    #[test]
+    fn tmp_held_at_start_makes_the_run_read_only() {
+        use std::os::windows::fs::OpenOptionsExt as _;
+        const FILE_SHARE_READ_WRITE: u32 = 0x1 | 0x2;
+
+        let path = temp_state_path("promotion_held");
+        let tmp = path.with_extension("json.tmp");
+        std::fs::write(&tmp, ONE_GAME).unwrap();
+        let held = std::fs::OpenOptions::new()
+            .read(true)
+            .share_mode(FILE_SHARE_READ_WRITE)
+            .open(&tmp)
+            .unwrap();
+
+        let app = AppState::load(path.clone());
+        drop(held);
+
+        assert_promotion_failure_is_read_only(&app, &tmp, ONE_GAME);
+        assert!(!path.exists(), "nothing may be written over the library");
+        cleanup(&path);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn save_waits_out_a_reader_without_delete_sharing() {
+        let path = temp_state_path("save_held");
+        std::fs::write(&path, ONE_GAME).unwrap();
+        let app = AppState::load(path.clone());
+        app.launcher.lock().games[0].play_time_minutes = 960;
+
+        let release = hold_without_delete_sharing(&path, Duration::from_millis(300)).unwrap();
+        let saved = app.save();
+        release.join().unwrap();
+
+        assert_eq!(saved, Ok(()));
+        let next = AppState::load(path.clone());
+        assert_eq!(next.launcher.lock().games[0].play_time_minutes, 960);
+        assert!(!path.with_extension("json.tmp").exists());
+        cleanup(&path);
+    }
+
     /// An unreadable file used to load as an empty library, and the next save
     /// replaced it with that empty library.
     #[cfg(unix)]
@@ -742,6 +978,34 @@ mod tests {
         cleanup(&path);
     }
 
+    /// The main window listens for failed saves, and a read-only run -- whose
+    /// banner already says nothing is saved -- reports none of its refusals.
+    #[test]
+    fn only_a_writable_runs_failed_saves_reach_the_page() {
+        use tauri::{Listener as _, Manager as _};
+
+        let path = temp_state_path("refused_not_reported");
+        std::fs::create_dir(&path).unwrap();
+        let app = tauri::test::mock_app();
+        app.manage(AppState::load(path.clone()));
+        let (tx, rx) = std::sync::mpsc::channel();
+        app.listen_any(SAVE_FAILED, move |_| {
+            let _ = tx.send(());
+        });
+
+        let state = app.state::<AppState>();
+        assert!(state.load_error().is_some());
+        state.save_or_notify(app.handle(), "The play time");
+        let reported = rx.recv_timeout(Duration::from_millis(300)).is_ok();
+        cleanup(&path);
+        assert!(!reported, "a read-only run reported a refused save");
+
+        let listener = format!("listen<string>('{SAVE_FAILED}'");
+        let scan = crate::util::count_in_frontend(&[listener.as_str()]);
+        println!("page listeners: {:?}", scan.hits[0]);
+        assert_eq!(scan.hits[0].len(), 1, "one page listener for {SAVE_FAILED}");
+    }
+
     #[test]
     fn writable_outcomes_stay_writable() {
         let absent = temp_state_path("writable_absent");
@@ -781,23 +1045,26 @@ mod tests {
         assert_eq!(read.unwrap(), "content");
         assert_eq!(calls, 3);
 
-        let mut calls = 0;
-        let read = read_with_retry(
-            path,
-            READ_ATTEMPTS,
-            Duration::ZERO,
-            |_| {
-                calls += 1;
-                Err(Error::from(ErrorKind::NotFound))
-            },
-            |_, _| {},
-        );
-        assert_eq!(read.unwrap_err().kind(), ErrorKind::NotFound);
-        assert_eq!(calls, 1);
+        // Neither an absent file nor bytes that are not text change by waiting.
+        for kind in [ErrorKind::NotFound, ErrorKind::InvalidData] {
+            let mut calls = 0;
+            let read: std::io::Result<()> = read_with_retry(
+                path,
+                READ_ATTEMPTS,
+                Duration::ZERO,
+                |_| {
+                    calls += 1;
+                    Err(Error::from(kind))
+                },
+                |_, _| {},
+            );
+            assert_eq!(read.unwrap_err().kind(), kind);
+            assert_eq!(calls, 1);
+        }
 
         let mut calls = 0;
         let mut retried = Vec::new();
-        let read = read_with_retry(
+        let read: std::io::Result<()> = read_with_retry(
             path,
             READ_ATTEMPTS,
             Duration::ZERO,
@@ -811,6 +1078,64 @@ mod tests {
         assert_eq!(calls, 5);
         assert_eq!(retried.len(), READ_ATTEMPTS as usize - 1);
         assert_eq!(retried, [1, 2, 3, 4]);
+    }
+
+    #[test]
+    fn rename_retries_transient_errors_only() {
+        use std::io::{Error, ErrorKind};
+        let (from, to) = (Path::new("from"), Path::new("to"));
+
+        let mut calls = 0;
+        let mut retried = Vec::new();
+        let renamed = rename_with_retry(
+            from,
+            to,
+            READ_ATTEMPTS,
+            Duration::ZERO,
+            |a, b| {
+                assert_eq!((a, b), (from, to));
+                calls += 1;
+                if calls <= 2 {
+                    Err(Error::from(ErrorKind::PermissionDenied))
+                } else {
+                    Ok(())
+                }
+            },
+            |attempt, _| retried.push(attempt),
+        );
+        assert!(renamed.is_ok(), "{renamed:?}");
+        assert_eq!(calls, 3);
+        assert_eq!(retried, [1, 2]);
+
+        let mut calls = 0;
+        let renamed = rename_with_retry(
+            from,
+            to,
+            READ_ATTEMPTS,
+            Duration::ZERO,
+            |_, _| {
+                calls += 1;
+                Err(Error::from(ErrorKind::NotFound))
+            },
+            |_, _| {},
+        );
+        assert_eq!(renamed.unwrap_err().kind(), ErrorKind::NotFound);
+        assert_eq!(calls, 1);
+
+        let mut calls = 0;
+        let renamed = rename_with_retry(
+            from,
+            to,
+            READ_ATTEMPTS,
+            Duration::ZERO,
+            |_, _| {
+                calls += 1;
+                Err(Error::other(format!("failure {calls}")))
+            },
+            |_, _| {},
+        );
+        assert_eq!(renamed.unwrap_err().to_string(), "failure 5");
+        assert_eq!(calls, 5);
     }
 
     #[test]
@@ -830,7 +1155,9 @@ mod tests {
         let source = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/state.rs"));
         let mut logging = Vec::new();
         for needle in [
-            "fn read_with_retry(",
+            "fn read_with_retry<T>(",
+            "fn rename_with_retry(",
+            "fn retry<T>(",
             "fn should_promote_tmp(",
             "fn back_up(",
         ] {
@@ -874,6 +1201,34 @@ mod tests {
         assert!(app.save().is_err());
         assert_eq!(std::fs::read_to_string(&path).unwrap(), original);
         cleanup(&path);
+    }
+
+    /// A library saved with one game listed twice under one id (an older scan
+    /// of two libraries) loads it once -- the entry launches already used --
+    /// and the file as it was is kept in a backup.
+    #[test]
+    fn a_stored_duplicate_id_loads_once() {
+        let original = r#"{"games":[{"id":"steam_10","name":"Ten","play_time_minutes":300},{"id":"manual_1","name":"One"},{"id":"steam_10","name":"Ten","play_time_minutes":20}],"settings":{}}"#;
+        let path = temp_state_path("duplicate_id");
+        std::fs::write(&path, original).unwrap();
+
+        let app = AppState::load(path.clone());
+        let loaded: Vec<(String, u64)> = app
+            .launcher
+            .lock()
+            .games
+            .iter()
+            .map(|g| (g.id.clone(), g.play_time_minutes))
+            .collect();
+        let kept = std::fs::read_to_string(path.with_extension("json.bak"));
+        cleanup(&path);
+
+        assert_eq!(
+            loaded,
+            [("steam_10".to_owned(), 300), ("manual_1".to_owned(), 0)]
+        );
+        assert_eq!(app.load_error(), None);
+        assert_eq!(kept.unwrap(), original);
     }
 
     #[test]
@@ -1470,6 +1825,48 @@ mod tests {
             backup_names(&path).iter().all(|name| !name.exists()),
             "nothing was dropped, so nothing is backed up"
         );
+        cleanup(&path);
+    }
+
+    /// The file as an editor's "Unicode" save leaves it: UTF-16 LE with a
+    /// byte order mark.
+    pub(crate) fn utf16le(text: &str) -> Vec<u8> {
+        let mut bytes = vec![0xFF, 0xFE];
+        for unit in text.encode_utf16() {
+            bytes.extend_from_slice(&unit.to_le_bytes());
+        }
+        bytes
+    }
+
+    /// A file that is not UTF-8 is a damaged file: kept in a backup as it
+    /// was, with a notice, and the run stays writable. Waiting would not
+    /// change its bytes, so it is read once.
+    #[test]
+    fn a_file_that_is_not_utf8_is_kept_and_the_run_writable() {
+        let path = temp_state_path("utf16");
+        let bytes = utf16le(ONE_GAME);
+        std::fs::write(&path, &bytes).unwrap();
+
+        let started = std::time::Instant::now();
+        let app = AppState::load(path.clone());
+        let took = started.elapsed();
+        let health = app.health();
+        println!(
+            "utf16: load_error={:?} notice={:?} took={took:?}",
+            health.read_only, health.notice
+        );
+
+        assert_eq!(
+            health.read_only, None,
+            "a re-encoded file left the run read-only"
+        );
+        assert!(health.notice.is_some(), "no notice for the kept copy");
+        assert_eq!(
+            std::fs::read(path.with_extension("json.bak")).unwrap(),
+            bytes
+        );
+        assert!(took < READ_RETRY_DELAY, "the read was retried: {took:?}");
+        app.save().unwrap();
         cleanup(&path);
     }
 

@@ -1,5 +1,6 @@
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
+import { SvelteSet } from 'svelte/reactivity';
 
 export interface Game {
   id: string;
@@ -132,9 +133,19 @@ export function getLaunchError(id: string): string | null {
   return launchErrors[id] ?? null;
 }
 
+/** Whether Launch is refused for `id`: the game is running. A game still
+ *  `launching` may never start (a cancelled pre-launch dialog, a stub exe), so
+ *  it can be launched again; the backend replaces that launch. */
+export function launchBlocked(id: string): boolean {
+  return gameStatuses[id] === 'linked';
+}
+
+// Games whose `launch_game` call has not returned: a double click must not
+// start the game twice.
+const launchesInFlight = new SvelteSet<string>();
+
 export async function launchGame(gameId: string): Promise<void> {
-  // Duplicate-launch protection: already starting or running.
-  if (gameStatuses[gameId] === 'launching' || gameStatuses[gameId] === 'linked') {
+  if (launchBlocked(gameId) || launchesInFlight.has(gameId)) {
     return;
   }
   // Optimistic 'launching'; the game-linked / game-finished events drive the
@@ -142,11 +153,14 @@ export async function launchGame(gameId: string): Promise<void> {
   // updated the status while we awaited.
   gameStatuses = { ...gameStatuses, [gameId]: 'launching' };
   launchErrors = { ...launchErrors, [gameId]: '' };
+  launchesInFlight.add(gameId);
   try {
     await invoke<string>('launch_game', { gameId });
   } catch (err) {
     console.error('Failed to launch game:', err);
     gameStatuses = { ...gameStatuses, [gameId]: 'error' };
     launchErrors = { ...launchErrors, [gameId]: String(err) };
+  } finally {
+    launchesInFlight.delete(gameId);
   }
 }

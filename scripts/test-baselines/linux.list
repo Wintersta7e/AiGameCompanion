@@ -88,6 +88,7 @@ ai::tests::sage_event_mirrors_rust run
 ai::tests::send_names_a_closed_linked_window run
 ai::tests::translate_gate_order run
 ai::tests::unlinked_target_contributes_nothing run
+chat_store::tests::a_chat_that_is_not_utf8_is_kept_and_saved_again run
 chat_store::tests::caps_and_expiry run
 chat_store::tests::chat_types_mirror_rust run
 chat_store::tests::clear_removes_backups run
@@ -105,6 +106,9 @@ chat_store::tests::unreadable_chats_are_never_replaced run
 chat_store::tests::write_sites_are_confined run
 commands::ai::tests::a_refused_provider_pick_announces_no_change run
 commands::chat::tests::load_needs_the_shown_linked_window run
+commands::games::event_order_tests::game_finished_follows_the_last_played_time run
+commands::games::failed_save_tests::a_failed_last_played_save_reaches_the_page run
+commands::games::failed_save_tests::a_failed_scan_save_reaches_the_page run
 commands::games::tests::complete_scan_carries_playtime_across run
 commands::games::tests::complete_scan_drops_uninstalled_games run
 commands::games::tests::complete_scan_keeps_other_sources run
@@ -122,6 +126,8 @@ commands::settings::tests::no_error_sends_users_to_config_toml run
 commands::settings::tests::save_chats_change_is_detected run
 commands::settings::tests::save_keeps_hints_first run
 commands::settings::tests::save_keeps_the_stored_provider run
+discovery::steam::tests::an_empty_installdir_gives_no_install_dir run
+discovery::steam::tests::one_game_per_app_id_where_it_is_installed run
 models::tests::game_holds_no_per_game_value run
 models::tests::gemini_model_defaults_and_round_trips run
 models::tests::hints_first_defaults_on_and_round_trips run
@@ -173,9 +179,11 @@ shots::tests::shot_store_ids_slots_epoch run
 shots::tests::shot_types_mirror_typescript run
 shots::tests::source_is_capped run
 shots::tests::unavailable_screenshot_copy_offers_no_impossible_step run
+state::tests::a_file_that_is_not_utf8_is_kept_and_the_run_writable run
 state::tests::a_kept_copy_is_named_to_the_main_window_once run
 state::tests::a_leading_bom_loads_the_same_file run
 state::tests::a_source_this_build_does_not_know_is_saved_back_unchanged run
+state::tests::a_stored_duplicate_id_loads_once run
 state::tests::autostart_follows_only_settings_that_were_read run
 state::tests::backup_never_replaces_an_existing_one run
 state::tests::backup_reuses_an_identical_copy_past_a_gap run
@@ -183,6 +191,7 @@ state::tests::corrupt_state_falls_back_to_default_and_backs_up run
 state::tests::corrupt_state_without_backup_is_read_only run
 state::tests::dropped_entries_are_preserved run
 state::tests::edit_settings_refuses_before_changing_memory run
+state::tests::failed_tmp_promotion_makes_the_run_read_only run
 state::tests::game_prefs_field_stays_in_the_store run
 state::tests::game_prefs_load_save_and_backup run
 state::tests::game_prefs_reads_a_clone_or_default run
@@ -192,10 +201,12 @@ state::tests::load_returns_default_when_file_absent run
 state::tests::load_tolerates_missing_top_level_fields run
 state::tests::load_tolerates_unknown_game_source run
 state::tests::one_unreadable_value_keeps_the_library_and_every_readable_setting run
+state::tests::only_a_writable_runs_failed_saves_reach_the_page run
 state::tests::overlay_position_loads_leniently run
 state::tests::read_error_makes_state_read_only run
 state::tests::read_retries_transient_errors_only run
 state::tests::recovers_state_from_leftover_tmp_when_main_missing run
+state::tests::rename_retries_transient_errors_only run
 state::tests::same_bytes_are_backed_up_once_across_starts run
 state::tests::save_chats_loads_leniently run
 state::tests::save_is_atomic_and_leaves_no_tmp run
@@ -208,6 +219,7 @@ state::tests::unreadable_region_drops_its_entry run
 state::tests::unreadable_state_is_never_overwritten run
 state::tests::writable_outcomes_stay_writable run
 tests::hotkey_labels_are_the_documented_chords run
+tests::the_previous_log_is_kept_at_start run
 trust::tests::acl_denies_everything_unlisted run
 trust::tests::app_manifest_matches_handlers run
 trust::tests::capabilities_grant_exact_lists run

@@ -970,7 +970,14 @@ fn write_chat(dir: &Path, hash: &ChatHash, text: &str) -> std::io::Result<()> {
     file.write_all(text.as_bytes())?;
     file.sync_all()?;
     drop(file);
-    std::fs::rename(&tmp, &path)
+    crate::state::rename_with_retry(
+        &tmp,
+        &path,
+        READ_ATTEMPTS,
+        READ_RETRY_DELAY,
+        |from, to| std::fs::rename(from, to),
+        |attempt, e| log_write_retry(hash, attempt, e.kind()),
+    )
 }
 
 /// Read `key`'s file in `dir`. A file that cannot be read, or holds another
@@ -993,21 +1000,23 @@ fn read_key(dir: &Path, key: &str, mode: StoreMode, now: OffsetDateTime) -> KeyE
         }
         log_promoted(&hash);
     }
-    let text = match read_with_retry(
+    let bytes = match read_with_retry(
         &path,
         READ_ATTEMPTS,
         READ_RETRY_DELAY,
-        |path| std::fs::read_to_string(path),
+        |path| std::fs::read(path),
         |attempt, e| log_read_retry(&hash, attempt, e.kind()),
     ) {
-        Ok(text) => text,
+        Ok(bytes) => bytes,
         Err(e) if e.kind() == ErrorKind::NotFound => return KeyEntry::empty(),
         Err(e) => {
             log_unreadable(&hash, e.kind());
             return KeyEntry::locked();
         }
     };
-    let parsed = parse_chat_file(&text, key);
+    // Bytes that are not UTF-8 (an editor's UTF-16 save) parse as nothing, so
+    // they are a damaged file: kept as a backup, the chat starting empty.
+    let parsed = parse_chat_file(std::str::from_utf8(&bytes).unwrap_or_default(), key);
     if !parsed.key_matches {
         log_key_mismatch(&hash);
         return KeyEntry::locked();
@@ -1017,7 +1026,7 @@ fn read_key(dir: &Path, key: &str, mode: StoreMode, now: OffsetDateTime) -> KeyE
         if mode.read_only {
             status = KeyStatus::Locked;
         } else {
-            match back_up(&path, text.as_bytes()) {
+            match back_up(&path, &bytes) {
                 Ok(kept) if kept.reused => log_backup_reused(&hash),
                 Ok(_) => log_backed_up(&hash),
                 Err(e) => {
@@ -1058,6 +1067,12 @@ fn log_promoted(hash: &ChatHash) {
 
 fn log_read_retry(hash: &ChatHash, attempt: u32, kind: ErrorKind) {
     tracing::warn!("Chat {hash}: reading failed (attempt {attempt} of {READ_ATTEMPTS}): {kind}");
+}
+
+fn log_write_retry(hash: &ChatHash, attempt: u32, kind: ErrorKind) {
+    tracing::warn!(
+        "Chat {hash}: replacing the file failed (attempt {attempt} of {READ_ATTEMPTS}): {kind}"
+    );
 }
 
 fn log_unreadable(hash: &ChatHash, kind: ErrorKind) {
@@ -2904,6 +2919,58 @@ mod tests {
                 assert_eq!(count, 0, "{needle} in {}", file.display());
             }
         }
+    }
+
+    /// A chat file that is not UTF-8 is a damaged file: kept as it was, and
+    /// the chat starts empty and is saved. It is read once, not retried.
+    #[test]
+    fn a_chat_that_is_not_utf8_is_kept_and_saved_again() {
+        let dir = temp_dir("utf16");
+        let key = "exe:utf16";
+        let path = path_of(&dir, key);
+        let bytes = crate::state::tests::utf16le(&file_text(key, &[good()]));
+        std::fs::write(&path, &bytes).unwrap();
+
+        let started = std::time::Instant::now();
+        let shown = view(&dir, key, WRITABLE);
+        let took = started.elapsed();
+        println!(
+            "utf16: {:?}, {} exchanges, took {took:?}",
+            shown.save,
+            shown.exchanges.len()
+        );
+
+        assert_eq!(
+            shown.save,
+            SaveState::On,
+            "a re-encoded file locked the chat"
+        );
+        assert_eq!(std::fs::read(bak_of(&path)).unwrap(), bytes);
+        assert!(took < READ_RETRY_DELAY, "the read was retried: {took:?}");
+        assert_eq!(append_to(&dir, key, WRITABLE), SaveState::On);
+        drop(std::fs::remove_dir_all(&dir));
+    }
+
+    /// A reader sharing read and write but not delete -- a scanner or backup
+    /// tool -- holds the chat file briefly while it is replaced.
+    #[cfg(windows)]
+    #[test]
+    fn a_write_waits_out_a_reader_without_delete_sharing() {
+        let dir = temp_dir("write_held");
+        let key = "Held";
+        let path = path_of(&dir, key);
+        std::fs::write(&path, file_text(key, &[])).unwrap();
+        let release =
+            crate::state::hold_without_delete_sharing(&path, std::time::Duration::from_millis(300))
+                .unwrap();
+
+        let newer = file_text(key, &[good()]);
+        let written = write_chat(&dir, &file_hash(key), &newer);
+        release.join().unwrap();
+
+        assert!(written.is_ok(), "{written:?}");
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), newer);
+        drop(std::fs::remove_dir_all(&dir));
     }
 
     #[test]
