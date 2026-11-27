@@ -185,12 +185,12 @@ jobs:
           cache: npm
           cache-dependency-path: crates/launcher/package-lock.json
       - name: Install cargo-xwin
-        uses: taiki-e/install-action@ab49d3c64680143e184118bed66a46419fc15519 # v2.90.5
+        uses: taiki-e/install-action@75a7c0f87bd666af3cdb75c5b9e9d03ab6044e6f # v2.90.6
         with:
           tool: cargo-xwin@${{ steps.pins.outputs.CARGO_XWIN }}
           fallback: none
       - name: Install cargo-cyclonedx
-        uses: taiki-e/install-action@ab49d3c64680143e184118bed66a46419fc15519 # v2.90.5
+        uses: taiki-e/install-action@75a7c0f87bd666af3cdb75c5b9e9d03ab6044e6f # v2.90.6
         with:
           tool: cargo-cyclonedx@${{ steps.pins.outputs.CARGO_CYCLONEDX }}
           fallback: none
@@ -234,12 +234,12 @@ jobs:
         with:
           node-version-file: .nvmrc
       - name: Install cargo-deny
-        uses: taiki-e/install-action@ab49d3c64680143e184118bed66a46419fc15519 # v2.90.5
+        uses: taiki-e/install-action@75a7c0f87bd666af3cdb75c5b9e9d03ab6044e6f # v2.90.6
         with:
           tool: cargo-deny@${{ steps.pins.outputs.CARGO_DENY }}
           fallback: none
       - name: Install osv-scanner
-        uses: taiki-e/install-action@ab49d3c64680143e184118bed66a46419fc15519 # v2.90.5
+        uses: taiki-e/install-action@75a7c0f87bd666af3cdb75c5b9e9d03ab6044e6f # v2.90.6
         with:
           tool: osv-scanner@${{ steps.pins.outputs.OSV_SCANNER }}
           fallback: none
@@ -250,7 +250,7 @@ jobs:
       # not a job: on other events it is skipped and the job still passes.
       - name: Review the dependency changes
         if: github.event_name == 'pull_request'
-        uses: actions/dependency-review-action@a1d282b36b6f3519aa1f3fc636f609c47dddb294 # v5.0.0
+        uses: actions/dependency-review-action@bbc44d14a204704ccc493733616cd1e93a0321ec # v5.0.1
         with:
           config-file: ./.github/dependency-review-config.yml
 
@@ -293,7 +293,7 @@ jobs:
           tar xzf "$archive" -C "$RUNNER_TEMP/bin" actionlint
           echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
       - name: Install zizmor
-        uses: taiki-e/install-action@ab49d3c64680143e184118bed66a46419fc15519 # v2.90.5
+        uses: taiki-e/install-action@75a7c0f87bd666af3cdb75c5b9e9d03ab6044e6f # v2.90.6
         with:
           tool: zizmor@${{ steps.pins.outputs.ZIZMOR }}
           fallback: none
@@ -363,7 +363,7 @@ jobs:
         with:
           node-version-file: .nvmrc
       - name: Install typos
-        uses: taiki-e/install-action@ab49d3c64680143e184118bed66a46419fc15519 # v2.90.5
+        uses: taiki-e/install-action@75a7c0f87bd666af3cdb75c5b9e9d03ab6044e6f # v2.90.6
         with:
           tool: typos@${{ steps.pins.outputs.TYPOS }}
           fallback: none
@@ -496,7 +496,7 @@ jobs:
         run: npm ci
         working-directory: crates/launcher
       - name: Install cargo-llvm-cov
-        uses: taiki-e/install-action@ab49d3c64680143e184118bed66a46419fc15519 # v2.90.5
+        uses: taiki-e/install-action@75a7c0f87bd666af3cdb75c5b9e9d03ab6044e6f # v2.90.6
         with:
           tool: cargo-llvm-cov@${{ steps.pins.outputs.CARGO_LLVM_COV }}
           fallback: none
@@ -558,7 +558,7 @@ jobs:
         with:
           node-version-file: .nvmrc
       - name: Run the Scorecard checks
-        uses: ossf/scorecard-action@fa7117db83c52d787ae5a89f350999701505d78e # v2.5.0
+        uses: ossf/scorecard-action@23f22cd43608bae7a1f1fa2603d7314dee9538a5 # v2.6.0
         with:
           results_file: scorecard.json
           results_format: json
